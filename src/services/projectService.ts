@@ -1,11 +1,10 @@
-import type { Project, Task, TaskKind, ApiResponse } from '../types/index';
+import type { Project, Task, ProjectAssetList, ApiResponse } from '../types/index';
 import { getAuthHeaders } from './authService';
 
 const API_BASE = '/api';
 
 export interface GetProjectTasksOptions {
   status?: string;
-  taskKind?: TaskKind;
 }
 
 /**
@@ -65,10 +64,6 @@ export async function updateProject(
     name?: string;
     description?: string;
     settings?: Record<string, any>;
-    video_save_path?: string;
-    default_concurrent?: number;
-    default_min_interval?: number;
-    default_max_interval?: number;
   }
 ): Promise<Project> {
   const response = await fetch(`${API_BASE}/projects/${id}`, {
@@ -108,9 +103,6 @@ export async function getProjectTasks(
   if (options.status) {
     url.searchParams.set('status', options.status);
   }
-  if (options.taskKind) {
-    url.searchParams.set('taskKind', options.taskKind);
-  }
   const response = await fetch(`${url.pathname}${url.search}`, {
     headers: getAuthHeaders(),
   });
@@ -121,6 +113,25 @@ export async function getProjectTasks(
   return result.data || [];
 }
 
+export async function getProjectAssets(
+  projectId: number,
+  options: { page?: number; pageSize?: number; status?: string } = {}
+): Promise<ProjectAssetList> {
+  const params = new URLSearchParams();
+  if (options.page) params.set('page', String(options.page));
+  if (options.pageSize) params.set('pageSize', String(options.pageSize));
+  if (options.status) params.set('status', options.status);
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  const response = await fetch(`${API_BASE}/projects/${projectId}/assets${qs}`, {
+    headers: getAuthHeaders(),
+  });
+  const result: ApiResponse<ProjectAssetList> = await response.json();
+  if (!result.success) {
+    throw new Error(result.error || '获取项目资产失败');
+  }
+  return result.data!;
+}
+
 export default {
   getProjects,
   getProject,
@@ -128,4 +139,5 @@ export default {
   updateProject,
   deleteProject,
   getProjectTasks,
+  getProjectAssets,
 };

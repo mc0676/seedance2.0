@@ -42,7 +42,7 @@ export default function Toolbar({
       {/* Seedance 2.0 badge */}
       <div className="flex items-center gap-1 px-2.5 py-1.5 rounded-full bg-gray-800/60 text-gray-300 text-xs">
         <SparkleIcon className="w-3.5 h-3.5" />
-        <span>Seedance 2.0</span>
+        <span>云屿智创</span>
       </div>
 
       {/* Reference mode selector */}
@@ -56,7 +56,7 @@ export default function Toolbar({
           className="flex items-center gap-1 px-2.5 py-1.5 rounded-full bg-gray-800/60 text-gray-300 text-xs hover:bg-gray-700/60 transition-colors"
         >
           <SparkleIcon className="w-3.5 h-3.5" />
-          <span>{referenceMode}</span>
+          <span>{referenceMode === 'reference' ? '全能参考' : '首尾帧'}</span>
           <ChevronDownIcon className="w-3 h-3" />
         </button>
 
@@ -75,7 +75,7 @@ export default function Toolbar({
                     : 'text-gray-300 hover:bg-gray-800'
                 }`}
               >
-                {mode}
+                {mode === 'reference' ? '全能参考' : '首尾帧'}
               </button>
             ))}
           </div>

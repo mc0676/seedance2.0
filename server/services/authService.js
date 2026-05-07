@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import nodemailer from 'nodemailer';
 import { getDatabase } from '../database/index.js';
+import { applyDefaultPermissions, getUserPermissions } from './permissionService.js';
 
 /**
  * 用户认证服务
@@ -179,22 +180,21 @@ export async function registerUser(email, password, emailCode) {
     throw new Error('该邮箱已被注册');
   }
 
-  // 验证邮箱验证码
-  if (!emailCode) {
-    throw new Error('请输入邮箱验证码');
-  }
-
-  const verifyResult = await verifyEmailCode(email, emailCode, 'register', true);
-  if (!verifyResult.valid) {
-    throw new Error(verifyResult.message);
-  }
-
   // 创建用户
   const passwordHash = hashPassword(password);
   const result = db.prepare(`
     INSERT INTO users (email, password_hash, role, status, credits)
     VALUES (?, ?, ?, ?, ?)
   `).run(email, passwordHash, 'user', 'active', 10);
+
+  const newUserId = Number(result.lastInsertRowid);
+
+  // 注入默认功能权限快照
+  try {
+    applyDefaultPermissions(newUserId);
+  } catch (e) {
+    console.warn('[auth] applyDefaultPermissions failed:', e.message);
+  }
 
   // 创建 session
   const sessionId = generateSessionId();
@@ -203,14 +203,14 @@ export async function registerUser(email, password, emailCode) {
   db.prepare(`
     INSERT INTO sessions (session_id, user_id, expires_at)
     VALUES (?, ?, ?)
-  `).run(sessionId, Number(result.lastInsertRowid), expiresAt.toISOString());
+  `).run(sessionId, newUserId, expiresAt.toISOString());
 
   // 获取用户信息
   const user = db.prepare(`
     SELECT id, email, role, status, credits, created_at
     FROM users
     WHERE id = ?
-  `).get(result.lastInsertRowid);
+  `).get(newUserId);
 
   return {
     sessionId,
@@ -220,7 +220,8 @@ export async function registerUser(email, password, emailCode) {
       role: user.role,
       status: user.status,
       credits: user.credits,
-      createdAt: user.created_at
+      createdAt: user.created_at,
+      permissions: getUserPermissions(user.id),
     }
   };
 }
@@ -275,7 +276,8 @@ export async function loginUser(email, password) {
       email: user.email,
       role: user.role,
       status: user.status,
-      credits: user.credits
+      credits: user.credits,
+      permissions: getUserPermissions(user.id),
     }
   };
 }
@@ -296,7 +298,7 @@ export async function getCurrentUser(sessionId) {
   const db = getDatabase();
 
   const session = db.prepare(`
-    SELECT s.*, u.id as user_id, u.email, u.role, u.status, u.credits
+    SELECT s.*, u.id as user_id, u.email, u.role, u.status, u.credits, u.unlimited_credits
     FROM sessions s
     JOIN users u ON s.user_id = u.id
     WHERE s.session_id = ? AND s.expires_at > datetime('now')
@@ -311,7 +313,9 @@ export async function getCurrentUser(sessionId) {
     email: session.email,
     role: session.role,
     status: session.status,
-    credits: session.credits
+    credits: session.credits,
+    unlimitedCredits: Boolean(session.unlimited_credits),
+    permissions: getUserPermissions(session.user_id),
   };
 }
 
@@ -616,7 +620,7 @@ export async function getUserList(page = 1, pageSize = 20, filters = {}) {
   }
 
   const users = db.prepare(`
-    SELECT id, email, role, status, credits, created_at, last_check_in_at
+    SELECT id, email, role, status, credits, unlimited_credits, created_at, last_check_in_at
     FROM users
     WHERE ${whereClause}
     ORDER BY created_at DESC
@@ -645,7 +649,7 @@ export async function getUserDetail(userId) {
   const db = getDatabase();
 
   const user = db.prepare(`
-    SELECT id, email, role, status, credits, created_at, updated_at, last_check_in_at
+    SELECT id, email, role, status, credits, unlimited_credits, created_at, updated_at, last_check_in_at
     FROM users
     WHERE id = ?
   `).get(userId);

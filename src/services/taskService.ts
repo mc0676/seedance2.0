@@ -1,13 +1,10 @@
-import type { Task, TaskAsset, ApiResponse, TaskKind } from '../types/index';
+import type { Task, TaskAsset, ApiResponse } from '../types/index';
 import { getAuthHeaders } from './authService';
 
 const API_BASE = '/api';
 
 export interface CreateTaskPayload {
   prompt?: string;
-  taskKind?: TaskKind;
-  rowIndex?: number;
-  videoCount?: number;
 }
 
 /**
@@ -36,9 +33,6 @@ export async function createTask(
     headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({
       prompt: payload.prompt ?? '',
-      taskKind: payload.taskKind,
-      rowIndex: payload.rowIndex,
-      videoCount: payload.videoCount,
     }),
   });
   const result: ApiResponse<Task> = await response.json();
@@ -134,35 +128,6 @@ export async function deleteTaskAsset(assetId: number): Promise<void> {
 }
 
 /**
- * 生成任务视频
- */
-export async function generateTaskVideo(taskId: number): Promise<{
-  success: boolean;
-  taskId: number;
-  batchId?: number;
-  totalTasks?: number;
-  outputTaskIds?: number[];
-  message?: string;
-}> {
-  const response = await fetch(`${API_BASE}/tasks/${taskId}/generate`, {
-    method: 'POST',
-    headers: getAuthHeaders(),
-  });
-  const result: ApiResponse<{
-    success: boolean;
-    taskId: number;
-    batchId?: number;
-    totalTasks?: number;
-    outputTaskIds?: number[];
-    message?: string;
-  }> = await response.json();
-  if (!result.success) {
-    throw new Error(result.error || '生成视频失败');
-  }
-  return result.data!;
-}
-
-/**
  * 取消任务
  */
 export async function cancelTask(taskId: number): Promise<void> {
@@ -235,7 +200,6 @@ export default {
   addTaskAssets,
   getTaskAssets,
   deleteTaskAsset,
-  generateTaskVideo,
   cancelTask,
   downloadTaskVideo,
   openTaskVideoFolder,

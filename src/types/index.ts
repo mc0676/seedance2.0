@@ -5,7 +5,7 @@ export type AspectRatio = '21:9' | '16:9' | '4:3' | '1:1' | '3:4' | '9:16';
 
 export type Duration = 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15;
 
-export type ModelId = 'seedance-2.0' | 'seedance-2.0-fast' | 'seedance-2.0-fast-vip' | 'seedance-2.0-vip';
+export type ModelId = 'seedance-2.0' | 'seedance-2.0-vip' | 'seedance-2.0-fast' | 'seedance-2.0-fast-vip' | 'seedance-1.5-pro' | 'seedance-1.0-pro' | string;
 
 // ============================================================
 // 用户认证类型
@@ -14,12 +14,40 @@ export type ModelId = 'seedance-2.0' | 'seedance-2.0-fast' | 'seedance-2.0-fast-
 export interface User {
   id: number;
   email: string;
-  role: 'user' | 'admin';
+  role: 'user' | 'admin' | 'super_admin';
   status: 'active' | 'disabled';
   credits: number;
+  unlimitedCredits?: boolean;
   createdAt?: string;
   updatedAt?: string;
   lastCheckInAt?: string;
+  permissions?: Record<string, boolean>;
+}
+
+export interface FeatureKey {
+  key: string;
+  label: string;
+  defaultEnabled: boolean;
+}
+
+export interface ModelPricing {
+  model_key: string;
+  label: string;
+  pricing_type: 'seedance2' | 'seedance15';
+  price_no_video_low: number;
+  price_no_video_high: number;
+  price_with_video_low: number;
+  price_with_video_high: number;
+  price_audio: number;
+  price_silent: number;
+  draft_factor_audio: number;
+  draft_factor_silent: number;
+  default_fps: number;
+  enabled: number;
+  sort_order: number;
+  description: string | null;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface LoginCredentials {
@@ -30,7 +58,7 @@ export interface LoginCredentials {
 export interface RegisterCredentials {
   email: string;
   password: string;
-  emailCode: string;
+  emailCode?: string;
 }
 
 export interface AuthResponse {
@@ -55,14 +83,18 @@ export enum AppView {
   LOGIN = 'LOGIN',
   REGISTER = 'REGISTER',
   SINGLE_TASK = 'SINGLE_TASK',
-  BATCH_MANAGEMENT = 'BATCH_MANAGEMENT',
   DOWNLOAD_MANAGEMENT = 'DOWNLOAD_MANAGEMENT',
   SETTINGS = 'SETTINGS',
   ADMIN = 'ADMIN',
   PROFILE = 'PROFILE',
 }
 
-export type ReferenceMode = '全能参考' | '首帧参考' | '尾帧参考';
+export type ReferenceMode = 'reference' | 'first_last_frame';
+
+export interface FrameReferenceFlags {
+  firstFrameProvided?: boolean;
+  lastFrameProvided?: boolean;
+}
 
 export interface UploadedImage {
   id: string;
@@ -71,12 +103,26 @@ export interface UploadedImage {
   index: number;
 }
 
+export interface UploadedFile {
+  id: string;
+  file: File;
+  previewUrl: string;   // objectURL for images/videos, '' for audio
+  name: string;
+  size: number;
+  mediaType: 'image' | 'video' | 'audio';
+  ossUrl?: string;      // set after OSS upload
+  uploadProgress?: number; // 0-100
+}
+
 export interface GenerateVideoRequest {
   prompt: string;
   model: ModelId;
   ratio: AspectRatio;
   duration: Duration;
-  files: File[];
+  files: File[];         // legacy direct upload
+  imageUrls?: string[];  // OSS image URLs
+  videoUrl?: string;     // OSS video URL
+  audioUrl?: string;     // OSS audio URL
 }
 
 export interface VideoGenerationResponse {
@@ -114,59 +160,28 @@ export const RATIO_OPTIONS: RatioOption[] = [
 
 export const DURATION_OPTIONS: Duration[] = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
-export const REFERENCE_MODES: ReferenceMode[] = ['全能参考', '首帧参考', '尾帧参考'];
+export const REFERENCE_MODES: ReferenceMode[] = ['reference', 'first_last_frame'];
 
+/**
+ * @deprecated 仅作为运行时拉取 /api/model-pricing 失败时的兜底；正常情况下使用 listEnabledModels()
+ */
 export const MODEL_OPTIONS: ModelOption[] = [
-  {
-    value: 'seedance-2.0',
-    label: 'Seedance 2.0',
-    description: '全能主角，音视频图均可参考 (暂不支持真人入镜)',
-  },
-  {
-    value: 'seedance-2.0-vip',
-    label: 'Seedance 2.0 VIP',
-    description: 'VIP专属720p全能模型，音视频图均可参考',
-  },
+  // {
+  //   value: 'seedance-2.0',
+  //   label: 'Seedance 2.0',
+  //   description: '全能模型，支持文生视频和图生视频',
+  // },
   {
     value: 'seedance-2.0-fast',
     label: 'Seedance 2.0 Fast',
-    description: '精简时长，音视频图均可参考 (暂不支持真人入镜)',
+    description: '快速模型，生成速度更快',
   },
-  {
-    value: 'seedance-2.0-fast-vip',
-    label: 'Seedance 2.0 Fast VIP',
-    description: 'VIP专属720p快速模型，音视频图均可参考',
-  },
+  // {
+  //   value: 'seedance-1.5-pro',
+  //   label: 'Seedance 1.5 Pro',
+  //   description: '专业模型，适合高质量场景',
+  // },
 ];
-
-export interface JimengSessionAccount {
-  id: number;
-  userId: number;
-  name: string;
-  sessionId: string;
-  isDefault: boolean;
-  isEnabled: boolean;
-  priority: number;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface JimengSessionAccountInput {
-  name?: string;
-  sessionId: string;
-  isEnabled?: boolean;
-  priority?: number;
-}
-
-export type EffectiveSessionSource = 'user_default' | 'legacy_global' | 'env_default' | 'none';
-
-export interface EffectiveSessionResolution {
-  source: EffectiveSessionSource;
-  sessionId: string;
-  account: JimengSessionAccount | null;
-  accounts: JimengSessionAccount[];
-  defaultAccount: JimengSessionAccount | null;
-}
 
 /**
  * 项目管理相关类型定义（新增）
@@ -180,12 +195,11 @@ export interface Project {
   name: string;
   description?: string;
   settings_json?: string;
-  video_save_path?: string;
-  default_concurrent?: number;
-  default_min_interval?: number;
-  default_max_interval?: number;
+  user_id?: number;
   task_count?: number;
   completed_count?: number;
+  member_count?: number;
+  my_role?: 'owner' | 'admin' | 'member';
   created_at: string;
   updated_at: string;
 }
@@ -206,14 +220,8 @@ export interface ProjectSettings {
 export interface Task {
   id: number;
   project_id: number;
-  batch_id?: number;
+  user_id?: number;
   prompt: string;
-  task_kind: TaskKind;
-  source_task_id?: number | null;
-  row_group_id?: string | null;
-  row_index?: number | null;
-  video_count: number;
-  output_index?: number | null;
   status: TaskStatus;
   submit_id?: string | null;
   history_id?: string | null;
@@ -226,10 +234,6 @@ export interface Task {
   submitted_at?: string | null;
   account_info?: string | null;
   progress?: string | null;
-  audio_path?: string;
-  audio_uri?: string;
-  send_count?: number;
-  last_sent_at?: string;
   created_at: string;
   updated_at: string;
   started_at?: string;
@@ -237,10 +241,9 @@ export interface Task {
   error_message?: string | null;
   retry_count?: number;
   project_name?: string;
+  created_by_email?: string;
   assets?: TaskAsset[];
 }
-
-export type TaskKind = 'draft' | 'output';
 
 /**
  * 任务状态
@@ -265,109 +268,18 @@ export interface TaskAsset {
 }
 
 /**
- * 批量任务
- */
-export interface Batch {
-  id: number;
-  name?: string;
-  project_id: number;
-  task_ids: string; // JSON 数组
-  status: BatchStatus;
-  total_count: number;
-  completed_count: number;
-  failed_count: number;
-  cancelled_count: number;
-  concurrent_count: number;
-  min_interval: number;
-  max_interval: number;
-  created_at: string;
-  started_at?: string;
-  completed_at?: string;
-}
-
-/**
- * 批量任务状态
- */
-export type BatchStatus =
-  | 'pending'    // 等待中
-  | 'running'    // 运行中
-  | 'paused'     // 已暂停
-  | 'done'       // 已完成
-  | 'error'      // 出错
-  | 'cancelled'; // 已取消
-
-export interface BatchTaskSnapshot {
-  taskId: number;
-  prompt: string;
-  status: TaskStatus;
-  progress?: string;
-  errorMessage?: string;
-  submitId?: string;
-  historyId?: string;
-  itemId?: string;
-  videoUrl?: string;
-  sourceTaskId?: number;
-  rowGroupId?: string;
-  outputIndex?: number;
-  assetCount?: number;
-}
-
-export interface BatchStatusDetail {
-  batchId: number;
-  projectId: number;
-  name?: string;
-  status: BatchStatus;
-  totalCount: number;
-  completedCount: number;
-  failedCount: number;
-  cancelledCount: number;
-  currentRunning: number;
-  queueLength: number;
-  concurrentCount: number;
-  createdAt?: string;
-  startedAt?: string;
-  completedAt?: string;
-  tasks: BatchTaskSnapshot[];
-}
-
-export interface InvalidBatchTask {
-  taskId: number;
-  prompt: string;
-  reason: string;
-}
-
-export interface BatchStartResult {
-  batchId: number;
-  totalTasks: number;
-}
-
-/**
  * 全局设置
  */
 export interface Settings {
   model?: string;
   ratio?: string;
   duration?: string;
+  resolution?: string;
   reference_mode?: string;
   download_path?: string;
   max_concurrent?: string;
   min_interval?: string;
   max_interval?: string;
-}
-
-/**
- * 定时任务
- */
-export interface Schedule {
-  id: number;
-  name: string;
-  project_id?: number;
-  task_ids?: string; // JSON 数组
-  cron_expression: string;
-  enabled: number;
-  last_run_at?: string;
-  next_run_at?: string;
-  created_at: string;
 }
 
 /**
@@ -412,6 +324,10 @@ export type DownloadStatus =
 export interface DownloadTask {
   id: number;
   prompt: string;
+  model?: string;
+  ratio?: string;
+  duration?: string;
+  resolution?: string;
   status: TaskStatus;
   download_status: DownloadStatus;
   video_url?: string;
@@ -423,10 +339,13 @@ export interface DownloadTask {
   history_id?: string;
   created_at: string;
   completed_at?: string;
+  error_message?: string | null;
+  project_id?: number;
   project_name?: string;
   hasHistory: boolean;
   model_type: 'image' | 'video';
   effective_download_status: DownloadStatus;
+  assets?: Array<{ assetType: string; uri: string; originalName?: string | null }>;
 }
 
 /**
@@ -438,3 +357,71 @@ export interface DownloadTaskList {
   page: number;
   pageSize: number;
 }
+
+/**
+ * 项目资产
+ */
+export interface ProjectAsset {
+  id: number;
+  project_id: number;
+  asset_group_id?: number;
+  volc_asset_id?: string;
+  volc_group_id?: string;   // ARK GroupId，用于前端分组
+  name: string;
+  description?: string;
+  file_type: 'image' | 'video' | 'audio';
+  file_size?: number;
+  file_url?: string;
+  thumbnail_url?: string;
+  status: 'pending' | 'uploading' | 'active' | 'rejected' | 'deleted';
+  review_status: 'pending' | 'approved' | 'rejected';
+  auto_inject: boolean;
+  uploaded_by?: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectAssetList {
+  assets: ProjectAsset[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+/**
+ * 使用量日志
+ */
+export interface UsageLog {
+  id: number;
+  user_id: number;
+  task_id?: number;
+  model: string;
+  action: string;
+  credits_cost: number;
+  status: 'success' | 'failed';
+  error_message?: string;
+  created_at: string;
+}
+
+export interface UsageStats {
+  model: string;
+  action: string;
+  call_count: number;
+  total_credits: number;
+  success_count: number;
+  failed_count: number;
+}
+
+/**
+ * 项目成员
+ */
+export interface ProjectMember {
+  id: number;
+  project_id: number;
+  user_id: number;
+  role: 'owner' | 'admin' | 'member';
+  email?: string;
+  user_role?: string;
+  created_at: string;
+}
+

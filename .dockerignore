@@ -1,9 +1,9 @@
 node_modules
 server/node_modules
+server/data
 npm-debug.log
 dist
 .git
-.env
 .env.local
 logs
 *.png
@@ -11,3 +11,5 @@ logs
 .claude
 .ipynb_checkpoints
 doc
+server/browser-service.js
+server/test-ark-api.js

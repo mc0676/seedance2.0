@@ -1,14 +1,17 @@
 import { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AppProvider } from './context/AppContext';
+import { useApp } from './context/AppContext';
 import Sidebar from './components/Sidebar';
+import NoProjectGate from './components/NoProjectGate';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import AdminPage from './pages/AdminPage';
 import SingleTaskPage from './pages/SingleTaskPage';
-import BatchManagementPage from './pages/BatchManagement';
+import ImageGenPage from './pages/ImageGenPage';
 import SettingsPage from './pages/Settings';
 import DownloadManagementPage from './pages/DownloadManagement';
+import ProjectWorkspacePage from './pages/ProjectWorkspacePage';
 import type { User } from './types';
 import { getCurrentUser } from './services/authService';
 
@@ -26,7 +29,7 @@ function ProtectedRoute({
     return <Navigate to="/login" replace />;
   }
 
-  if (requireAdmin && currentUser.role !== 'admin') {
+  if (requireAdmin && currentUser.role !== 'admin' && currentUser.role !== 'super_admin') {
     return <Navigate to="/" replace />;
   }
 
@@ -43,12 +46,16 @@ function MainLayout({
   onLogout: () => void;
   children: React.ReactNode;
 }) {
+  const { state } = useApp();
+  const needsProject = !state.currentProject;
+
   return (
     <div className="min-h-screen bg-[#0f111a]">
       <Sidebar currentUser={currentUser} onLogout={onLogout} />
-      <main className="lg:pl-60 pt-16 lg:pt-0 min-h-screen">
+      <main className="lg:pl-80 pt-16 lg:pt-0 min-h-screen">
         {children}
       </main>
+      {needsProject && <NoProjectGate />}
     </div>
   );
 }
@@ -133,16 +140,6 @@ function AppContent() {
           }
         />
         <Route
-          path="/batch"
-          element={
-            <ProtectedRoute currentUser={currentUser}>
-              <MainLayout currentUser={currentUser} onLogout={handleLogout}>
-                <BatchManagementPage />
-              </MainLayout>
-            </ProtectedRoute>
-          }
-        />
-        <Route
           path="/download"
           element={
             <ProtectedRoute currentUser={currentUser}>
@@ -168,6 +165,28 @@ function AppContent() {
             <ProtectedRoute requireAdmin currentUser={currentUser}>
               <MainLayout currentUser={currentUser} onLogout={handleLogout}>
                 <AdminPage />
+              </MainLayout>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/image-gen"
+          element={
+            <ProtectedRoute currentUser={currentUser}>
+              <MainLayout currentUser={currentUser} onLogout={handleLogout}>
+                <ImageGenPage />
+              </MainLayout>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/assets"
+          element={
+            <ProtectedRoute currentUser={currentUser}>
+              <MainLayout currentUser={currentUser} onLogout={handleLogout}>
+                <ProjectWorkspacePage />
               </MainLayout>
             </ProtectedRoute>
           }

@@ -145,6 +145,7 @@ export function AppProvider({ children, currentUser }: { children: ReactNode; cu
       dispatch({ type: 'SET_CURRENT_TASK', payload: null });
       dispatch({ type: 'SET_ERROR', payload: null });
       dispatch({ type: 'SET_LOADING', payload: false });
+      localStorage.removeItem('currentProjectId');
       return;
     }
 
@@ -152,6 +153,26 @@ export function AppProvider({ children, currentUser }: { children: ReactNode; cu
       dispatch({ type: 'SET_LOADING', payload: true });
       const projects = await projectService.getProjects();
       dispatch({ type: 'SET_PROJECTS', payload: projects });
+
+      // Restore previously selected project from localStorage
+      const savedId = localStorage.getItem('currentProjectId');
+      let toSelect: Project | null = null;
+      if (savedId) {
+        toSelect = projects.find((p) => p.id === Number(savedId)) ?? null;
+        if (!toSelect) {
+          localStorage.removeItem('currentProjectId');
+        }
+      }
+      if (!toSelect && projects.length > 0) {
+        toSelect = projects[0];
+      }
+      if (toSelect) {
+        dispatch({ type: 'SET_CURRENT_PROJECT', payload: toSelect });
+        // Load tasks but don't block — errors handled inside loadProjectTasks
+        projectService.getProjectTasks(toSelect.id).then((tasks) => {
+          dispatch({ type: 'SET_TASKS', payload: tasks });
+        }).catch(() => {});
+      }
     } catch (error) {
       dispatch({ type: 'SET_ERROR', payload: error instanceof Error ? error.message : '加载项目失败' });
     } finally {
@@ -201,8 +222,10 @@ export function AppProvider({ children, currentUser }: { children: ReactNode; cu
   const selectProject = useCallback((project: Project | null) => {
     dispatch({ type: 'SET_CURRENT_PROJECT', payload: project });
     if (project) {
+      localStorage.setItem('currentProjectId', String(project.id));
       void loadProjectTasks(project.id);
     } else {
+      localStorage.removeItem('currentProjectId');
       dispatch({ type: 'SET_TASKS', payload: [] });
     }
   }, [loadProjectTasks]);

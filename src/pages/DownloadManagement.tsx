@@ -1,7 +1,29 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import * as downloadService from '../services/downloadService';
 import type { DownloadTask } from '../types/index';
+import { useApp } from '../context/AppContext';
 
+function CheckIcon({ checked, indeterminate }: { checked: boolean; indeterminate?: boolean }) {
+  if (indeterminate) {
+    return (
+      <div className="w-5 h-5 rounded-lg bg-purple-500/30 border-2 border-purple-400 flex items-center justify-center transition-all">
+        <div className="w-2.5 h-0.5 rounded-full bg-purple-400" />
+      </div>
+    );
+  }
+  if (checked) {
+    return (
+      <div className="w-5 h-5 rounded-lg bg-gradient-to-br from-purple-500 to-indigo-500 flex items-center justify-center shadow-md shadow-purple-500/30 transition-all scale-110">
+        <svg viewBox="0 0 12 10" className="w-3 h-3" fill="none">
+          <path d="M1.5 5L4.5 8L10.5 1.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+      </div>
+    );
+  }
+  return (
+    <div className="w-5 h-5 rounded-lg border-2 border-dashed border-gray-600 bg-[#1c1f2e] hover:border-purple-400/60 transition-all" />
+  );
+}
 interface DownloadState {
   tasks: DownloadTask[];
   total: number;
@@ -12,6 +34,7 @@ interface DownloadState {
   selectedTaskIds: number[];
   isLoading: boolean;
   downloadingIds: Set<number>;
+  previewTask: DownloadTask | null;
 }
 
 interface GeneratingTask {
@@ -22,6 +45,8 @@ interface GeneratingTask {
 }
 
 export default function DownloadManagementPage() {
+  const { state: appState } = useApp();
+  const currentProjectId = appState.currentProject?.id ?? null;
   const [state, setState] = useState<DownloadState>({
     tasks: [],
     total: 0,
@@ -32,13 +57,16 @@ export default function DownloadManagementPage() {
     selectedTaskIds: [],
     isLoading: false,
     downloadingIds: new Set(),
+    previewTask: null,
   });
 
-  const { tasks, total, page, pageSize, statusFilter, typeFilter, selectedTaskIds, isLoading, downloadingIds } = state;
+  const { tasks, total, page, pageSize, statusFilter, typeFilter, selectedTaskIds, isLoading, downloadingIds, previewTask } = state;
 
   // 轮询引用
   const pollIntervalRef = useRef<number | null>(null);
   const hasInitializedRef = useRef(false);
+  const dragStartIndexRef = useRef<number | null>(null);
+  const dragSelectingRef = useRef(true);
   const [generatingTasks, setGeneratingTasks] = useState<GeneratingTask[]>([]);
 
   const toGeneratingTasks = (items: Array<{ taskId: number; historyId: string; createdAt: string }> = []) =>
@@ -71,7 +99,7 @@ export default function DownloadManagementPage() {
   const loadTasks = useCallback(async () => {
     setState((prev) => ({ ...prev, isLoading: true }));
     try {
-      const result = await downloadService.getDownloadTasks(statusFilter, typeFilter, page, pageSize);
+      const result = await downloadService.getDownloadTasks(statusFilter, typeFilter, page, pageSize, currentProjectId);
       setState((prev) => ({
         ...prev,
         tasks: result.tasks,
@@ -82,7 +110,7 @@ export default function DownloadManagementPage() {
       alert(`加载任务列表失败：${error instanceof Error ? error.message : error}`);
       setState((prev) => ({ ...prev, isLoading: false }));
     }
-  }, [statusFilter, typeFilter, page, pageSize]);
+  }, [statusFilter, typeFilter, page, pageSize, currentProjectId]);
 
   const refreshGeneratingState = useCallback(async ({
     showSummary = false,
@@ -135,7 +163,7 @@ export default function DownloadManagementPage() {
   // 刷新任务列表（获取已生成的视频）
   const handleRefresh = async () => {
     try {
-      await refreshGeneratingState({ showSummary: true });
+      await refreshGeneratingState({ silentError: true });
     } catch (error) {
       console.error('手动刷新失败:', error);
     }
@@ -152,41 +180,44 @@ export default function DownloadManagementPage() {
     }
   }, [generatingTasks.length, refreshGeneratingState]);
 
-  // 启动轮询
+  // 启动轮询 + 每秒更新已等待时间
   useEffect(() => {
     if (generatingTasks.length > 0) {
       pollGeneratingTasks();
       pollIntervalRef.current = window.setInterval(pollGeneratingTasks, 5000);
     }
 
+    const tickInterval = window.setInterval(() => {
+      setGeneratingTasks((prev) => prev.map((t) => ({ ...t, elapsedSeconds: t.elapsedSeconds + 1 })));
+    }, 1000);
+
     return () => {
       if (pollIntervalRef.current !== null) {
         window.clearInterval(pollIntervalRef.current);
         pollIntervalRef.current = null;
       }
+      window.clearInterval(tickInterval);
     };
   }, [generatingTasks.length, pollGeneratingTasks]);
 
-  // 从即梦平台同步
-  const handleSyncFromJimeng = async () => {
-    if (!confirm('确定要从即梦平台同步所有已生成的视频记录吗？\n\n这将会把即梦平台上的所有作品添加到本地任务列表。')) {
-      return;
-    }
+  // 预览视频
+  const handlePreview = (task: DownloadTask) => {
+    setState((prev) => ({ ...prev, previewTask: task }));
+  };
 
-    try {
-      const result = await downloadService.syncFromJimeng();
-      alert(`同步完成！\n从即梦平台获取了 ${result.total} 条记录\n成功同步 ${result.synced} 条`);
-      loadTasks();
-    } catch (error) {
-      alert(`同步失败：${error instanceof Error ? error.message : error}`);
-    }
+  const handleClosePreview = () => {
+    setState((prev) => ({ ...prev, previewTask: null }));
   };
 
   // 计算生成时长
   const formatElapsed = (seconds: number) => {
+    if (seconds < 60) return `${seconds}秒`;
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
-    return `${mins}分${secs.toString().padStart(2, '0')}秒`;
+    if (mins < 60) return `${mins}分${secs.toString().padStart(2, '0')}秒`;
+    const hours = Math.floor(mins / 60);
+    const remainMins = mins % 60;
+    return `${hours}小时${remainMins}分`;
   };
   const withDownloadingState = async (taskId: number, action: () => Promise<void>) => {
     if (downloadingIds.has(taskId)) return;
@@ -207,73 +238,38 @@ export default function DownloadManagementPage() {
     }
   };
 
-  const handleDownload = async (taskId: number) => {
-    await withDownloadingState(taskId, async () => {
+  const handleBrowserDownload = async (task: DownloadTask) => {
+    const filename = `task_${task.id}_${(task.prompt || 'video').substring(0, 20).replace(/[^\w\u4e00-\u9fa5]/g, '_')}.mp4`;
+    // 有远程 URL 直接走代理下载，无需先保存到服务器
+    if (task.video_url) {
+      downloadService.downloadVideoFromRemoteUrl(task.video_url, filename);
+      // markDownloaded after triggering download (fire-and-forget refresh)
+      downloadService.markDownloaded(task.id).then(() => loadTasks()).catch(() => {});
+      return;
+    }
+    // 兜底：已下载到服务器的走 token 下载
+    await withDownloadingState(task.id, async () => {
       try {
-        await downloadService.downloadVideo(taskId);
-        alert('下载成功');
-        loadTasks();
+        await downloadService.downloadLocalVideoFile(task.id, filename);
       } catch (error) {
         alert(`下载失败：${error instanceof Error ? error.message : error}`);
       }
     });
   };
 
-  const handleBrowserDownload = async (task: DownloadTask) => {
-    await withDownloadingState(task.id, async () => {
-      try {
-        const fallbackFilename = task.video_path?.split('/').pop() || `${task.project_name || 'video'}_task${task.id}.mp4`;
-        await downloadService.downloadLocalVideoFile(task.id, fallbackFilename);
-      } catch (error) {
-        alert(`下载到本地失败：${error instanceof Error ? error.message : error}`);
-      }
-    });
-  };
-
-  // 批量下载
-  const handleBatchDownload = async () => {
-    if (selectedTaskIds.length === 0) {
-      alert('请先选择要下载的任务');
-      return;
-    }
-
-    try {
-      const results = await downloadService.batchDownloadVideos(selectedTaskIds);
-      const successCount = results.filter((r) => r.success).length;
-      alert(`批量下载完成：成功 ${successCount} 个，失败 ${results.length - successCount} 个`);
-      loadTasks();
-    } catch (error) {
-      alert(`批量下载失败：${error instanceof Error ? error.message : error}`);
-    }
+  // 批量下载（浏览器逐个触发）
+  const handleBatchDownload = () => {
+    if (selectedTaskIds.length === 0) return;
+    const selected = tasks.filter((t) => selectedTaskIds.includes(t.id) && t.video_url);
+    if (selected.length === 0) { alert('所选任务中没有可下载的视频'); return; }
+    selected.forEach((task) => handleBrowserDownload(task));
   };
 
   // 下载全部待下载
-  const handleDownloadAllPending = async () => {
-    const pendingIds = tasks
-      .filter((t) => t.effective_download_status === 'pending' && !!t.video_url)
-      .map((t) => t.id);
-    if (pendingIds.length === 0) {
-      alert('没有待下载的任务');
-      return;
-    }
-
-    try {
-      const results = await downloadService.batchDownloadVideos(pendingIds);
-      const successCount = results.filter((r) => r.success).length;
-      alert(`下载完成：成功 ${successCount} 个，失败 ${results.length - successCount} 个`);
-      loadTasks();
-    } catch (error) {
-      alert(`批量下载失败：${error instanceof Error ? error.message : error}`);
-    }
-  };
-
-  // 打开文件夹
-  const handleOpenFolder = async (taskId: number) => {
-    try {
-      await downloadService.openVideoFolder(taskId);
-    } catch (error) {
-      alert(`打开文件夹失败：${error instanceof Error ? error.message : error}`);
-    }
+  const handleDownloadAllPending = () => {
+    const pending = tasks.filter((t) => t.effective_download_status === 'pending' && t.video_url);
+    if (pending.length === 0) { alert('没有待下载的任务'); return; }
+    pending.forEach((task) => handleBrowserDownload(task));
   };
 
   // 删除任务
@@ -288,16 +284,6 @@ export default function DownloadManagementPage() {
     }
   };
 
-  // 切换任务选择
-  const toggleTaskSelection = (taskId: number) => {
-    setState((prev) => ({
-      ...prev,
-      selectedTaskIds: prev.selectedTaskIds.includes(taskId)
-        ? prev.selectedTaskIds.filter((id) => id !== taskId)
-        : [...prev.selectedTaskIds, taskId],
-    }));
-  };
-
   // 全选/取消全选
   const toggleSelectAll = () => {
     if (selectedTaskIds.length === tasks.length) {
@@ -309,6 +295,37 @@ export default function DownloadManagementPage() {
       }));
     }
   };
+
+  // 拖选逻辑
+  const handleRowMouseDown = (index: number, taskId: number) => {
+    dragStartIndexRef.current = index;
+    dragSelectingRef.current = !selectedTaskIds.includes(taskId);
+    setState((prev) => ({
+      ...prev,
+      selectedTaskIds: dragSelectingRef.current
+        ? [...new Set([...prev.selectedTaskIds, taskId])]
+        : prev.selectedTaskIds.filter((id) => id !== taskId),
+    }));
+  };
+
+  const handleRowMouseEnter = (index: number) => {
+    if (dragStartIndexRef.current === null) return;
+    const start = Math.min(dragStartIndexRef.current, index);
+    const end = Math.max(dragStartIndexRef.current, index);
+    const rangeIds = tasks.slice(start, end + 1).map((t) => t.id);
+    setState((prev) => ({
+      ...prev,
+      selectedTaskIds: dragSelectingRef.current
+        ? [...new Set([...prev.selectedTaskIds, ...rangeIds])]
+        : prev.selectedTaskIds.filter((id) => !rangeIds.includes(id)),
+    }));
+  };
+
+  useEffect(() => {
+    const stopDrag = () => { dragStartIndexRef.current = null; };
+    document.addEventListener('mouseup', stopDrag);
+    return () => document.removeEventListener('mouseup', stopDrag);
+  }, []);
 
   // 分页
   const totalPages = Math.ceil(total / pageSize);
@@ -403,17 +420,6 @@ export default function DownloadManagementPage() {
 
         <div className="flex gap-2">
           <button
-            onClick={handleSyncFromJimeng}
-            disabled={isLoading}
-            className="px-4 py-1.5 bg-green-600 text-white rounded-md text-sm hover:bg-green-500 disabled:opacity-50 flex items-center gap-1 transition-colors"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-            从即梦同步
-          </button>
-
-          <button
             onClick={handleRefresh}
             disabled={isLoading}
             className="px-4 py-1.5 bg-purple-600 text-white rounded-md text-sm hover:bg-purple-500 disabled:opacity-50 flex items-center gap-1 transition-colors"
@@ -441,7 +447,7 @@ export default function DownloadManagementPage() {
             className="px-4 py-1.5 bg-indigo-600 text-white rounded-md text-sm hover:bg-indigo-500 disabled:opacity-50 flex items-center gap-1 transition-colors"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
             </svg>
             批量下载 ({selectedTaskIds.length})
           </button>
@@ -458,13 +464,13 @@ export default function DownloadManagementPage() {
           <table className="w-full">
             <thead className="bg-[#0f111a] border-b border-gray-800">
               <tr>
-                <th className="px-4 py-3 text-left">
-                  <input
-                    type="checkbox"
-                    checked={selectedTaskIds.length === tasks.length && tasks.length > 0}
-                    onChange={toggleSelectAll}
-                    className="rounded border-gray-700 bg-[#1c1f2e] text-purple-600 focus:ring-purple-500 focus:ring-offset-0"
-                  />
+                <th className="w-12 p-0 text-left">
+                  <div
+                    className="flex items-center justify-center h-full py-3 px-3 cursor-pointer"
+                    onClick={toggleSelectAll}
+                  >
+                    <CheckIcon checked={selectedTaskIds.length === tasks.length && tasks.length > 0} indeterminate={selectedTaskIds.length > 0 && selectedTaskIds.length < tasks.length} />
+                  </div>
                 </th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase">任务 ID</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase">项目</th>
@@ -476,16 +482,17 @@ export default function DownloadManagementPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-800">
-              {tasks.map((task) => (
-                <tr key={task.id} className="hover:bg-[#0f111a]/50 transition-colors">
-                  <td className="px-4 py-3">
-                    <input
-                      type="checkbox"
-                      checked={selectedTaskIds.includes(task.id)}
-                      onChange={() => toggleTaskSelection(task.id)}
-                      className="rounded border-gray-700 bg-[#1c1f2e] text-purple-600 focus:ring-purple-500 focus:ring-offset-0"
-                      disabled={task.effective_download_status !== 'pending'}
-                    />
+              {tasks.map((task, index) => (
+                <tr
+                  key={task.id}
+                  className={`transition-colors select-none cursor-pointer ${selectedTaskIds.includes(task.id) ? 'bg-purple-500/5' : 'hover:bg-[#0f111a]/50'}`}
+                  onMouseDown={(e) => { e.preventDefault(); handleRowMouseDown(index, task.id); }}
+                  onMouseEnter={() => handleRowMouseEnter(index)}
+                >
+                  <td className="w-12 p-0">
+                    <div className="flex items-center justify-center h-full min-h-[52px] px-3">
+                      <CheckIcon checked={selectedTaskIds.includes(task.id)} />
+                    </div>
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-300 font-mono">
                     {task.id.toString().padStart(6, '0')}
@@ -525,9 +532,33 @@ export default function DownloadManagementPage() {
                   <td className="px-4 py-3 text-sm text-gray-400">
                     {new Date(task.created_at).toLocaleString('zh-CN')}
                   </td>
-                  <td className="px-4 py-3 text-right">
+                  <td className="px-4 py-3 text-right" onMouseDown={(e) => e.stopPropagation()}>
                     <div className="flex justify-end gap-2">
-                      {/* 生成中的任务：显示"继续监听"按钮 */}
+                      {/* 有视频 URL：预览 + 下载 */}
+                      {task.video_url && (
+                        <>
+                          <button
+                            onClick={() => handlePreview(task)}
+                            className="p-1 text-purple-400 hover:bg-purple-500/10 rounded transition-colors"
+                            title="预览视频"
+                          >
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                          </button>
+                          <button
+                            onClick={() => handleBrowserDownload(task)}
+                            className="p-1 text-blue-400 hover:bg-blue-500/10 rounded transition-colors"
+                            title="下载视频"
+                          >
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                            </svg>
+                          </button>
+                        </>
+                      )}
+                      {/* 生成中：继续监听 */}
                       {task.effective_download_status === 'generating' && task.history_id && (
                         <button
                           onClick={() => handleWatchTask(task.id, task.history_id!, task.created_at)}
@@ -539,55 +570,6 @@ export default function DownloadManagementPage() {
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
                           </svg>
                         </button>
-                      )}
-                      {task.effective_download_status === 'pending' && !!task.video_url && (
-                        <button
-                          onClick={() => handleDownload(task.id)}
-                          disabled={downloadingIds.has(task.id)}
-                          className="p-1 text-blue-400 hover:bg-blue-500/10 rounded disabled:opacity-50 transition-colors"
-                          title="下载"
-                        >
-                          {downloadingIds.has(task.id) ? (
-                            <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
-                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                            </svg>
-                          ) : (
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                            </svg>
-                          )}
-                        </button>
-                      )}
-                      {task.effective_download_status === 'done' && task.video_path && (
-                        <>
-                          <button
-                            onClick={() => handleBrowserDownload(task)}
-                            disabled={downloadingIds.has(task.id)}
-                            className="p-1 text-blue-400 hover:bg-blue-500/10 rounded disabled:opacity-50 transition-colors"
-                            title="下载到本机"
-                          >
-                            {downloadingIds.has(task.id) ? (
-                              <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
-                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                              </svg>
-                            ) : (
-                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                              </svg>
-                            )}
-                          </button>
-                          <button
-                            onClick={() => handleOpenFolder(task.id)}
-                            className="p-1 text-green-400 hover:bg-green-500/10 rounded transition-colors"
-                            title="打开文件夹"
-                          >
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                            </svg>
-                          </button>
-                        </>
                       )}
                       <button
                         onClick={() => handleDeleteTask(task.id)}
@@ -628,6 +610,61 @@ export default function DownloadManagementPage() {
             >
               下一页
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* 视频预览弹窗 */}
+      {previewTask && (
+        <div
+          className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4"
+          onClick={handleClosePreview}
+        >
+          <div
+            className="bg-[#1c1f2e] rounded-xl border border-gray-700 max-w-4xl w-full p-4 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-sm text-gray-300 truncate flex-1 mr-4">
+                {previewTask.prompt || `任务 #${previewTask.id}`}
+              </div>
+              <button
+                onClick={handleClosePreview}
+                className="text-gray-400 hover:text-white transition-colors flex-shrink-0"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            {previewTask.video_url ? (
+              <video
+                src={previewTask.video_url}
+                controls
+                autoPlay
+                className="w-full rounded-lg max-h-[70vh] bg-black"
+              />
+            ) : previewTask.video_path || previewTask.download_path ? (
+              <video
+                src={`/api/download/tasks/${previewTask.id}/preview`}
+                controls
+                autoPlay
+                className="w-full rounded-lg max-h-[70vh] bg-black"
+              />
+            ) : (
+              <div className="text-center text-gray-400 py-12">暂无可预览的视频</div>
+            )}
+            <div className="flex justify-end mt-3 gap-2">
+              <button
+                onClick={() => handleBrowserDownload(previewTask)}
+                className="px-4 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-500 transition-colors flex items-center gap-2"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                </svg>
+                下载视频
+              </button>
+            </div>
           </div>
         </div>
       )}

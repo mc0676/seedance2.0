@@ -227,12 +227,8 @@ export function getDefaultDownloadPath() {
     return row.value;
   }
 
-  // 默认下载到用户目录下的 Videos/Seedance 文件夹
-  const homedir = process.platform === 'win32'
-    ? process.env.USERPROFILE
-    : process.env.HOME;
-
-  return path.join(homedir, 'Videos', 'Seedance');
+  // 默认下载到数据卷目录，确保 Docker 重建后文件持久保存
+  return path.join(process.cwd(), 'server', 'data', 'downloads');
 }
 
 /**
@@ -269,15 +265,25 @@ export function getDownloadTasks(options = {}) {
     pageSize = 20,
     userId = null,
     isAdmin = false,
+    projectId = null,
   } = options;
 
-  const whereClauses = ["t.task_kind = 'output'"];
+  const whereClauses = [];
   const params = [];
 
-  // 非管理员用户只能查看自己的任务
+  // 项目过滤（前端按当前工作组限定）
+  if (projectId) {
+    whereClauses.push('t.project_id = ?');
+    params.push(projectId);
+  }
+
+  // 非管理员用户只能查看自己创建的任务或所在工作组的任务
   if (!isAdmin && userId !== null) {
-    whereClauses.push('t.user_id = ?');
-    params.push(userId);
+    whereClauses.push(`(t.user_id = ? OR EXISTS (
+      SELECT 1 FROM project_members pm
+      WHERE pm.project_id = t.project_id AND pm.user_id = ?
+    ))`);
+    params.push(userId, userId);
   }
 
   if (status !== 'all') {
@@ -295,7 +301,7 @@ export function getDownloadTasks(options = {}) {
     return { tasks: [], total: 0, page, pageSize };
   }
 
-  const whereClause = `WHERE ${whereClauses.join(' AND ')}`;
+  const whereClause = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
   const countStmt = db.prepare(`
     SELECT COUNT(*) as count
     FROM tasks t
@@ -308,6 +314,10 @@ export function getDownloadTasks(options = {}) {
     SELECT
       t.id,
       t.prompt,
+      t.model,
+      t.ratio,
+      t.duration,
+      t.resolution,
       t.status,
       t.download_status,
       t.video_url,
@@ -318,16 +328,16 @@ export function getDownloadTasks(options = {}) {
       t.history_id,
       t.item_id,
       t.submit_id,
-      t.source_task_id,
-      t.output_index,
       t.created_at,
       t.completed_at,
+      t.error_message,
+      t.project_id,
       p.name as project_name,
       CASE
-        WHEN t.status = 'generating' OR (t.history_id IS NOT NULL AND t.video_url IS NULL AND t.status != 'cancelled') THEN 'generating'
-        WHEN t.status = 'done' AND t.video_url IS NOT NULL AND (t.download_status IS NULL OR t.download_status = 'pending') THEN 'pending'
-        WHEN t.download_status = 'downloading' THEN 'downloading'
-        WHEN t.download_status = 'done' THEN 'done'
+        WHEN t.status IN ('generating', 'processing') OR (t.history_id IS NOT NULL AND t.video_url IS NULL AND t.status NOT IN ('error', 'cancelled', 'done')) THEN 'generating'
+        WHEN t.status = 'done' AND t.video_url IS NOT NULL AND t.download_status = 'done' THEN 'done'
+        WHEN t.status = 'done' AND t.video_url IS NOT NULL THEN 'pending'
+        WHEN t.status = 'error' OR t.status = 'cancelled' THEN 'failed'
         WHEN t.download_status = 'failed' THEN 'failed'
         ELSE 'failed'
       END as effective_download_status
@@ -341,11 +351,26 @@ export function getDownloadTasks(options = {}) {
   const stmt = db.prepare(query);
   const tasks = stmt.all(...params, pageSize, offset);
 
+  // 批量拉取素材（image_uri 有内容的才有意义）
+  const taskIds = tasks.map((t) => t.id);
+  let assetsByTask = {};
+  if (taskIds.length > 0) {
+    const placeholders = taskIds.map(() => '?').join(',');
+    const assets = db.prepare(
+      `SELECT task_id, asset_type, image_uri, original_name, sort_order FROM task_assets WHERE task_id IN (${placeholders}) AND image_uri IS NOT NULL AND image_uri != '' ORDER BY sort_order ASC`
+    ).all(...taskIds);
+    for (const a of assets) {
+      if (!assetsByTask[a.task_id]) assetsByTask[a.task_id] = [];
+      assetsByTask[a.task_id].push({ assetType: a.asset_type, uri: a.image_uri, originalName: a.original_name || null });
+    }
+  }
+
   return {
     tasks: tasks.map((task) => ({
       ...task,
       hasHistory: !!task.history_id,
       model_type: 'video',
+      assets: assetsByTask[task.id] || [],
     })),
     total,
     page,

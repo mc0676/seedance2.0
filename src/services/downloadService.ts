@@ -67,7 +67,8 @@ export async function getDownloadTasks(
   status: string = 'all',
   type: string = 'all',
   page: number = 1,
-  pageSize: number = 20
+  pageSize: number = 20,
+  projectId?: number | null
 ): Promise<DownloadTaskList> {
   const params = new URLSearchParams({
     status,
@@ -75,6 +76,9 @@ export async function getDownloadTasks(
     page: page.toString(),
     pageSize: pageSize.toString(),
   });
+  if (projectId) {
+    params.append('projectId', String(projectId));
+  }
 
   const response = await fetch(`${API_BASE}/download/tasks?${params}`, {
     headers: getAuthHeaders(),
@@ -118,6 +122,24 @@ export async function batchDownloadVideos(
     throw new Error(result.error || '批量下载失败');
   }
   return result.data!;
+}
+
+/**
+ * 标记任务已下载
+ */
+export async function markDownloaded(taskId: number): Promise<void> {
+  await fetch(`${API_BASE}/download/tasks/${taskId}/mark-downloaded`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+  });
+}
+
+/**
+ * 通过代理直接从远程 URL 下载视频到浏览器（无需先保存到服务器）
+ */
+export function downloadVideoFromRemoteUrl(videoUrl: string, filename: string): void {
+  const proxyUrl = `/api/video-proxy?url=${encodeURIComponent(videoUrl)}&download=${encodeURIComponent(filename)}`;
+  triggerBrowserDownload(proxyUrl, filename);
 }
 
 /**
@@ -189,39 +211,6 @@ export async function refreshDownloadTasks(): Promise<{
   }> = await response.json();
   if (!result.success) {
     throw new Error(result.error || '刷新任务列表失败');
-  }
-  return result.data!;
-}
-
-/**
- * 从即梦平台同步所有已生成的视频记录
- */
-export async function syncFromJimeng(): Promise<{
-  synced: number;
-  total: number;
-  items?: Array<{
-    taskId: number;
-    historyId: string;
-    action: 'created' | 'updated';
-    prompt?: string;
-  }>;
-}> {
-  const response = await fetch(`${API_BASE}/download/sync-from-jimeng`, {
-    method: 'POST',
-    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-  });
-  const result: ApiResponse<{
-    synced: number;
-    total: number;
-    items?: Array<{
-      taskId: number;
-      historyId: string;
-      action: 'created' | 'updated';
-      prompt?: string;
-    }>;
-  }> = await response.json();
-  if (!result.success) {
-    throw new Error(result.error || '同步失败');
   }
   return result.data!;
 }

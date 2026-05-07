@@ -1,8 +1,8 @@
-import type { GenerateVideoRequest, VideoGenerationResponse } from '../types';
+import type { GenerateVideoRequest, VideoGenerationResponse, FrameReferenceFlags } from '../types';
 import { getAuthHeaders } from './authService';
 
 export async function generateVideo(
-  request: GenerateVideoRequest,
+  request: GenerateVideoRequest & FrameReferenceFlags & { projectId?: number; resolution?: string; referenceMode?: string },
   onProgress?: (message: string) => void
 ): Promise<VideoGenerationResponse> {
   const formData = new FormData();
@@ -10,12 +10,38 @@ export async function generateVideo(
   formData.append('model', request.model);
   formData.append('ratio', request.ratio);
   formData.append('duration', String(request.duration));
+  if (request.resolution) {
+    formData.append('resolution', request.resolution);
+  }
+  if (request.referenceMode) {
+    formData.append('referenceMode', request.referenceMode);
+  }
+  if (request.projectId) {
+    formData.append('projectId', String(request.projectId));
+  }
+  if (request.firstFrameProvided !== undefined) {
+    formData.append('firstFrameProvided', String(request.firstFrameProvided));
+  }
+  if (request.lastFrameProvided !== undefined) {
+    formData.append('lastFrameProvided', String(request.lastFrameProvided));
+  }
 
+  // 传 OSS URL（新方式）
+  if (request.imageUrls && request.imageUrls.length > 0) {
+    formData.append('imageUrls', JSON.stringify(request.imageUrls));
+  }
+  if (request.videoUrl) {
+    formData.append('videoUrl', request.videoUrl);
+  }
+  if (request.audioUrl) {
+    formData.append('audioUrl', request.audioUrl);
+  }
+
+  // 兼容旧的直接 file 上传
   for (const file of request.files) {
     formData.append('files', file);
   }
 
-  // 第1步: 提交任务
   onProgress?.('正在提交视频生成请求...');
   const submitRes = await fetch('/api/generate-video', {
     method: 'POST',
@@ -33,17 +59,16 @@ export async function generateVideo(
     throw new Error('服务器未返回任务ID');
   }
 
-  // 第2步: 轮询获取结果
   onProgress?.('已提交，等待AI生成视频...');
 
-  const maxPollTime = 25 * 60 * 1000; // 25 分钟
-  const pollInterval = 3000; // 3 秒
+  const maxPollTime = 25 * 60 * 1000;
+  const pollInterval = 3000;
   const startTime = Date.now();
 
   while (Date.now() - startTime < maxPollTime) {
     await new Promise((resolve) => setTimeout(resolve, pollInterval));
 
-    const pollRes = await fetch(`/api/task/${taskId}`);
+    const pollRes = await fetch(`/api/task/${taskId}`, { headers: getAuthHeaders() });
     const pollData = await pollRes.json();
 
     if (pollData.status === 'done') {

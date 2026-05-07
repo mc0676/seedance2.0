@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { login, checkEmailStatus } from '../services/authService';
 import type { User } from '../types';
-import { MailIcon, LockIcon, EyeIcon, EyeOffIcon, SparkleIcon } from '../components/Icons';
+import { MailIcon, LockIcon, EyeIcon, EyeOffIcon } from '../components/Icons';
 
 interface LoginFormData {
   email: string;
@@ -57,10 +57,8 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
       <div className="w-full max-w-md">
         {/* Logo 和标题 */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-500 to-pink-500 mb-4 shadow-lg shadow-purple-500/30">
-            <SparkleIcon className="w-8 h-8 text-white" />
-          </div>
-          <h1 className="text-3xl font-bold text-white mb-2">Seedance 2.0</h1>
+          <img src="https://yunyu-oss.oss-cn-shanghai.aliyuncs.com/LOGO/web_logo.png" alt="云屿智创" className="inline-block w-16 h-16 rounded-2xl mb-4 object-contain" />
+          <h1 className="text-3xl font-bold text-white mb-2">云屿智创</h1>
           <p className="text-gray-400">AI 视频生成平台</p>
         </div>
 
@@ -150,14 +148,6 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
             </p>
           </div>
 
-          {/* 默认管理员账号提示 */}
-          <div className="mt-6 p-4 bg-gray-800/50 rounded-xl border border-gray-700">
-            <p className="text-xs text-gray-400 text-center mb-2">测试账号</p>
-            <div className="flex justify-center gap-4 text-xs text-gray-500">
-              <span>管理员：admin@seedance.com</span>
-              <span>密码：admin123456</span>
-            </div>
-          </div>
         </div>
       </div>
     </div>

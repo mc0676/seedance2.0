@@ -197,76 +197,6 @@ export async function changePassword(oldPassword: string, newPassword: string): 
 }
 
 /**
- * 扣减积分
- */
-export async function deductCredits(amount: number): Promise<{ remainingCredits: number }> {
-  const sessionId = getSessionId();
-
-  if (!sessionId) {
-    throw new Error('未登录');
-  }
-
-  const response = await fetch(`${API_BASE}/credits/deduct`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Session-ID': sessionId,
-    },
-    body: JSON.stringify({ amount }),
-  });
-
-  const data = await response.json();
-
-  if (!response.ok) {
-    throw new Error(data.error || '扣减积分失败');
-  }
-
-  // 更新缓存的用户信息
-  const user = getCachedUser();
-  if (user) {
-    user.credits = data.data.remainingCredits;
-    cacheUser(user);
-  }
-
-  return data.data;
-}
-
-/**
- * 充值积分
- */
-export async function rechargeCredits(amount: number): Promise<{ credits: number }> {
-  const sessionId = getSessionId();
-
-  if (!sessionId) {
-    throw new Error('未登录');
-  }
-
-  const response = await fetch(`${API_BASE}/credits/add`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Session-ID': sessionId,
-    },
-    body: JSON.stringify({ amount }),
-  });
-
-  const data = await response.json();
-
-  if (!response.ok) {
-    throw new Error(data.error || '充值积分失败');
-  }
-
-  // 更新缓存的用户信息
-  const user = getCachedUser();
-  if (user) {
-    user.credits = data.data.credits;
-    cacheUser(user);
-  }
-
-  return data.data;
-}
-
-/**
  * 每日签到
  */
 export async function checkIn(): Promise<{ creditsEarned: number }> {
@@ -301,6 +231,7 @@ export async function checkIn(): Promise<{ creditsEarned: number }> {
 
 /**
  * 获取签到状态
+ * TODO 预留：当前 UI 未消费，留作 Settings/Profile 页签到模块未来接入
  */
 export async function getCheckInStatus(): Promise<{ hasCheckedInToday: boolean; totalCheckIns: number }> {
   const sessionId = getSessionId();
@@ -567,3 +498,160 @@ export async function resetUserPassword(userId: number, newPassword: string): Pr
     throw new Error(data.error || '重置用户密码失败');
   }
 }
+
+// ==================== 功能权限管理 ====================
+
+import type { FeatureKey } from '../types/index';
+
+export async function setUserRole(userId: number, role: 'user' | 'admin' | 'super_admin'): Promise<void> {
+  await adminFetch<unknown>(`/admin/users/${userId}/role`, {
+    method: 'PUT',
+    body: JSON.stringify({ role }),
+  });
+}
+
+
+export interface AdminTaskByAccount {
+  id: number;
+  project_id: number;
+  user_id: number;
+  prompt: string;
+  status: string;
+  video_url: string | null;
+  created_at: string;
+  project_name: string | null;
+  created_by_email: string | null;
+}
+
+async function adminFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: getAuthHeaders({ 'Content-Type': 'application/json', ...(init.headers as any) }),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.success) {
+    throw new Error(data.error || '请求失败');
+  }
+  return data.data as T;
+}
+
+export const listFeatureKeys = () =>
+  adminFetch<FeatureKey[]>('/admin/permissions/features');
+
+export const getDefaultPermissions = () =>
+  adminFetch<Record<string, boolean>>('/admin/permissions/defaults');
+
+export const setDefaultPermissions = (permissions: Record<string, boolean>) =>
+  adminFetch<Record<string, boolean>>('/admin/permissions/defaults', {
+    method: 'PUT',
+    body: JSON.stringify({ permissions }),
+  });
+
+export const getUserPermissions = (userId: number) =>
+  adminFetch<Record<string, boolean>>(`/admin/users/${userId}/permissions`);
+
+export const setUserPermission = (userId: number, featureKey: string, enabled: boolean) =>
+  adminFetch<Record<string, boolean>>(`/admin/users/${userId}/permissions`, {
+    method: 'PUT',
+    body: JSON.stringify({ feature_key: featureKey, enabled }),
+  });
+
+export interface VolcArkTask {
+  id?: string;
+  task_id?: string;
+  model?: string;
+  status?: string;
+  created_at?: number | string;
+  updated_at?: number | string;
+  content?: any;
+  usage?: { total_tokens?: number; completion_tokens?: number };
+  error?: any;
+  [k: string]: any;
+}
+
+export interface VolcArkListResponse {
+  total?: number;
+  data?: VolcArkTask[];
+  items?: VolcArkTask[];
+  tasks?: VolcArkTask[];
+  page_size?: number;
+  page_num?: number;
+  [k: string]: any;
+}
+
+export const listVolcTasks = (params: {
+  apiKey?: string;
+  pageNum?: number;
+  pageSize?: number;
+  model?: string;
+  status?: string;
+}) => {
+  const sp = new URLSearchParams();
+  if (params.apiKey) sp.set('apiKey', params.apiKey);
+  sp.set('pageNum', String(params.pageNum || 1));
+  sp.set('pageSize', String(params.pageSize || 20));
+  if (params.model) sp.set('model', params.model);
+  if (params.status) sp.set('status', params.status);
+  return adminFetch<VolcArkListResponse>(`/admin/volc/tasks?${sp.toString()}`);
+};
+
+export const getVolcTask = (taskId: string, apiKey?: string) => {
+  const sp = new URLSearchParams();
+  if (apiKey) sp.set('apiKey', apiKey);
+  return adminFetch<VolcArkTask>(`/admin/volc/tasks/${encodeURIComponent(taskId)}?${sp.toString()}`);
+};
+
+// ==================== 火山Key组管理 ====================
+
+export interface VolcKeyGroup {
+  id: number;
+  name: string;
+  ark_model_key: string;
+  volc_access_key: string;
+  volc_secret_key: string;
+  is_active: number;
+  note: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export const listVolcKeyGroups = () =>
+  adminFetch<VolcKeyGroup[]>('/admin/volc-key-groups');
+
+export const createVolcKeyGroup = (payload: { name: string; ark_model_key: string; volc_access_key?: string; volc_secret_key?: string; note?: string }) =>
+  adminFetch<VolcKeyGroup>('/admin/volc-key-groups', { method: 'POST', body: JSON.stringify(payload) });
+
+export const updateVolcKeyGroup = (id: number, payload: Partial<VolcKeyGroup>) =>
+  adminFetch<VolcKeyGroup>(`/admin/volc-key-groups/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+
+export const activateVolcKeyGroup = (id: number) =>
+  adminFetch<unknown>(`/admin/volc-key-groups/${id}/activate`, { method: 'PUT' });
+
+export const deleteVolcKeyGroup = (id: number) =>
+  adminFetch<unknown>(`/admin/volc-key-groups/${id}`, { method: 'DELETE' });
+
+// ==================== 速创API Key ====================
+
+export const getWuyinKey = () =>
+  adminFetch<{ key: string }>('/admin/wuyin-key');
+
+export const updateWuyinKey = (key: string) =>
+  adminFetch<unknown>('/admin/wuyin-key', { method: 'PUT', body: JSON.stringify({ key }) });
+
+// ==================== 模型计费管理 ====================
+
+import type { ModelPricing } from '../types/index';
+
+export const listAllModelPricing = () =>
+  adminFetch<ModelPricing[]>('/admin/model-pricing');
+
+export const upsertModelPricing = (modelKey: string, payload: Partial<ModelPricing>) =>
+  adminFetch<ModelPricing>(`/admin/model-pricing/${encodeURIComponent(modelKey)}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+
+export const deleteModelPricing = (modelKey: string) =>
+  adminFetch<unknown>(`/admin/model-pricing/${encodeURIComponent(modelKey)}`, {
+    method: 'DELETE',
+  });

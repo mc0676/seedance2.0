@@ -9,10 +9,11 @@ CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   email TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
-  role TEXT DEFAULT 'user' CHECK (role IN ('user', 'admin')),
+  role TEXT DEFAULT 'user' CHECK (role IN ('user', 'admin', 'super_admin')),
   status TEXT DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
-  credits INTEGER DEFAULT 10, -- 初始赠送 10 积分
-  daily_check_in INTEGER DEFAULT 0, -- 是否已签到
+  credits INTEGER DEFAULT 10,
+  unlimited_credits INTEGER DEFAULT 0,
+  daily_check_in INTEGER DEFAULT 0,
   last_check_in_at DATETIME,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -69,13 +70,11 @@ CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
 CREATE INDEX IF NOT EXISTS idx_sessions_session_id ON sessions(session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
-CREATE INDEX IF NOT EXISTS idx_email_verification_codes_email ON email_verification_codes(email);
-CREATE INDEX IF NOT EXISTS idx_email_verification_codes_expires_at ON email_verification_codes(expires_at);
 
 
--- 插入默认管理员账户 (密码：admin123456)
+-- 插入默认管理员账户 (密码：yunyu512@)
 INSERT OR IGNORE INTO users (email, password_hash, role, status, credits)
-VALUES ('admin@seedance.com', '9e5f160f7992eda2696de915f2f8f90bb3c372555bf686a1f0363ea5df9511ff', 'admin', 'active', 1000);
+VALUES ('admin@yunyu512.top', 'e23b83f0e848670e882ff2d34e67a3cb218c84f6b420e737eea1af79ee45b441', 'super_admin', 'active', 1000);
 
 -- ============================================
 -- 原有业务表结构
@@ -84,38 +83,40 @@ VALUES ('admin@seedance.com', '9e5f160f7992eda2696de915f2f8f90bb3c372555bf686a1f
 -- 项目表
 CREATE TABLE IF NOT EXISTS projects (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL, -- 所属用户 ID
+  user_id INTEGER NOT NULL,
   name TEXT NOT NULL,
   description TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  settings_json TEXT -- 项目级设置（模型、比例、时长等）
+  settings_json TEXT,
+  video_save_path TEXT,
+  default_concurrent INTEGER DEFAULT 5,
+  default_min_interval INTEGER DEFAULT 30000,
+  default_max_interval INTEGER DEFAULT 50000
 );
 
 -- 任务表
 CREATE TABLE IF NOT EXISTS tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL, -- 所属用户 ID
+  user_id INTEGER NOT NULL,
   project_id INTEGER NOT NULL,
   prompt TEXT NOT NULL DEFAULT '',
-  task_kind TEXT NOT NULL DEFAULT 'output' CHECK (task_kind IN ('draft', 'output')),
-  source_task_id INTEGER,
-  row_group_id TEXT,
-  row_index INTEGER,
-  video_count INTEGER NOT NULL DEFAULT 1,
-  output_index INTEGER,
-  status TEXT DEFAULT 'pending', -- pending, generating, done, error, cancelled
+  model TEXT,
+  ratio TEXT,
+  duration TEXT,
+  resolution TEXT,
+  status TEXT DEFAULT 'pending',
   submit_id TEXT,
-  history_id TEXT, -- 即梦 history_record_id
+  history_id TEXT,
   item_id TEXT,
   video_url TEXT,
-  video_path TEXT, -- 本地保存路径
-  download_status TEXT DEFAULT 'pending', -- pending, downloading, done, failed
-  download_path TEXT, -- 下载完成路径
-  downloaded_at DATETIME, -- 下载完成时间
+  video_path TEXT,
+  download_status TEXT DEFAULT 'pending',
+  download_path TEXT,
+  downloaded_at DATETIME,
   submitted_at DATETIME,
-  account_info TEXT, -- 账号信息
-  progress TEXT, -- 生成进度
+  account_info TEXT,
+  progress TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   started_at DATETIME,
@@ -123,16 +124,51 @@ CREATE TABLE IF NOT EXISTS tasks (
   error_message TEXT,
   retry_count INTEGER DEFAULT 0,
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (source_task_id) REFERENCES tasks(id) ON DELETE SET NULL
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+
+-- 项目成员表
+CREATE TABLE IF NOT EXISTS project_members (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  role TEXT DEFAULT 'member' CHECK (role IN ('owner', 'admin', 'member')),
+  invited_by INTEGER,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(project_id, user_id),
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (invited_by) REFERENCES users(id) ON DELETE SET NULL
+);
+
+-- 使用量日志
+CREATE TABLE IF NOT EXISTS usage_logs (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id       INTEGER NOT NULL,
+  task_id       INTEGER,
+  model         TEXT NOT NULL,
+  action        TEXT NOT NULL DEFAULT 'generate_video',
+  credits_cost  INTEGER NOT NULL DEFAULT 0,
+  status        TEXT NOT NULL DEFAULT 'success',
+  error_message TEXT,
+  created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_project_members_project ON project_members(project_id);
+CREATE INDEX IF NOT EXISTS idx_project_members_user ON project_members(user_id);
+CREATE INDEX IF NOT EXISTS idx_usage_logs_user_id ON usage_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_usage_logs_task_id ON usage_logs(task_id);
+CREATE INDEX IF NOT EXISTS idx_usage_logs_created_at ON usage_logs(created_at DESC);
 
 -- 任务素材表
 CREATE TABLE IF NOT EXISTS task_assets (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   task_id INTEGER NOT NULL,
-  asset_type TEXT NOT NULL, -- image, audio
+  asset_type TEXT NOT NULL,
   file_path TEXT NOT NULL,
-  image_uri TEXT, -- 上传到 ImageX 后的 URI
+  image_uri TEXT,
+  original_name TEXT,
   sort_order INTEGER DEFAULT 0,
   FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
@@ -171,59 +207,19 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 
 
--- 定时任务表
-CREATE TABLE IF NOT EXISTS schedules (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL,
-  project_id INTEGER,
-  task_ids TEXT, -- JSON 数组，存储任务 ID 列表
-  cron_expression TEXT NOT NULL, -- cron 表达式
-  enabled INTEGER DEFAULT 1, -- 1=启用，0=禁用
-  last_run_at DATETIME,
-  next_run_at DATETIME,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
-);
 
--- 批量任务表
-CREATE TABLE IF NOT EXISTS batches (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT,
-  project_id INTEGER NOT NULL,
-  task_ids TEXT NOT NULL, -- JSON 数组，存储任务 ID 列表
-  status TEXT DEFAULT 'pending', -- pending, running, done, error, cancelled
-  total_count INTEGER DEFAULT 0,
-  completed_count INTEGER DEFAULT 0,
-  failed_count INTEGER DEFAULT 0,
-  cancelled_count INTEGER DEFAULT 0,
-  concurrent_count INTEGER DEFAULT 5, -- 并发数
-  min_interval INTEGER DEFAULT 30000, -- 最小间隔 (ms)
-  max_interval INTEGER DEFAULT 50000, -- 最大间隔 (ms)
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  started_at DATETIME,
-  completed_at DATETIME,
-  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
-);
 
 -- 创建索引
 CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks(project_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_user_id ON tasks(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_download_status ON tasks(download_status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status_download ON tasks(status, download_status);
-CREATE INDEX IF NOT EXISTS idx_tasks_task_kind ON tasks(task_kind);
-CREATE INDEX IF NOT EXISTS idx_tasks_source_task_id ON tasks(source_task_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_row_group_id ON tasks(row_group_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_row_index ON tasks(row_index);
 CREATE INDEX IF NOT EXISTS idx_tasks_history_id ON tasks(history_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_item_id ON tasks(item_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_submit_id ON tasks(submit_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_project_kind_row ON tasks(project_id, task_kind, row_index);
-CREATE INDEX IF NOT EXISTS idx_tasks_source_output_index ON tasks(source_task_id, output_index);
 CREATE INDEX IF NOT EXISTS idx_task_assets_task_id ON task_assets(task_id);
 CREATE INDEX IF NOT EXISTS idx_generation_history_task_id ON generation_history(task_id);
-CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON schedules(enabled);
-CREATE INDEX IF NOT EXISTS idx_batches_project_id ON batches(project_id);
-CREATE INDEX IF NOT EXISTS idx_batches_status ON batches(status);
 CREATE INDEX IF NOT EXISTS idx_jimeng_session_accounts_user_id ON jimeng_session_accounts(user_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_jimeng_session_accounts_default_per_user
   ON jimeng_session_accounts(user_id)
@@ -232,11 +228,159 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_jimeng_session_accounts_default_per_user
 -- 初始化默认设置
 INSERT OR IGNORE INTO settings (key, value) VALUES
   ('model', 'seedance-2.0-fast'),
-  ('ratio', '16:9'),
-  ('duration', '5'),
+  ('ratio', '9:16'),
+  ('duration', '4'),
   ('reference_mode', '全能参考'),
   ('download_path', ''),
   ('max_concurrent', '5'),
   ('min_interval', '30000'),
   ('max_interval', '50000'),
   ('session_id', '');
+
+-- 用户权限表
+CREATE TABLE IF NOT EXISTS user_permissions (
+  user_id     INTEGER NOT NULL,
+  feature_key TEXT    NOT NULL,
+  enabled     INTEGER NOT NULL DEFAULT 0,
+  updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_by  INTEGER,
+  PRIMARY KEY (user_id, feature_key),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_user_permissions_feature
+  ON user_permissions(feature_key, enabled);
+
+INSERT OR IGNORE INTO system_config (key, value, description)
+VALUES
+  ('default_user_permissions',
+   '{"generate_video_seedance": true}',
+   '新注册用户默认开启的功能权限（JSON）');
+
+-- 模型 token 计费表
+CREATE TABLE IF NOT EXISTS model_pricing (
+  model_key            TEXT PRIMARY KEY,
+  label                TEXT NOT NULL,
+  price_no_video_low   REAL NOT NULL DEFAULT 0,
+  price_no_video_high  REAL NOT NULL DEFAULT 0,
+  price_with_video_low REAL NOT NULL DEFAULT 0,
+  price_with_video_high REAL NOT NULL DEFAULT 0,
+  price_audio          REAL NOT NULL DEFAULT 0,
+  price_silent         REAL NOT NULL DEFAULT 0,
+  draft_factor_audio   REAL NOT NULL DEFAULT 0.6,
+  draft_factor_silent  REAL NOT NULL DEFAULT 0.7,
+  pricing_type         TEXT NOT NULL DEFAULT 'seedance2' CHECK (pricing_type IN ('seedance2', 'seedance15')),
+  default_fps          INTEGER NOT NULL DEFAULT 24,
+  enabled              INTEGER NOT NULL DEFAULT 1,
+  sort_order           INTEGER NOT NULL DEFAULT 0,
+  description          TEXT,
+  created_at           DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at           DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_model_pricing_enabled ON model_pricing(enabled, sort_order);
+
+INSERT OR IGNORE INTO model_pricing
+  (model_key, label, pricing_type,
+   price_no_video_low, price_no_video_high, price_with_video_low, price_with_video_high,
+   price_audio, price_silent, draft_factor_audio, draft_factor_silent,
+   default_fps, enabled, sort_order, description) VALUES
+  ('seedance-2.0',          'Seedance 2.0 全能',         'seedance2', 46, 51, 28, 31,  0,    0,    0.6, 0.7, 24, 1, 10, '480/720/1080p 全能模型；输入含视频时单价较低'),
+  ('seedance-2.0-fast',     'Seedance 2.0 Fast',         'seedance2', 37, 0,  22, 0,   0,    0,    0.6, 0.7, 24, 1, 30, 'Fast 模型不支持 1080p');
+
+-- 账号级模型权限表（per API Key 控制可用模型；无行时默认启用）
+CREATE TABLE IF NOT EXISTS account_model_permissions (
+  account_id  INTEGER NOT NULL,
+  model_key   TEXT    NOT NULL,
+  enabled     INTEGER NOT NULL DEFAULT 1,
+  updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_by  INTEGER,
+  PRIMARY KEY (account_id, model_key),
+  FOREIGN KEY (account_id) REFERENCES jimeng_session_accounts(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_amp_account ON account_model_permissions(account_id);
+
+-- 资产库 asset_groups 表（每个项目一个资产组）
+CREATE TABLE IF NOT EXISTS asset_groups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL,
+  volc_group_id TEXT,
+  name TEXT NOT NULL,
+  description TEXT DEFAULT '',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+-- 资产表（项目资产库中的单个素材）
+CREATE TABLE IF NOT EXISTS project_assets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL,
+  asset_group_id INTEGER,
+  volc_asset_id TEXT,
+  name TEXT NOT NULL,
+  original_name TEXT,
+  description TEXT DEFAULT '',
+  file_type TEXT NOT NULL DEFAULT 'image',
+  file_size INTEGER DEFAULT 0,
+  file_url TEXT,
+  thumbnail_url TEXT,
+  status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'uploading', 'active', 'rejected', 'deleted')),
+  review_status TEXT DEFAULT 'pending' CHECK (review_status IN ('pending', 'approved', 'rejected')),
+  auto_inject INTEGER DEFAULT 0,
+  uploaded_by INTEGER,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (asset_group_id) REFERENCES asset_groups(id) ON DELETE SET NULL,
+  FOREIGN KEY (uploaded_by) REFERENCES users(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_project_assets_project_id ON project_assets(project_id);
+CREATE INDEX IF NOT EXISTS idx_project_assets_status ON project_assets(status);
+CREATE INDEX IF NOT EXISTS idx_project_assets_auto_inject ON project_assets(project_id, auto_inject, review_status);
+
+-- 积分锁定表
+CREATE TABLE IF NOT EXISTS credit_locks (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id            INTEGER NOT NULL,
+  task_id            INTEGER NOT NULL UNIQUE,
+  estimated_credits  INTEGER NOT NULL,
+  locked_credits     INTEGER NOT NULL,
+  status             TEXT NOT NULL DEFAULT 'locked' CHECK (status IN ('locked', 'settled', 'released')),
+  actual_credits     INTEGER,
+  release_reason     TEXT,
+  meta               TEXT,
+  created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+  settled_at         DATETIME,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_credit_locks_user_status ON credit_locks(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_credit_locks_task ON credit_locks(task_id);
+
+-- 激活码表
+CREATE TABLE IF NOT EXISTS activation_codes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code TEXT NOT NULL UNIQUE,
+  max_uses INTEGER NOT NULL DEFAULT 1,
+  used_count INTEGER NOT NULL DEFAULT 0,
+  note TEXT DEFAULT '',
+  credits_value INTEGER DEFAULT 0,
+  ark_api_key TEXT NOT NULL DEFAULT '',
+  account_name TEXT NOT NULL DEFAULT '',
+  created_by INTEGER,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 火山Key组表
+CREATE TABLE IF NOT EXISTS volc_key_groups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  ark_model_key TEXT NOT NULL,
+  ark_asset_key TEXT NOT NULL DEFAULT '',
+  volc_access_key TEXT NOT NULL DEFAULT '',
+  volc_secret_key TEXT NOT NULL DEFAULT '',
+  is_active INTEGER DEFAULT 0,
+  note TEXT DEFAULT '',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);

@@ -1,402 +1,68 @@
 import { getDatabase } from '../database/index.js';
-import * as settingsService from './settingsService.js';
 
-function normalizeSessionId(sessionId) {
-  return String(sessionId || '').trim();
-}
-
-function normalizePriority(priority, fallback = 0) {
-  const normalized = Number(priority);
-  if (!Number.isFinite(normalized) || normalized < 0) {
-    return fallback;
-  }
-  return Math.floor(normalized);
-}
-
-function mapAccount(row) {
-  return {
-    id: row.id,
-    userId: row.user_id,
-    name: row.name || '',
-    sessionId: row.session_id,
-    isDefault: Boolean(row.is_default),
-    isEnabled: row.is_enabled !== undefined ? Boolean(row.is_enabled) : true,
-    priority: row.priority !== undefined ? Number(row.priority) || 0 : 0,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
-}
-
-function maskSessionId(sessionId) {
-  const normalized = normalizeSessionId(sessionId);
-  if (!normalized) {
-    return '';
-  }
-  if (normalized.length <= 8) {
-    return normalized;
-  }
-  return `${normalized.slice(0, 4)}...${normalized.slice(-4)}`;
-}
-
-function getEnabledAccountRows(userId) {
+export function redeemActivationCode(userId, code) {
   const db = getDatabase();
-  return db.prepare(`
-    SELECT *
-    FROM jimeng_session_accounts
-    WHERE user_id = ? AND is_enabled = 1
-    ORDER BY priority ASC, id ASC
-  `).all(userId);
-}
+  const trimmed = String(code || '').trim();
+  if (!trimmed) throw new Error('激活码不能为空');
 
-function rebalancePriorities(userId) {
-  const db = getDatabase();
-  const rows = db.prepare(`
-    SELECT id
-    FROM jimeng_session_accounts
-    WHERE user_id = ?
-    ORDER BY is_enabled DESC, priority ASC, is_default DESC, id ASC
-  `).all(userId);
+  const record = db.prepare(`SELECT * FROM activation_codes WHERE code = ?`).get(trimmed);
+  if (!record) throw new Error('激活码无效');
+  if (record.used_count >= record.max_uses) throw new Error('激活码已达到最大使用次数');
 
-  const stmt = db.prepare(`
-    UPDATE jimeng_session_accounts
-    SET priority = ?,
-        updated_at = CURRENT_TIMESTAMP
-    WHERE id = ? AND user_id = ?
-  `);
-
-  rows.forEach((row, index) => {
-    stmt.run(index, row.id, userId);
-  });
-}
-
-function ensureDefaultAccount(userId) {
-  const db = getDatabase();
-  const enabledDefault = db.prepare(`
-    SELECT id
-    FROM jimeng_session_accounts
-    WHERE user_id = ? AND is_enabled = 1
-    ORDER BY priority ASC, id ASC
-    LIMIT 1
-  `).get(userId);
-
-  const fallbackDefault = enabledDefault || db.prepare(`
-    SELECT id
-    FROM jimeng_session_accounts
-    WHERE user_id = ?
-    ORDER BY priority ASC, id ASC
-    LIMIT 1
-  `).get(userId);
-
-  db.prepare(`
-    UPDATE jimeng_session_accounts
-    SET is_default = 0,
-        updated_at = CURRENT_TIMESTAMP
-    WHERE user_id = ?
-  `).run(userId);
-
-  if (fallbackDefault?.id) {
-    db.prepare(`
-      UPDATE jimeng_session_accounts
-      SET is_default = 1,
-          updated_at = CURRENT_TIMESTAMP
-      WHERE id = ? AND user_id = ?
-    `).run(fallbackDefault.id, userId);
-  }
-}
-
-function syncAccountOrdering(userId) {
-  const db = getDatabase();
   const transaction = db.transaction(() => {
-    rebalancePriorities(userId);
-    ensureDefaultAccount(userId);
+    const creditsValue = Number(record.credits_value) || 0;
+    if (creditsValue !== 0) {
+      db.prepare(`UPDATE users SET credits = MAX(0, credits + ?) WHERE id = ?`).run(creditsValue, userId);
+    }
+    db.prepare(`UPDATE activation_codes SET used_count = used_count + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(record.id);
   });
   transaction();
 }
 
-export function listUserAccounts(userId) {
+export function listActivationCodes() {
   const db = getDatabase();
-  const rows = db.prepare(`
-    SELECT *
-    FROM jimeng_session_accounts
-    WHERE user_id = ?
-    ORDER BY is_enabled DESC, priority ASC, id ASC
-  `).all(userId);
-
-  return rows.map(mapAccount);
+  return db.prepare(`SELECT * FROM activation_codes ORDER BY created_at DESC`).all();
 }
 
-export function listActiveAccounts(userId) {
-  return getEnabledAccountRows(userId).map(mapAccount);
-}
-
-export function createUserAccount(userId, payload) {
+export function createActivationCode(payload) {
   const db = getDatabase();
-  const sessionId = normalizeSessionId(payload.sessionId);
-  const name = String(payload.name || '').trim();
-
-  if (!sessionId) {
-    throw new Error('SessionID 不能为空');
-  }
-
-  const exists = db.prepare(`
-    SELECT id FROM jimeng_session_accounts
-    WHERE user_id = ? AND session_id = ?
-  `).get(userId, sessionId);
-
-  if (exists) {
-    throw new Error('该 SessionID 已存在');
-  }
-
-  const hasAny = db.prepare(`
-    SELECT COUNT(*) AS count FROM jimeng_session_accounts
-    WHERE user_id = ?
-  `).get(userId);
-
-  const nextPriorityRow = db.prepare(`
-    SELECT COALESCE(MAX(priority), -1) + 1 AS nextPriority
-    FROM jimeng_session_accounts
-    WHERE user_id = ?
-  `).get(userId);
-
-  const isFirstAccount = !hasAny || Number(hasAny.count) === 0;
-  const isEnabled = payload.isEnabled === undefined ? 1 : (payload.isEnabled ? 1 : 0);
-  const priority = isFirstAccount
-    ? 0
-    : normalizePriority(payload.priority, Number(nextPriorityRow?.nextPriority) || 0);
-  const isDefault = isFirstAccount ? 1 : 0;
+  const code = String(payload.code || '').trim();
+  const maxUses = Number(payload.maxUses) || 1;
+  const note = String(payload.note || '').trim();
+  const createdBy = payload.createdBy || null;
+  const creditsValue = Number(payload.creditsValue) || 0;
+  if (!code) throw new Error('激活码不能为空');
 
   const result = db.prepare(`
-    INSERT INTO jimeng_session_accounts (
-      user_id,
-      name,
-      session_id,
-      is_default,
-      is_enabled,
-      priority,
-      updated_at
-    )
-    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-  `).run(userId, name, sessionId, isDefault, isEnabled, priority);
-
-  syncAccountOrdering(userId);
-  return getUserAccountById(userId, Number(result.lastInsertRowid));
+    INSERT INTO activation_codes (code, max_uses, note, credits_value, created_by)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(code, maxUses, note, creditsValue, createdBy);
+  return db.prepare('SELECT * FROM activation_codes WHERE id = ?').get(result.lastInsertRowid);
 }
 
-export function getUserAccountById(userId, accountId) {
+export function updateActivationCode(id, payload) {
   const db = getDatabase();
-  const row = db.prepare(`
-    SELECT *
-    FROM jimeng_session_accounts
-    WHERE id = ? AND user_id = ?
-  `).get(accountId, userId);
+  const record = db.prepare('SELECT * FROM activation_codes WHERE id = ?').get(id);
+  if (!record) throw new Error('激活码不存在');
 
-  return row ? mapAccount(row) : null;
-}
-
-export function updateUserAccount(userId, accountId, payload) {
-  const db = getDatabase();
-  const existing = getUserAccountById(userId, accountId);
-
-  if (!existing) {
-    throw new Error('SessionID 账号不存在');
-  }
-
-  const nextName = payload.name !== undefined ? String(payload.name || '').trim() : existing.name;
-  const nextSessionId = payload.sessionId !== undefined
-    ? normalizeSessionId(payload.sessionId)
-    : existing.sessionId;
-  const nextIsEnabled = payload.isEnabled !== undefined ? Boolean(payload.isEnabled) : existing.isEnabled;
-  const nextPriority = payload.priority !== undefined
-    ? normalizePriority(payload.priority, existing.priority)
-    : existing.priority;
-
-  if (!nextSessionId) {
-    throw new Error('SessionID 不能为空');
-  }
-
-  const duplicated = db.prepare(`
-    SELECT id FROM jimeng_session_accounts
-    WHERE user_id = ? AND session_id = ? AND id != ?
-  `).get(userId, nextSessionId, accountId);
-
-  if (duplicated) {
-    throw new Error('该 SessionID 已存在');
-  }
-
+  const maxUses = payload.maxUses !== undefined ? Number(payload.maxUses) : record.max_uses;
+  const note = payload.note !== undefined ? String(payload.note) : record.note;
+  const creditsValue = payload.creditsValue !== undefined ? Number(payload.creditsValue) : (record.credits_value || 0);
   db.prepare(`
-    UPDATE jimeng_session_accounts
-    SET name = ?,
-        session_id = ?,
-        is_enabled = ?,
-        priority = ?,
-        updated_at = CURRENT_TIMESTAMP
-    WHERE id = ? AND user_id = ?
-  `).run(nextName, nextSessionId, nextIsEnabled ? 1 : 0, nextPriority, accountId, userId);
-
-  syncAccountOrdering(userId);
-  return getUserAccountById(userId, accountId);
+    UPDATE activation_codes SET max_uses = ?, note = ?, credits_value = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+  `).run(maxUses, note, creditsValue, id);
+  return db.prepare('SELECT * FROM activation_codes WHERE id = ?').get(id);
 }
 
-export function setDefaultAccount(userId, accountId) {
+export function deleteActivationCode(id) {
   const db = getDatabase();
-  const existing = getUserAccountById(userId, accountId);
-
-  if (!existing) {
-    throw new Error('SessionID 账号不存在');
-  }
-
-  const transaction = db.transaction(() => {
-    db.prepare(`
-      UPDATE jimeng_session_accounts
-      SET is_default = 0,
-          updated_at = CURRENT_TIMESTAMP
-      WHERE user_id = ?
-    `).run(userId);
-
-    db.prepare(`
-      UPDATE jimeng_session_accounts
-      SET is_default = 1,
-          is_enabled = 1,
-          priority = 0,
-          updated_at = CURRENT_TIMESTAMP
-      WHERE id = ? AND user_id = ?
-    `).run(accountId, userId);
-
-    rebalancePriorities(userId);
-    ensureDefaultAccount(userId);
-  });
-
-  transaction();
-  return getUserAccountById(userId, accountId);
-}
-
-export function deleteUserAccount(userId, accountId) {
-  const db = getDatabase();
-  const existing = getUserAccountById(userId, accountId);
-
-  if (!existing) {
-    throw new Error('SessionID 账号不存在');
-  }
-
-  const transaction = db.transaction(() => {
-    db.prepare(`
-      DELETE FROM jimeng_session_accounts
-      WHERE id = ? AND user_id = ?
-    `).run(accountId, userId);
-
-    rebalancePriorities(userId);
-    ensureDefaultAccount(userId);
-  });
-
-  transaction();
-  return { success: true };
-}
-
-export async function testSessionId(sessionId) {
-  const normalized = normalizeSessionId(sessionId);
-  if (!normalized) {
-    throw new Error('SessionID 不能为空');
-  }
-
-  return settingsService.testSessionId(normalized);
-}
-
-export function resolveEffectiveSessions(userId) {
-  const accounts = listActiveAccounts(userId);
-  if (accounts.length > 0) {
-    return {
-      source: 'user_default',
-      sessionId: accounts[0].sessionId,
-      account: accounts[0],
-      accounts,
-      defaultAccount: accounts[0],
-    };
-  }
-
-  const legacyGlobal = settingsService.getLegacyGlobalSessionId();
-  if (legacyGlobal) {
-    return {
-      source: 'legacy_global',
-      sessionId: legacyGlobal,
-      account: null,
-      accounts: [{
-        id: 0,
-        userId,
-        name: 'legacy_global',
-        sessionId: legacyGlobal,
-        isDefault: true,
-        isEnabled: true,
-        priority: 0,
-        createdAt: '',
-        updatedAt: '',
-      }],
-      defaultAccount: null,
-    };
-  }
-
-  const envSessionId = process.env.VITE_DEFAULT_SESSION_ID || '';
-  if (envSessionId) {
-    return {
-      source: 'env_default',
-      sessionId: envSessionId,
-      account: null,
-      accounts: [{
-        id: -1,
-        userId,
-        name: 'env_default',
-        sessionId: envSessionId,
-        isDefault: true,
-        isEnabled: true,
-        priority: 0,
-        createdAt: '',
-        updatedAt: '',
-      }],
-      defaultAccount: null,
-    };
-  }
-
-  return {
-    source: 'none',
-    sessionId: '',
-    account: null,
-    accounts: [],
-    defaultAccount: null,
-  };
-}
-
-export function resolveEffectiveSession(userId) {
-  const resolved = resolveEffectiveSessions(userId);
-  return {
-    source: resolved.source,
-    sessionId: resolved.sessionId,
-    account: resolved.account,
-  };
-}
-
-export function formatAccountInfo(account) {
-  if (!account) {
-    return null;
-  }
-
-  return JSON.stringify({
-    accountId: account.id ?? null,
-    name: account.name || '',
-    sessionId: maskSessionId(account.sessionId),
-    priority: account.priority ?? 0,
-    source: account.id > 0 ? 'user_account' : account.name || 'fallback',
-  });
+  db.prepare('DELETE FROM activation_codes WHERE id = ?').run(id);
 }
 
 export default {
-  listUserAccounts,
-  listActiveAccounts,
-  createUserAccount,
-  getUserAccountById,
-  updateUserAccount,
-  setDefaultAccount,
-  deleteUserAccount,
-  testSessionId,
-  resolveEffectiveSessions,
-  resolveEffectiveSession,
-  formatAccountInfo,
+  redeemActivationCode,
+  listActivationCodes,
+  createActivationCode,
+  updateActivationCode,
+  deleteActivationCode,
 };

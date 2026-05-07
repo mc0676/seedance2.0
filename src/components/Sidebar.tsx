@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   FilmIcon,
-  PackageIcon,
   DownloadIcon,
   SettingsIcon,
   MenuIcon,
@@ -11,9 +10,11 @@ import {
   ShieldIcon,
   LogoutIcon,
   SparkleIcon,
+  ImageIcon,
 } from '../components/Icons';
 import type { User } from '../types';
 import { logout } from '../services/authService';
+import ProjectSelector from './ProjectSelector';
 
 interface SidebarProps {
   currentUser: User | null;
@@ -45,15 +46,21 @@ export default function Sidebar({ currentUser, onLogout }: SidebarProps) {
   const menuItems: MenuItem[] = [
     {
       id: 'SINGLE_TASK',
-      label: '单任务生成',
+      label: '视频生成',
       path: '/',
       icon: FilmIcon,
     },
     {
-      id: 'BATCH_MANAGEMENT',
-      label: '批量管理',
-      path: '/batch',
-      icon: PackageIcon,
+      id: 'IMAGE_GEN',
+      label: '图片生成',
+      path: '/image-gen',
+      icon: ImageIcon,
+    },
+    {
+      id: 'ASSETS',
+      label: '素材组管理',
+      path: '/assets',
+      icon: SparkleIcon,
     },
     {
       id: 'DOWNLOAD_MANAGEMENT',
@@ -84,7 +91,7 @@ export default function Sidebar({ currentUser, onLogout }: SidebarProps) {
   };
 
   const visibleItems = menuItems.filter(
-    (item) => !item.adminOnly || currentUser?.role === 'admin'
+    (item) => !item.adminOnly || currentUser?.role === 'admin' || currentUser?.role === 'super_admin'
   );
 
   return (
@@ -100,18 +107,16 @@ export default function Sidebar({ currentUser, onLogout }: SidebarProps) {
       {/* 侧边栏 */}
       <aside
         className={`fixed top-0 left-0 z-50 h-screen bg-[#1c1f2e] border-r border-gray-800 transition-all duration-300 ${
-          expanded ? 'w-60' : 'w-16'
+          expanded ? 'w-80' : 'w-16'
         } ${mobileOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0`}
       >
         {/* Logo 区域 */}
-        <div className="h-16 flex items-center justify-between px-4 border-b border-gray-800">
+        <div className="h-28 flex items-center justify-between px-4 border-b border-gray-800">
           <div className={`flex items-center gap-3 ${!expanded && 'justify-center'}`}>
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center flex-shrink-0">
-              <SparkleIcon className="w-5 h-5 text-white" />
-            </div>
+            <img src="https://yunyu-oss.oss-cn-shanghai.aliyuncs.com/LOGO/web_logo.png" alt="云屿智创" className="w-24 h-24 rounded-xl flex-shrink-0 object-contain" />
             {expanded && (
-              <span className="text-lg font-bold text-white whitespace-nowrap">
-                Seedance 2.0
+              <span className="text-3xl font-bold text-white whitespace-nowrap">
+                云屿智创
               </span>
             )}
           </div>
@@ -124,6 +129,13 @@ export default function Sidebar({ currentUser, onLogout }: SidebarProps) {
             </button>
           )}
         </div>
+
+        {/* 工作组选择器 */}
+        {expanded && (
+          <div className="border-b border-gray-800">
+            <ProjectSelector />
+          </div>
+        )}
 
         {/* 菜单项 */}
         <nav className="p-3 space-y-1">
@@ -166,7 +178,7 @@ export default function Sidebar({ currentUser, onLogout }: SidebarProps) {
                     {currentUser?.email || '用户'}
                   </p>
                   <p className="text-xs text-gray-500">
-                    {currentUser?.role === 'admin' ? '管理员' : '普通用户'}
+                    {currentUser?.role === 'super_admin' ? '系统管理员' : currentUser?.role === 'admin' ? '管理员' : '普通用户'}
                   </p>
                 </div>
               </div>
@@ -201,10 +213,8 @@ export default function Sidebar({ currentUser, onLogout }: SidebarProps) {
           <MenuIcon className="w-6 h-6" />
         </button>
         <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center">
-            <SparkleIcon className="w-5 h-5 text-white" />
-          </div>
-          <span className="text-lg font-bold text-white">Seedance 2.0</span>
+          <img src="https://yunyu-oss.oss-cn-shanghai.aliyuncs.com/LOGO/web_logo.png" alt="云屿智创" className="w-24 h-24 rounded-xl object-contain" />
+          <span className="text-3xl font-bold text-white">云屿智创</span>
         </div>
         <div className="w-10" /> {/* 占位 */}
       </header>

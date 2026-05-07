@@ -1,14 +1,12 @@
 import { getDatabase } from '../database/index.js';
 
 /**
- * 项目服务层
- * 负责项目的 CRUD 操作
+ * 项目服务层（以项目为中心）
+ * 项目 = 工作组，用户通过 project_members 加入项目
  */
 
 /**
- * 获取所有项目（支持用户过滤）
- * @param {number|null} userId - 用户 ID，null 表示获取全部（管理员）
- * @param {boolean} isAdmin - 是否管理员，true 时忽略 userId 过滤
+ * 获取用户所在的所有项目（通过 project_members 关联）
  */
 export function getAllProjects(userId = null, isAdmin = false) {
   const db = getDatabase();
@@ -16,30 +14,29 @@ export function getAllProjects(userId = null, isAdmin = false) {
   let query = `
     SELECT
       p.*,
+      pm.role as my_role,
       (SELECT COUNT(*) FROM tasks WHERE project_id = p.id) as task_count,
-      (SELECT COUNT(*) FROM tasks WHERE project_id = p.id AND status = 'done') as completed_count
+      (SELECT COUNT(*) FROM tasks WHERE project_id = p.id AND status = 'done') as completed_count,
+      (SELECT COUNT(*) FROM project_members WHERE project_id = p.id) as member_count
     FROM projects p
+    LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
   `;
 
-  const params = [];
+  const params = [userId ?? 0];
 
-  // 非管理员用户只能查看自己的项目
   if (!isAdmin && userId !== null) {
-    query += ` WHERE p.user_id = ?`;
+    query += ` WHERE pm.user_id = ?`;
     params.push(userId);
   }
 
   query += ` ORDER BY p.updated_at DESC`;
 
-  const stmt = db.prepare(query);
-  return stmt.all(...params);
+  return db.prepare(query).all(...params);
 }
 
 /**
- * 根据 ID 获取项目（支持权限检查）
- * @param {number} id - 项目 ID
- * @param {number|null} userId - 用户 ID，用于权限检查
- * @param {boolean} isAdmin - 是否管理员
+ * 根据 ID 获取项目
+ * 非管理员：必须是该项目成员
  */
 export function getProjectById(id, userId = null, isAdmin = false) {
   const db = getDatabase();
@@ -47,26 +44,27 @@ export function getProjectById(id, userId = null, isAdmin = false) {
   let query = `
     SELECT
       p.*,
+      pm.role as my_role,
       (SELECT COUNT(*) FROM tasks WHERE project_id = p.id) as task_count,
-      (SELECT COUNT(*) FROM tasks WHERE project_id = p.id AND status = 'done') as completed_count
+      (SELECT COUNT(*) FROM tasks WHERE project_id = p.id AND status = 'done') as completed_count,
+      (SELECT COUNT(*) FROM project_members WHERE project_id = p.id) as member_count
     FROM projects p
+    LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
     WHERE p.id = ?
   `;
 
-  const params = [id];
+  const params = [userId ?? 0, id];
 
-  // 非管理员用户只能查看自己的项目
   if (!isAdmin && userId !== null) {
-    query += ` AND p.user_id = ?`;
-    params.push(userId);
+    query += ` AND pm.user_id IS NOT NULL`;
   }
 
-  const stmt = db.prepare(query);
-  return stmt.get(...params);
+  return db.prepare(query).get(...params);
 }
 
 /**
  * 创建项目
+ * 创建者自动成为 owner，同时写入 project_members
  */
 export function createProject({ name, description, settings = {}, user_id }) {
   const db = getDatabase();
@@ -75,12 +73,20 @@ export function createProject({ name, description, settings = {}, user_id }) {
     throw new Error('创建项目时必须指定 user_id');
   }
 
-  const stmt = db.prepare(`
+  const result = db.prepare(`
     INSERT INTO projects (name, description, settings_json, user_id)
     VALUES (?, ?, ?, ?)
-  `);
-  const result = stmt.run(name, description, JSON.stringify(settings), user_id);
-  return getProjectById(result.lastInsertRowid);
+  `).run(name, description, JSON.stringify(settings), user_id);
+
+  const projectId = result.lastInsertRowid;
+
+  // 自动将创建者加入 project_members 为 owner
+  db.prepare(`
+    INSERT OR IGNORE INTO project_members (project_id, user_id, role)
+    VALUES (?, ?, 'owner')
+  `).run(projectId, user_id);
+
+  return getProjectById(projectId, user_id, false);
 }
 
 /**
@@ -92,33 +98,16 @@ export function updateProject(id, { name, description, settings }) {
   const updates = [];
   const values = [];
 
-  if (name !== undefined) {
-    updates.push('name = ?');
-    values.push(name);
-  }
-  if (description !== undefined) {
-    updates.push('description = ?');
-    values.push(description);
-  }
-  if (settings !== undefined) {
-    updates.push('settings_json = ?');
-    values.push(JSON.stringify(settings));
-  }
+  if (name !== undefined) { updates.push('name = ?'); values.push(name); }
+  if (description !== undefined) { updates.push('description = ?'); values.push(description); }
+  if (settings !== undefined) { updates.push('settings_json = ?'); values.push(JSON.stringify(settings)); }
 
-  if (updates.length === 0) {
-    return getProjectById(id);
-  }
+  if (updates.length === 0) return getProjectById(id);
 
   updates.push('updated_at = CURRENT_TIMESTAMP');
   values.push(id);
 
-  const stmt = db.prepare(`
-    UPDATE projects
-    SET ${updates.join(', ')}
-    WHERE id = ?
-  `);
-  stmt.run(...values);
-
+  db.prepare(`UPDATE projects SET ${updates.join(', ')} WHERE id = ?`).run(...values);
   return getProjectById(id);
 }
 
@@ -127,46 +116,48 @@ export function updateProject(id, { name, description, settings }) {
  */
 export function deleteProject(id) {
   const db = getDatabase();
-  const stmt = db.prepare(`DELETE FROM projects WHERE id = ?`);
-  return stmt.run(id);
+  return db.prepare(`DELETE FROM projects WHERE id = ?`).run(id);
 }
 
 /**
- * 获取项目下的任务列表（支持权限检查）
- * @param {number} projectId - 项目 ID
- * @param {object} options - 查询选项
- * @param {number|null} userId - 用户 ID，用于权限检查
- * @param {boolean} isAdmin - 是否管理员
+ * 获取项目下的任务列表（所有成员可见）
+ * 非管理员：必须是该项目成员
  */
 export function getTasksByProjectId(projectId, options = {}, userId = null, isAdmin = false) {
   const db = getDatabase();
   const { status, limit = 100, offset = 0 } = options;
 
-  // 首先检查项目权限（非管理员只能访问自己的项目）
   if (!isAdmin && userId !== null) {
-    const project = db.prepare('SELECT user_id FROM projects WHERE id = ?').get(projectId);
-    if (!project || project.user_id !== userId) {
-      throw new Error('无权访问此项目');
-    }
+    const membership = db.prepare(
+      'SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ?'
+    ).get(projectId, userId);
+    if (!membership) throw new Error('无权访问此项目');
   }
 
   let query = `
-    SELECT * FROM tasks
-    WHERE project_id = ?
+    SELECT t.*, u.email as created_by_email
+    FROM tasks t
+    LEFT JOIN users u ON t.user_id = u.id
+    WHERE t.project_id = ?
   `;
-
   const params = [projectId];
 
-  if (status) {
-    query += ` AND status = ?`;
-    params.push(status);
-  }
+  if (status) { query += ` AND t.status = ?`; params.push(status); }
 
-  query += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`;
+  query += ` ORDER BY t.created_at DESC LIMIT ? OFFSET ?`;
   params.push(limit, offset);
 
-  const stmt = db.prepare(query);
-  return stmt.all(...params);
+  return db.prepare(query).all(...params);
+}
+
+/**
+ * 检查用户是否为项目成员
+ */
+export function isProjectMember(projectId, userId) {
+  const db = getDatabase();
+  return !!db.prepare(
+    'SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ?'
+  ).get(projectId, userId);
 }
 
 export default {
@@ -176,4 +167,5 @@ export default {
   updateProject,
   deleteProject,
   getTasksByProjectId,
+  isProjectMember,
 };
