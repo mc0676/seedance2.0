@@ -1613,7 +1613,7 @@ export default function SingleTaskPage() {
                 ).map((opt) => (
                   <button
                     key={opt.value}
-                    onClick={() => setModel(opt.value)}
+                    onClick={() => { setModel(opt.value); if (opt.value === 'seedance-2.0-fast' && resolution === '1080p') setResolution('720p'); }}
                     className={`w-full text-left px-4 py-3 rounded-lg border transition-all ${
                       model === opt.value ? 'border-purple-500 bg-purple-500/10' : 'border-gray-700 bg-[#161824] hover:border-gray-600'
                     }`}
@@ -1657,14 +1657,14 @@ export default function SingleTaskPage() {
               <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-3">分辨率</label>
               <div className="grid grid-cols-3 gap-2">
                 {(['480p', '720p', '1080p'] as const).map((opt) => {
-                  const disabled = opt === '1080p';
+                  const disabled = opt === '1080p' && model === 'seedance-2.0-fast';
                   const isSelected = opt === resolution;
                   return (
                     <button
                       key={opt}
-                      onClick={() => !disabled && setResolution(opt)}
+                      onClick={() => { if (!disabled) setResolution(opt); }}
                       disabled={disabled}
-                      title={disabled ? '即将开放' : undefined}
+                      title={disabled ? '快速模型不支持 1080p' : undefined}
                       className={`py-2 rounded-lg border text-sm transition-all ${
                         isSelected
                           ? 'border-purple-500 bg-purple-500/10 text-purple-300'
@@ -1673,7 +1673,7 @@ export default function SingleTaskPage() {
                             : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
                       }`}
                     >
-                      {opt}{disabled && <span className="ml-1 text-[10px]">敬请期待</span>}
+                      {opt}
                     </button>
                   );
                 })}
@@ -1943,7 +1943,10 @@ export default function SingleTaskPage() {
                           if (item.model) setModel(item.model as ModelId);
                           if (item.ratio) setRatio(item.ratio as AspectRatio);
                           if (item.duration) setDuration(Number(item.duration) as Duration);
-                          if (item.resolution) setResolution(item.resolution as '480p' | '720p' | '1080p');
+                          if (item.resolution) {
+                            const r = item.resolution as '480p' | '720p' | '1080p';
+                            setResolution(item.model === 'seedance-2.0-fast' && r === '1080p' ? '720p' : r);
+                          }
                           // 确保全能参考模式，让上传区域可见
                           setReferenceMode('reference');
 

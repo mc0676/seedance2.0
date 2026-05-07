@@ -1008,12 +1008,11 @@ app.post('/api/generate-video', authenticate, upload.array('files', 5), async (r
     const resolvedModel = model || 'seedance-2.0';
     const hasVideoInput = !!videoUrl;
     let resolution = req.body.resolution || '720p';
-    // 1080p 暂未开放
-    if (resolution === '1080p') {
-      return res.status(400).json({ error: '1080p 暂未开放，请选择 480p 或 720p' });
-    }
-    if (!['480p', '720p'].includes(resolution)) {
+    if (!['480p', '720p', '1080p'].includes(resolution)) {
       resolution = '720p';
+    }
+    if (resolution === '1080p' && resolvedModel === 'seedance-2.0-fast') {
+      return res.status(400).json({ error: '快速模型不支持 1080p，请选择 480p 或 720p' });
     }
     const estimateParams = {
       inputDurationSec: Number(req.body.inputDurationSec) || 0,
@@ -2590,7 +2589,10 @@ app.post('/api/admin/activation-codes', authenticate, requireAdmin, (req, res) =
     const code = jimengSessionService.createActivationCode({ ...req.body, createdBy: req.user.id });
     res.json({ success: true, data: code });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    const msg = error.message?.includes('UNIQUE constraint failed')
+      ? '激活码已存在，请换一个不同的激活码'
+      : error.message;
+    res.status(400).json({ error: msg });
   }
 });
 
@@ -2600,7 +2602,10 @@ app.put('/api/admin/activation-codes/:id', authenticate, requireAdmin, (req, res
     const code = jimengSessionService.updateActivationCode(Number(req.params.id), req.body);
     res.json({ success: true, data: code });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    const msg = error.message?.includes('UNIQUE constraint failed')
+      ? '激活码已存在，请换一个不同的激活码'
+      : error.message;
+    res.status(400).json({ error: msg });
   }
 });
 
