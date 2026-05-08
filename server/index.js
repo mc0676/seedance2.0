@@ -897,12 +897,16 @@ app.post('/api/upload/oss', authenticate, ossUpload.single('file'), async (req, 
   }
 });
 
-// POST /api/generate-image - 使用速创API生成图片（Nano Banana 2 / GPT-Image-2）
+// POST /api/generate-image - 使用速创异步API生成图片（Nano Banana 2 / GPT-Image-2）
+// 流程：提交任务 -> 轮询 detail 直到 status=2(成功) / 3(失败)
 app.post('/api/generate-image', authenticate, async (req, res) => {
   try {
     const db = getDatabase();
-    const { prompt, model, size = '1024x1024', n = 1 } = req.body;
+    const { prompt, model, size, aspectRatio, urls } = req.body;
     if (!prompt) return res.status(400).json({ error: 'prompt 不能为空' });
+    if (!['gpt-image-2', 'nano-banana-2'].includes(model)) {
+      return res.status(400).json({ error: '不支持的图片生成模型' });
+    }
 
     // 积分检查（每次生图固定扣 5 积分）
     const IMAGE_GEN_COST = 5;
@@ -916,21 +920,62 @@ app.post('/api/generate-image', authenticate, async (req, res) => {
     const WUYIN_API_KEY = wuyinRow?.value || 'H8ZPElPf5BKM1amJrauK6txc73';
     const WUYIN_BASE = 'https://api.wuyinkeji.com';
 
-    const resp = await fetch(`${WUYIN_BASE}/v1/images/generations`, {
+    // 1) 提交异步任务
+    const endpoint = model === 'gpt-image-2' ? 'image_gpt' : 'image_nanoBanana2';
+    const submitBody = { prompt };
+    if (model === 'gpt-image-2') {
+      if (size) submitBody.size = size;
+    } else {
+      if (size) submitBody.size = size;
+      if (aspectRatio) submitBody.aspectRatio = aspectRatio;
+    }
+    if (Array.isArray(urls) && urls.length > 0) submitBody.urls = urls;
+
+    const submitResp = await fetch(`${WUYIN_BASE}/api/async/${endpoint}?key=${encodeURIComponent(WUYIN_API_KEY)}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${WUYIN_API_KEY}`,
+        'Authorization': WUYIN_API_KEY,
       },
-      body: JSON.stringify({ model, prompt, n, size }),
+      body: JSON.stringify(submitBody),
     });
+    const submitData = await submitResp.json();
+    if (!submitResp.ok || submitData?.code !== 200 || !submitData?.data?.id) {
+      return res.status(502).json({ error: submitData?.msg || submitData?.message || '任务提交失败' });
+    }
+    const taskId = submitData.data.id;
 
-    const data = await resp.json();
-    if (!resp.ok) {
-      return res.status(resp.status).json({ error: data?.error?.message || data?.message || '生成失败' });
+    // 2) 轮询查询结果
+    const POLL_INTERVAL_MS = 3000;
+    const POLL_TIMEOUT_MS = 5 * 60 * 1000; // 5 分钟
+    const startedAt = Date.now();
+    let resultUrls = null;
+    while (Date.now() - startedAt < POLL_TIMEOUT_MS) {
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+      const detailResp = await fetch(
+        `${WUYIN_BASE}/api/async/detail?id=${encodeURIComponent(taskId)}&key=${encodeURIComponent(WUYIN_API_KEY)}`,
+        { headers: { 'Authorization': WUYIN_API_KEY } }
+      );
+      const detailData = await detailResp.json();
+      if (!detailResp.ok || detailData?.code !== 200) {
+        return res.status(502).json({ error: detailData?.msg || '查询任务失败' });
+      }
+      const status = detailData?.data?.status;
+      if (status === 2) {
+        resultUrls = Array.isArray(detailData.data.result) ? detailData.data.result : [];
+        break;
+      }
+      if (status === 3) {
+        return res.status(502).json({ error: detailData?.data?.message || '生成失败' });
+      }
+      // 0/1 继续轮询
     }
 
-    // 生成成功后原子扣积分（防止并发透支）
+    if (!resultUrls) {
+      return res.status(504).json({ error: '生成超时，请稍后再试' });
+    }
+
+    // 3) 成功后原子扣积分（防止并发透支）
     if (!userRow.unlimited_credits) {
       const result = db.prepare(
         'UPDATE users SET credits = credits - ?, updated_at = datetime(\'now\') WHERE id = ? AND credits >= ?'
@@ -940,7 +985,12 @@ app.post('/api/generate-image', authenticate, async (req, res) => {
       }
     }
 
-    res.json({ success: true, data, creditsUsed: userRow.unlimited_credits ? 0 : IMAGE_GEN_COST });
+    res.json({
+      success: true,
+      taskId,
+      urls: resultUrls,
+      creditsUsed: userRow.unlimited_credits ? 0 : IMAGE_GEN_COST,
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

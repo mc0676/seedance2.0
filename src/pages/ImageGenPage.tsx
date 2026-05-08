@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { getAuthHeaders } from '../services/authService';
 import { SparkleIcon } from '../components/Icons';
 
@@ -7,14 +7,23 @@ const IMAGE_MODELS = [
   { value: 'gpt-image-2', label: 'GPT-Image-2', description: '高质量生图模型' },
 ] as const;
 
-const SIZE_OPTIONS = ['1024x1024', '1536x1024', '1024x1536'] as const;
+// gpt-image-2 仅有比例参数
+const GPT_ASPECT_OPTIONS = [
+  'auto', '1:1', '3:2', '2:3', '16:9', '9:16', '4:3', '3:4',
+  '21:9', '9:21', '1:3', '3:1', '2:1', '1:2',
+] as const;
+
+// nano-banana-2: 分辨率 + 比例
+const NANO_SIZE_OPTIONS = ['1K', '2K', '4K'] as const;
+const NANO_ASPECT_OPTIONS = [
+  'auto', '1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '5:4', '4:5', '21:9',
+] as const;
 
 interface ImageHistoryItem {
   id: number;
   prompt: string;
   model: string;
-  size: string;
-  n: number;
+  sizeLabel: string;
   urls: string[];
   creditsUsed: number | null;
   createdAt: Date;
@@ -25,32 +34,44 @@ let nextHistoryId = 0;
 export default function ImageGenPage() {
   const [prompt, setPrompt] = useState('');
   const [model, setModel] = useState<string>('nano-banana-2');
-  const [size, setSize] = useState<string>('1024x1024');
-  const [n, setN] = useState(1);
+  const [gptAspect, setGptAspect] = useState<string>('1:1');
+  const [nanoSize, setNanoSize] = useState<string>('1K');
+  const [nanoAspect, setNanoAspect] = useState<string>('1:1');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [history, setHistory] = useState<ImageHistoryItem[]>([]);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+
+  const sizeLabel = useMemo(() => {
+    if (model === 'gpt-image-2') return gptAspect;
+    return `${nanoSize} · ${nanoAspect}`;
+  }, [model, gptAspect, nanoSize, nanoAspect]);
 
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) { setError('请输入提示词'); return; }
     setLoading(true);
     setError('');
     try {
+      const body: Record<string, unknown> = { prompt: prompt.trim(), model };
+      if (model === 'gpt-image-2') {
+        body.size = gptAspect;
+      } else {
+        body.size = nanoSize;
+        body.aspectRatio = nanoAspect;
+      }
       const res = await fetch('/api/generate-image', {
         method: 'POST',
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ prompt: prompt.trim(), model, size, n }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
-      if (!data.success) throw new Error(data.error || '生成失败');
-      const urls: string[] = (data.data?.data || []).map((d: any) => d.url || d.b64_json).filter(Boolean);
+      if (!res.ok || !data.success) throw new Error(data.error || '生成失败');
+      const urls: string[] = Array.isArray(data.urls) ? data.urls : [];
       const item: ImageHistoryItem = {
         id: ++nextHistoryId,
         prompt: prompt.trim(),
         model,
-        size,
-        n,
+        sizeLabel,
         urls,
         creditsUsed: typeof data.creditsUsed === 'number' ? data.creditsUsed : null,
         createdAt: new Date(),
@@ -61,13 +82,11 @@ export default function ImageGenPage() {
     } finally {
       setLoading(false);
     }
-  }, [prompt, model, size, n]);
+  }, [prompt, model, gptAspect, nanoSize, nanoAspect, sizeLabel]);
 
   const handleReuse = (item: ImageHistoryItem) => {
     setPrompt(item.prompt);
     setModel(item.model);
-    setSize(item.size);
-    setN(item.n);
   };
 
   return (
@@ -111,41 +130,61 @@ export default function ImageGenPage() {
               </div>
             </div>
 
-            {/* Size */}
-            <div>
-              <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-3">图片尺寸</label>
-              <div className="flex flex-wrap gap-2">
-                {SIZE_OPTIONS.map((s) => (
-                  <button
-                    key={s}
-                    onClick={() => setSize(s)}
-                    className={`px-3 py-2 rounded-lg border text-sm transition-all ${
-                      size === s ? 'border-purple-500 bg-purple-500/10 text-purple-400' : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
-                    }`}
-                  >
-                    {s}
-                  </button>
-                ))}
+            {/* Size / Aspect (model-specific) */}
+            {model === 'gpt-image-2' ? (
+              <div>
+                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-3">图片比例</label>
+                <div className="flex flex-wrap gap-2">
+                  {GPT_ASPECT_OPTIONS.map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => setGptAspect(s)}
+                      className={`px-3 py-2 rounded-lg border text-sm transition-all ${
+                        gptAspect === s ? 'border-purple-500 bg-purple-500/10 text-purple-400' : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
+                      }`}
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
-
-            {/* Count */}
-            <div>
-              <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-3">生成数量</label>
-              <div className="flex gap-2">
-                {[1, 2, 4].map((v) => (
-                  <button
-                    key={v}
-                    onClick={() => setN(v)}
-                    className={`px-4 py-2 rounded-lg border text-sm transition-all ${
-                      n === v ? 'border-purple-500 bg-purple-500/10 text-purple-400' : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
-                    }`}
-                  >
-                    {v} 张
-                  </button>
-                ))}
-              </div>
-            </div>
+            ) : (
+              <>
+                <div>
+                  <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-3">分辨率</label>
+                  <div className="flex flex-wrap gap-2">
+                    {NANO_SIZE_OPTIONS.map((s) => (
+                      <button
+                        key={s}
+                        onClick={() => setNanoSize(s)}
+                        className={`px-4 py-2 rounded-lg border text-sm transition-all ${
+                          nanoSize === s ? 'border-purple-500 bg-purple-500/10 text-purple-400' : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
+                        }`}
+                      >
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-gray-600 mt-2">分辨率越高，生成时间越长</p>
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-3">图片比例</label>
+                  <div className="flex flex-wrap gap-2">
+                    {NANO_ASPECT_OPTIONS.map((s) => (
+                      <button
+                        key={s}
+                        onClick={() => setNanoAspect(s)}
+                        className={`px-3 py-2 rounded-lg border text-sm transition-all ${
+                          nanoAspect === s ? 'border-purple-500 bg-purple-500/10 text-purple-400' : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
+                        }`}
+                      >
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
           </div>
 
           {error && <p className="text-sm text-red-400 px-1">{error}</p>}
@@ -198,7 +237,7 @@ export default function ImageGenPage() {
                   <p className="text-xs text-gray-300 line-clamp-2">{item.prompt}</p>
                   <div className="flex gap-3 mt-1 text-[10px] text-gray-600">
                     <span>{item.model}</span>
-                    <span>{item.size}</span>
+                    <span>{item.sizeLabel}</span>
                     {item.creditsUsed !== null && <span className="text-amber-500">消耗 {item.creditsUsed} 积分</span>}
                     <span>{item.createdAt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span>
                   </div>
