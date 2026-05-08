@@ -3331,11 +3331,19 @@ app.post('/api/admin/volc-native/assets', authenticate, requireAdmin, async (req
 });
 
 // DELETE /api/admin/volc-native/assets/:id
-app.delete('/api/admin/volc-native/assets/:id', authenticate, requireAdmin, async (req, res) => {
+app.delete('/api/admin/volc-native/assets/:id', authenticate, async (req, res) => {
   try {
     const db = getDatabase();
+    const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
+    // 普通用户需验证素材归属
+    if (!isAdmin) {
+      const asset = db.prepare('SELECT pa.id FROM project_assets pa JOIN projects p ON pa.project_id = p.id WHERE pa.volc_asset_id = ? AND p.user_id = ?').get(req.params.id, req.user.id);
+      if (!asset) return res.status(403).json({ error: '无权删除此素材' });
+    }
     const { projectName = 'default' } = req.body || {};
     const result = await volcArkAssetRequest('DeleteAsset', { Id: req.params.id, ProjectName: projectName }, db);
+    // 同步删除本地记录
+    db.prepare("UPDATE project_assets SET status = 'deleted' WHERE volc_asset_id = ?").run(req.params.id);
     res.json({ success: true, data: result });
   } catch (e) {
     res.status(502).json({ error: e.message });

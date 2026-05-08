@@ -1219,7 +1219,7 @@ export default function SingleTaskPage() {
       resolvedAudioUrl = audios[0]?.ossUrl;
     }
 
-    // Merge asset selections that are still referenced in the prompt
+    // 资产库素材：只提交 prompt 中明确 @ 的
     const activeAssetImgUris = assetSelections
       .filter((a) => a.fileType === 'image' && prompt.includes(a.chipTag))
       .map((a) => a.assetUri);
@@ -1228,9 +1228,17 @@ export default function SingleTaskPage() {
     const activeAssetAudUri = assetSelections
       .find((a) => a.fileType === 'audio' && prompt.includes(a.chipTag))?.assetUri;
 
-    const imageUrls = [...uploadedImageUrls, ...activeAssetImgUris];
-    const videoUrl = resolvedVideoUrl || activeAssetVidUri;
-    const audioUrl = resolvedAudioUrl || activeAssetAudUri;
+    // 有资产库 @ 引用时，上传区素材不再混入（避免 @素材1 时带出其他上传图片）
+    const hasAssetChip = assetSelections.some((a) => prompt.includes(a.chipTag));
+    const imageUrls = hasAssetChip
+      ? activeAssetImgUris
+      : [...uploadedImageUrls, ...activeAssetImgUris];
+    const videoUrl = hasAssetChip
+      ? (activeAssetVidUri || resolvedVideoUrl)
+      : (resolvedVideoUrl || activeAssetVidUri);
+    const audioUrl = hasAssetChip
+      ? (activeAssetAudUri || resolvedAudioUrl)
+      : (resolvedAudioUrl || activeAssetAudUri);
 
     setGeneration({ status: 'generating', progress: '正在提交视频生成请求...' });
 
