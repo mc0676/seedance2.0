@@ -41,7 +41,7 @@ const initialState: AppState = {
   tasks: [],
   currentTask: null,
   settings: {},
-  loading: false,
+  loading: true,
   error: null,
 };
 
@@ -144,7 +144,7 @@ export function AppProvider({ children, currentUser }: { children: ReactNode; cu
       dispatch({ type: 'SET_TASKS', payload: [] });
       dispatch({ type: 'SET_CURRENT_TASK', payload: null });
       dispatch({ type: 'SET_ERROR', payload: null });
-      dispatch({ type: 'SET_LOADING', payload: false });
+      // 不在此处 SET_LOADING false，保持 loading=true 直到真实用户加载完成
       localStorage.removeItem('currentProjectId');
       return;
     }

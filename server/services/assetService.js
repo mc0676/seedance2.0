@@ -268,20 +268,18 @@ export function generateOriginalName(originalFileName = 'asset') {
  * ARK 资产若本地 DB 未记录则以虚拟记录形式追加，保证 @ 面板能看到所有可用资产。
  */
 export async function listProjectAssetsLive(projectId, options = {}) {
-  const localResult = listProjectAssets(projectId, options);
-
-  // 获取当前项目的所有 ARK 资产组 ID（一个项目可能有多个组）
   const db = getDatabase();
+
+  // 获取当前项目所有 ARK 资产组
   const groupRows = db.prepare('SELECT volc_group_id FROM asset_groups WHERE project_id = ?').all(projectId);
   const volcGroupIds = groupRows.map((r) => r.volc_group_id).filter(Boolean);
 
-  // 若项目尚未创建资产组，则只返回本地 DB 记录
+  // 无 ARK 资产组：降级为本地 DB
   if (volcGroupIds.length === 0) {
-    const localFiltered = localResult.assets.filter((a) => a.review_status !== 'rejected');
-    return { ...localResult, assets: localFiltered, total: localFiltered.length };
+    return listProjectAssets(projectId, options);
   }
 
-  // 并发拉取所有资产组的素材（allSettled 确保单个组失败不影响其他）
+  // 并发拉取所有资产组的 ARK 素材（全量翻页）
   let arkItems = [];
   const settledResults = await Promise.allSettled(volcGroupIds.map(async (volcGroupId) => {
     const items = [];
@@ -300,37 +298,72 @@ export async function listProjectAssetsLive(projectId, options = {}) {
     else console.warn('[assets] ARK ListAssets 部分失败:', r.reason?.message);
   }
 
-  // 本地 DB 中已有 volc_asset_id 的集合
-  const localVolcIds = new Set(localResult.assets.map((a) => a.volc_asset_id).filter(Boolean));
+  // 过滤已删除，按 CreateTime 升序排列（保证每次顺序一致）
+  arkItems = arkItems
+    .filter((it) => it.Status !== 'Deleted')
+    .sort((a, b) => (a.CreateTime || '').localeCompare(b.CreateTime || ''));
 
-  // 将 ARK 素材转换为 ProjectAsset 格式，过滤掉本地已有的（不限 Active，审核中也展示）
+  // 从本地 DB 拉取元数据（name、file_url、auto_inject、review_status 等）供合并
+  const localRows = db.prepare(
+    'SELECT * FROM project_assets WHERE project_id = ? AND status != \'deleted\''
+  ).all(projectId);
+  const localByVolcId = new Map(localRows.map((r) => [r.volc_asset_id, r]));
+
   const fileTypeMap = { Image: 'image', Video: 'video', Audio: 'audio' };
-  const arkOnlyAssets = arkItems
-    .filter((it) => it.Status !== 'Deleted' && !localVolcIds.has(it.Id))
-    .map((it, idx) => ({
-      id: -(idx + 1),
+
+  const assets = arkItems.map((it, idx) => {
+    const local = localByVolcId.get(it.Id);
+    return {
+      id: local?.id ?? -(idx + 1),            // 本地 DB 有则用真实 id，否则用负数占位
       project_id: Number(projectId),
       volc_asset_id: it.Id,
       volc_group_id: it.GroupId || null,
-      name: it.Name || it.Id,
-      file_type: fileTypeMap[it.AssetType] || 'image',
-      file_url: it.URL || null,
-      thumbnail_url: it.URL || null,
+      name: local?.name || it.Name || it.Id,
+      file_type: fileTypeMap[it.AssetType] || local?.file_type || 'image',
+      file_url: it.URL || local?.file_url || null,
+      thumbnail_url: it.URL || local?.thumbnail_url || null,
       status: 'active',
-      review_status: it.Status === 'Active' ? 'approved' : 'pending',
-      auto_inject: 0,
-      created_at: it.CreateTime || '',
-      updated_at: it.UpdateTime || '',
-    }));
+      review_status: it.Status === 'Active' ? 'approved' : (local?.review_status || 'pending'),
+      auto_inject: local?.auto_inject ?? 0,
+      created_at: it.CreateTime || local?.created_at || '',
+      updated_at: it.UpdateTime || local?.updated_at || '',
+    };
+  });
 
-  // 本地 DB 非 rejected 的资产
-  const localFiltered = localResult.assets.filter((a) => a.review_status !== 'rejected');
+  // 后台异步回写到本地 DB，保证下次 skipLive=true 能立即显示完整列表
+  const toSync = assets.filter((a) => a.volc_asset_id);
+  setImmediate(() => {
+    try {
+      const syncMany = db.transaction((rows) => {
+        for (const a of rows) {
+          if (!a.volc_asset_id) continue;
+          const existing = db.prepare(
+            'SELECT id FROM project_assets WHERE project_id = ? AND volc_asset_id = ?'
+          ).get(a.project_id, a.volc_asset_id);
+          if (existing) {
+            db.prepare(`
+              UPDATE project_assets SET name=?, file_url=?, thumbnail_url=?, status='active', review_status=?, updated_at=CURRENT_TIMESTAMP
+              WHERE id=?
+            `).run(a.name, a.file_url, a.thumbnail_url, a.review_status, existing.id);
+          } else {
+            db.prepare(`
+              INSERT INTO project_assets (project_id, volc_asset_id, name, file_type, file_url, thumbnail_url, status, review_status, auto_inject)
+              VALUES (?, ?, ?, ?, ?, ?, 'active', ?, 0)
+            `).run(a.project_id, a.volc_asset_id, a.name, a.file_type, a.file_url, a.thumbnail_url, a.review_status);
+          }
+        }
+      });
+      syncMany(toSync);
+    } catch (e) {
+      console.warn('[assets] 本地 DB 同步失败:', e.message);
+    }
+  });
 
-  const merged = [...localFiltered, ...arkOnlyAssets];
   return {
-    ...localResult,
-    assets: merged,
-    total: merged.length,
+    assets,
+    total: assets.length,
+    page: 1,
+    pageSize: assets.length,
     volcSync: true,
   };
 }

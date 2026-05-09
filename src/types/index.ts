@@ -331,6 +331,7 @@ export interface DownloadTask {
   status: TaskStatus;
   download_status: DownloadStatus;
   video_url?: string;
+  image_urls?: string[];
   video_path?: string;
   download_path?: string;
   downloaded_at?: string;
@@ -346,6 +347,7 @@ export interface DownloadTask {
   model_type: 'image' | 'video';
   effective_download_status: DownloadStatus;
   assets?: Array<{ assetType: string; uri: string; originalName?: string | null }>;
+  credits_used?: number;
 }
 
 /**

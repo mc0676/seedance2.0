@@ -83,13 +83,13 @@ async function deleteActivationCode(id: number): Promise<void> {
   if (!result.success) throw new Error(result.error || '删除失败');
 }
 
-async function fetchSystemConfig(): Promise<{ registrationEnabled: boolean }> {
+async function fetchSystemConfig(): Promise<{ registrationEnabled: boolean; maintenanceMode: boolean; maintenanceMessage: string }> {
   const res = await fetch('/api/admin/system-config', { headers: getAuthHeaders() });
   const result = await res.json();
-  return result.data || { registrationEnabled: true };
+  return result.data || { registrationEnabled: true, maintenanceMode: false, maintenanceMessage: '系统维护中，请稍后再试。' };
 }
 
-async function saveSystemConfig(payload: { registrationEnabled: boolean }): Promise<void> {
+async function saveSystemConfig(payload: { registrationEnabled?: boolean; maintenanceMode?: boolean; maintenanceMessage?: string }): Promise<void> {
   const res = await fetch('/api/admin/system-config', {
     method: 'PUT',
     headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
@@ -375,6 +375,8 @@ export default function AdminPage() {
 
   // 系统配置
   const [registrationEnabled, setRegistrationEnabled] = useState(true);
+  const [maintenanceMode, setMaintenanceMode] = useState(false);
+  const [maintenanceMessage, setMaintenanceMessage] = useState('系统维护中，请稍后再试。');
   const [savingConfig, setSavingConfig] = useState(false);
 
   const loadCodes = async () => {
@@ -385,6 +387,8 @@ export default function AdminPage() {
     try {
       const cfg = await fetchSystemConfig();
       setRegistrationEnabled(cfg.registrationEnabled);
+      setMaintenanceMode(cfg.maintenanceMode);
+      setMaintenanceMessage(cfg.maintenanceMessage);
     } catch {}
   };
 
@@ -418,6 +422,29 @@ export default function AdminPage() {
     try {
       await saveSystemConfig({ registrationEnabled: enabled });
       setRegistrationEnabled(enabled);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : '保存失败');
+    } finally {
+      setSavingConfig(false);
+    }
+  };
+
+  const handleToggleMaintenance = async (enabled: boolean) => {
+    setSavingConfig(true);
+    try {
+      await saveSystemConfig({ maintenanceMode: enabled, maintenanceMessage });
+      setMaintenanceMode(enabled);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : '保存失败');
+    } finally {
+      setSavingConfig(false);
+    }
+  };
+
+  const handleSaveMaintenanceMessage = async () => {
+    setSavingConfig(true);
+    try {
+      await saveSystemConfig({ maintenanceMessage });
     } catch (err) {
       alert(err instanceof Error ? err.message : '保存失败');
     } finally {
@@ -782,6 +809,38 @@ export default function AdminPage() {
             >
               <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${registrationEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
             </button>
+          </div>
+
+          <div className="border-t border-gray-700 mt-4 pt-4">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <p className="text-white text-sm font-medium">维护模式</p>
+                <p className="text-gray-400 text-xs mt-0.5">开启后所有用户看到维护公告，仅管理员可正常使用</p>
+              </div>
+              <button
+                onClick={() => handleToggleMaintenance(!maintenanceMode)}
+                disabled={savingConfig}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${maintenanceMode ? 'bg-yellow-500' : 'bg-gray-700'} ${savingConfig ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${maintenanceMode ? 'translate-x-6' : 'translate-x-1'}`} />
+              </button>
+            </div>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={maintenanceMessage}
+                onChange={(e) => setMaintenanceMessage(e.target.value)}
+                placeholder="维护公告内容"
+                className="flex-1 px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500"
+              />
+              <button
+                onClick={handleSaveMaintenanceMessage}
+                disabled={savingConfig}
+                className="px-4 py-2 bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 rounded text-sm disabled:opacity-50"
+              >
+                保存
+              </button>
+            </div>
           </div>
         </div>
         )}

@@ -3,6 +3,42 @@ import path from 'path';
 import { getDatabase } from '../database/index.js';
 
 /**
+ * 将 image_records 行转换为 DownloadTask 格式
+ */
+function imageRecordToTask(r) {
+  let resultUrls = [];
+  try { resultUrls = JSON.parse(r.result_urls || '[]'); } catch {}
+  return {
+    id: r.id,
+    prompt: r.prompt,
+    model: r.model,
+    ratio: r.size_label,
+    duration: null,
+    resolution: null,
+    status: 'done',
+    download_status: 'pending',
+    video_url: null,
+    image_urls: resultUrls,
+    video_path: null,
+    download_path: null,
+    downloaded_at: null,
+    account_info: null,
+    submit_id: null,
+    history_id: null,
+    created_at: r.created_at,
+    completed_at: r.created_at,
+    error_message: null,
+    project_id: r.project_id,
+    project_name: null,
+    hasHistory: false,
+    model_type: 'image',
+    effective_download_status: 'pending',
+    assets: [],
+    credits_used: r.credits_used,
+  };
+}
+
+/**
  * 视频下载服务
  * 负责将生成的视频保存到本地
  */
@@ -297,8 +333,22 @@ export function getDownloadTasks(options = {}) {
     }
   }
 
-  if (type !== 'all' && type !== 'video') {
-    return { tasks: [], total: 0, page, pageSize };
+  // 图片类型：直接从 image_records 返回
+  if (type === 'image') {
+    const imgWhere = [];
+    const imgParams = [];
+    if (projectId) { imgWhere.push('project_id = ?'); imgParams.push(projectId); }
+    if (!isAdmin && userId !== null) { imgWhere.push('user_id = ?'); imgParams.push(userId); }
+    const imgWhereClause = imgWhere.length ? `WHERE ${imgWhere.join(' AND ')}` : '';
+    const imgTotal = db.prepare(`SELECT COUNT(*) as n FROM image_records ${imgWhereClause}`).get(...imgParams).n;
+    const imgOffset = (page - 1) * pageSize;
+    const imgRows = db.prepare(`SELECT * FROM image_records ${imgWhereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`).all(...imgParams, pageSize, imgOffset);
+    return {
+      tasks: imgRows.map((r) => imageRecordToTask(r)),
+      total: imgTotal,
+      page,
+      pageSize,
+    };
   }
 
   const whereClause = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
@@ -365,13 +415,34 @@ export function getDownloadTasks(options = {}) {
     }
   }
 
+  const videoTasks = tasks.map((task) => ({
+    ...task,
+    hasHistory: !!task.history_id,
+    model_type: 'video',
+    assets: assetsByTask[task.id] || [],
+  }));
+
+  // type=all 时合并图片记录
+  if (type === 'all') {
+    const imgWhere = [];
+    const imgParams = [];
+    if (projectId) { imgWhere.push('project_id = ?'); imgParams.push(projectId); }
+    if (!isAdmin && userId !== null) { imgWhere.push('user_id = ?'); imgParams.push(userId); }
+    const imgWhereClause = imgWhere.length ? `WHERE ${imgWhere.join(' AND ')}` : '';
+    const imgRows = db.prepare(`SELECT * FROM image_records ${imgWhereClause} ORDER BY created_at DESC`).all(...imgParams);
+    const imgTasks = imgRows.map((r) => imageRecordToTask(r));
+    const merged = [...videoTasks, ...imgTasks].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    const imgTotal = db.prepare(`SELECT COUNT(*) as n FROM image_records ${imgWhereClause}`).get(...imgParams).n;
+    return {
+      tasks: merged.slice((page - 1) * pageSize, page * pageSize),
+      total: total + imgTotal,
+      page,
+      pageSize,
+    };
+  }
+
   return {
-    tasks: tasks.map((task) => ({
-      ...task,
-      hasHistory: !!task.history_id,
-      model_type: 'video',
-      assets: assetsByTask[task.id] || [],
-    })),
+    tasks: videoTasks,
     total,
     page,
     pageSize,

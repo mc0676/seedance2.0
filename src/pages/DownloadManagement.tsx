@@ -3,6 +3,22 @@ import * as downloadService from '../services/downloadService';
 import type { DownloadTask } from '../types/index';
 import { useApp } from '../context/AppContext';
 
+async function downloadImageUrl(url: string, filename?: string) {
+  try {
+    const resp = await fetch(url);
+    const blob = await resp.blob();
+    const ext = blob.type.split('/')[1]?.split('+')[0] || 'png';
+    const name = filename || `image_${Date.now()}.${ext}`;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch {
+    window.open(url, '_blank');
+  }
+}
+
 function CheckIcon({ checked, indeterminate }: { checked: boolean; indeterminate?: boolean }) {
   if (indeterminate) {
     return (
@@ -47,6 +63,7 @@ interface GeneratingTask {
 export default function DownloadManagementPage() {
   const { state: appState } = useApp();
   const currentProjectId = appState.currentProject?.id ?? null;
+  const projectsLoaded = !appState.loading;
   const [state, setState] = useState<DownloadState>({
     tasks: [],
     total: 0,
@@ -142,6 +159,7 @@ export default function DownloadManagementPage() {
   }, [loadTasks]);
 
   useEffect(() => {
+    if (!projectsLoaded) return;
     const initializeOrLoad = async () => {
       if (!hasInitializedRef.current) {
         hasInitializedRef.current = true;
@@ -158,7 +176,7 @@ export default function DownloadManagementPage() {
     };
 
     void initializeOrLoad();
-  }, [loadTasks, refreshGeneratingState]);
+  }, [projectsLoaded, loadTasks, refreshGeneratingState]);
 
   // 刷新任务列表（获取已生成的视频）
   const handleRefresh = async () => {
@@ -534,6 +552,32 @@ export default function DownloadManagementPage() {
                   </td>
                   <td className="px-4 py-3 text-right" onMouseDown={(e) => e.stopPropagation()}>
                     <div className="flex justify-end gap-2">
+                      {/* 图片条目：预览 + 逐张下载 */}
+                      {task.model_type === 'image' && task.image_urls && task.image_urls.length > 0 && (
+                        <>
+                          <button
+                            onClick={() => handlePreview(task)}
+                            className="p-1 text-purple-400 hover:bg-purple-500/10 rounded transition-colors"
+                            title="预览图片"
+                          >
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                            </svg>
+                          </button>
+                          {task.image_urls.map((url, i) => (
+                            <button key={i}
+                              onClick={() => downloadImageUrl(url, `image_${task.id}_${i + 1}.png`)}
+                              className="p-1 text-blue-400 hover:bg-blue-500/10 rounded transition-colors"
+                              title={task.image_urls!.length > 1 ? `下载图片 ${i + 1}` : '下载图片'}>
+                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                              </svg>
+                              {task.image_urls!.length > 1 && <span className="text-[9px] ml-0.5">{i + 1}</span>}
+                            </button>
+                          ))}
+                        </>
+                      )}
                       {/* 有视频 URL：预览 + 下载 */}
                       {task.video_url && (
                         <>
@@ -571,6 +615,7 @@ export default function DownloadManagementPage() {
                           </svg>
                         </button>
                       )}
+                      {task.model_type !== 'image' && (
                       <button
                         onClick={() => handleDeleteTask(task.id)}
                         className="p-1 text-red-400 hover:bg-red-500/10 rounded transition-colors"
@@ -580,6 +625,7 @@ export default function DownloadManagementPage() {
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                         </svg>
                       </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -637,7 +683,13 @@ export default function DownloadManagementPage() {
                 </svg>
               </button>
             </div>
-            {previewTask.video_url ? (
+            {previewTask.model_type === 'image' && previewTask.image_urls && previewTask.image_urls.length > 0 ? (
+              <div className={`grid gap-2 ${previewTask.image_urls.length === 1 ? 'grid-cols-1' : 'grid-cols-2'}`}>
+                {previewTask.image_urls.map((url, i) => (
+                  <img key={i} src={url} alt={`图片 ${i + 1}`} className="w-full rounded-lg max-h-[70vh] object-contain bg-black" />
+                ))}
+              </div>
+            ) : previewTask.video_url ? (
               <video
                 src={previewTask.video_url}
                 controls
@@ -652,18 +704,31 @@ export default function DownloadManagementPage() {
                 className="w-full rounded-lg max-h-[70vh] bg-black"
               />
             ) : (
-              <div className="text-center text-gray-400 py-12">暂无可预览的视频</div>
+              <div className="text-center text-gray-400 py-12">暂无可预览的内容</div>
             )}
             <div className="flex justify-end mt-3 gap-2">
-              <button
-                onClick={() => handleBrowserDownload(previewTask)}
-                className="px-4 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-500 transition-colors flex items-center gap-2"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                </svg>
-                下载视频
-              </button>
+              {previewTask.model_type === 'image' && previewTask.image_urls?.map((url, i) => (
+                <button key={i}
+                  onClick={() => downloadImageUrl(url, `image_${previewTask.id}_${i + 1}.png`)}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-500 transition-colors flex items-center gap-2"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                  </svg>
+                  {previewTask.image_urls!.length > 1 ? `下载图片${i + 1}` : '下载图片'}
+                </button>
+              ))}
+              {previewTask.model_type !== 'image' && (
+                <button
+                  onClick={() => handleBrowserDownload(previewTask)}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-500 transition-colors flex items-center gap-2"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                  </svg>
+                  下载视频
+                </button>
+              )}
             </div>
           </div>
         </div>

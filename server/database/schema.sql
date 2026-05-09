@@ -337,11 +337,12 @@ CREATE INDEX IF NOT EXISTS idx_project_assets_project_id ON project_assets(proje
 CREATE INDEX IF NOT EXISTS idx_project_assets_status ON project_assets(status);
 CREATE INDEX IF NOT EXISTS idx_project_assets_auto_inject ON project_assets(project_id, auto_inject, review_status);
 
--- 积分锁定表
+-- 积分锁定表（task_id 用于视频任务，image_record_id 用于图片任务，两者互斥）
 CREATE TABLE IF NOT EXISTS credit_locks (
   id                 INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id            INTEGER NOT NULL,
-  task_id            INTEGER NOT NULL UNIQUE,
+  task_id            INTEGER UNIQUE,
+  image_record_id    INTEGER UNIQUE,
   estimated_credits  INTEGER NOT NULL,
   locked_credits     INTEGER NOT NULL,
   status             TEXT NOT NULL DEFAULT 'locked' CHECK (status IN ('locked', 'settled', 'released')),
@@ -355,6 +356,7 @@ CREATE TABLE IF NOT EXISTS credit_locks (
 );
 CREATE INDEX IF NOT EXISTS idx_credit_locks_user_status ON credit_locks(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_credit_locks_task ON credit_locks(task_id);
+CREATE INDEX IF NOT EXISTS idx_credit_locks_image ON credit_locks(image_record_id);
 
 -- 激活码表
 CREATE TABLE IF NOT EXISTS activation_codes (
@@ -384,3 +386,20 @@ CREATE TABLE IF NOT EXISTS volc_key_groups (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 图片生成历史记录表
+CREATE TABLE IF NOT EXISTS image_records (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  prompt TEXT NOT NULL,
+  model TEXT NOT NULL,
+  size_label TEXT NOT NULL DEFAULT '',
+  ref_urls TEXT NOT NULL DEFAULT '[]',
+  result_urls TEXT NOT NULL DEFAULT '[]',
+  credits_used INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'done',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_image_records_user ON image_records(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_image_records_project ON image_records(project_id, created_at DESC);

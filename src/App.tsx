@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AppProvider } from './context/AppContext';
 import { useApp } from './context/AppContext';
@@ -14,6 +14,25 @@ import DownloadManagementPage from './pages/DownloadManagement';
 import ProjectWorkspacePage from './pages/ProjectWorkspacePage';
 import type { User } from './types';
 import { getCurrentUser } from './services/authService';
+
+// 维护模式全屏公告
+function MaintenanceOverlay({ message }: { message: string }) {
+  return (
+    <div className="fixed inset-0 z-[9999] bg-[#0f111a] flex items-center justify-center">
+      <div className="text-center max-w-md px-8">
+        <div className="mb-6 text-yellow-400">
+          <svg className="w-16 h-16 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+              d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+          </svg>
+        </div>
+        <h1 className="text-2xl font-bold text-white mb-3">系统维护中</h1>
+        <p className="text-gray-300 leading-relaxed mb-8">{message}</p>
+        <p className="text-xs text-gray-500">维护完成后页面将自动恢复，请耐心等待...</p>
+      </div>
+    </div>
+  );
+}
 
 // 受保护的路由组件
 function ProtectedRoute({
@@ -63,10 +82,37 @@ function MainLayout({
 function AppContent() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [maintenance, setMaintenance] = useState(false);
+  const [maintenanceMessage, setMaintenanceMessage] = useState('系统维护中，请稍后再试。');
+  const prevMaintenance = useRef(false);
 
   const handleAuthSuccess = (user: User) => {
     setCurrentUser(user);
   };
+
+  // 维护状态轮询
+  const checkMaintenance = useCallback(async () => {
+    try {
+      const res = await fetch('/api/status');
+      const data = await res.json();
+      const inMaintenance: boolean = data.maintenance === true;
+      setMaintenance(inMaintenance);
+      if (data.message) setMaintenanceMessage(data.message);
+      // 维护结束后自动刷新页面
+      if (prevMaintenance.current && !inMaintenance) {
+        window.location.reload();
+      }
+      prevMaintenance.current = inMaintenance;
+    } catch {
+      // 网络错误不改变状态
+    }
+  }, []);
+
+  useEffect(() => {
+    checkMaintenance();
+    const timer = setInterval(checkMaintenance, 5000);
+    return () => clearInterval(timer);
+  }, [checkMaintenance]);
 
   // 加载当前用户
   useEffect(() => {
@@ -105,6 +151,7 @@ function AppContent() {
 
   return (
     <AppProvider currentUser={currentUser}>
+      {maintenance && <MaintenanceOverlay message={maintenanceMessage} />}
       <Routes>
         {/* 公开路由 */}
         <Route

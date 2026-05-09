@@ -297,6 +297,7 @@ export default function SingleTaskPage() {
   // 素材组所有非 rejected 素材均可 @（同一素材可多次引用）
   // 渲染层 sanity check：strict 过滤——只展示 project_id 严格等于当前工作组 ID 的资产
   const currentProjectId = state.currentProject?.id;
+  const projectsLoaded = !state.loading;
   const availableAssets = useMemo(
     () => projectAssets.filter((a) => a.project_id === currentProjectId),
     [projectAssets, currentProjectId]
@@ -315,12 +316,9 @@ export default function SingleTaskPage() {
     );
   }, [availableAssets]);
 
-  // 获取资产的固定 chipTag（按在 projectAssets 中的位置）
-  function getAssetChipTag(asset: ProjectAsset, assets: ProjectAsset[]): string {
-    const idx = assets.findIndex((a) =>
-      (asset.volc_asset_id && a.volc_asset_id === asset.volc_asset_id) || a.id === asset.id
-    );
-    return `@素材${idx >= 0 ? idx + 1 : assets.length + 1}`;
+  // chipTag 直接用火山素材ID，全局唯一，不受排序影响
+  function getAssetChipTag(asset: ProjectAsset, _assets?: ProjectAsset[]): string {
+    return `@${asset.volc_asset_id || asset.id}`;
   }
 
   // 只匹配当前已上传素材的合法 tag，避免误把普通文字里的 @ 变成 chip
@@ -534,21 +532,35 @@ export default function SingleTaskPage() {
   }, []);
 
   // 加载工作组素材组（有 file_url 的素材均可引用）
-  // 进入页面/切换工作组都自动匹配；返回的资产强制打上 project_id，渲染层会严格过滤
+  // 先用本地 DB 快速渲染，再异步用 ARK 实时数据覆盖
   useEffect(() => {
     const pid = state.currentProject?.id;
     setProjectAssets([]); // 立即清空
     if (!pid) return;
     let cancelled = false;
+
+    // 第一阶段：先请求本地 DB 数据（快，无 ARK 调用）
+    getProjectAssets(pid, { pageSize: 100, skipLive: true } as Parameters<typeof getProjectAssets>[1])
+      .then((r) => {
+        if (cancelled) return;
+        const tagged = r.assets
+          .filter((a) => a.review_status !== 'rejected' && (a.volc_asset_id || a.file_url))
+          .map((a) => ({ ...a, project_id: pid }));
+        if (tagged.length > 0) setProjectAssets(tagged); // 有本地数据先展示
+      })
+      .catch(() => {});
+
+    // 第二阶段：再请求 ARK 实时数据覆盖
     getProjectAssets(pid, { pageSize: 100 })
       .then((r) => {
         if (cancelled) return;
         const tagged = r.assets
           .filter((a) => a.review_status !== 'rejected' && (a.volc_asset_id || a.file_url))
-          .map((a) => ({ ...a, project_id: pid })); // 强制覆盖 project_id，避免后端漏传时被 stale 化
+          .map((a) => ({ ...a, project_id: pid }));
         setProjectAssets(tagged);
       })
       .catch(() => { if (!cancelled) setProjectAssets([]); });
+
     return () => { cancelled = true; };
   }, [state.currentProject?.id]);
 
@@ -614,13 +626,14 @@ export default function SingleTaskPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.currentProject?.id]);
 
-  // 初始加载历史
+  // 初始加载历史（等项目列表加载完再请求，避免刷新时用 undefined projectId 拉全量）
   useEffect(() => {
+    if (!projectsLoaded) return;
     if (historyLoadedRef.current) return;
     historyLoadedRef.current = true;
     void loadHistory(1, false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [projectsLoaded]);
 
   // 工作组切换时立即清空历史并重新加载
   useEffect(() => {
@@ -1038,41 +1051,6 @@ export default function SingleTaskPage() {
 
   // 资产列表变化时（刷新后新增），重新映射已插入 chip 的 tag
   // 复用时由 pendingEditorHtmlRef 负责写入编辑器，跳过本 effect 的覆盖
-  useEffect(() => {
-    if (pendingEditorHtmlRef.current !== null) return; // 复用进行中，跳过
-    if (assetSelections.length === 0 || projectAssets.length === 0) return;
-    let changed = false;
-    const updated = assetSelections.map((sel) => {
-      const asset = projectAssets.find((a) =>
-        (sel.volcAssetId && a.volc_asset_id === sel.volcAssetId) ||
-        String(a.id) === sel.id.replace('asset-', '')
-      );
-      if (!asset) return sel;
-      const newTag = getAssetChipTag(asset, projectAssets);
-      if (newTag === sel.chipTag) return sel;
-      changed = true;
-      return { ...sel, chipTag: newTag };
-    });
-    if (!changed) return;
-
-    // 替换 prompt 文字中的旧 chipTag
-    let newPrompt = prompt;
-    assetSelections.forEach((old, i) => {
-      if (old.chipTag !== updated[i].chipTag) {
-        newPrompt = newPrompt.split(old.chipTag).join(updated[i].chipTag);
-      }
-    });
-
-    setAssetSelections(updated);
-    setPrompt(newPrompt);
-    if (editorRef.current) {
-      const cursor = getCursorOffset(editorRef.current);
-      setEditorHtml(buildHtml(newPrompt, updated));
-      setTimeout(() => { if (editorRef.current) setCursorOffset(editorRef.current, cursor); }, 0);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectAssets]);
-
   useEffect(() => {
     if (!showMention) return;
     const close = (e: MouseEvent) => {
@@ -1498,8 +1476,8 @@ export default function SingleTaskPage() {
                           </span>
                         </div>
                         <div className={`px-1.5 py-1.5 rounded-b-xl ${focused ? 'bg-amber-500/10' : 'bg-[#0d0f1a]'}`}>
-                          <div className="text-[10px] text-amber-300 font-medium truncate">{chipTag}</div>
-                          <div className="text-[10px] text-gray-500 truncate">{asset.name}</div>
+                          <div className="text-[10px] text-gray-300 font-medium truncate">{asset.name}</div>
+                          <div className="text-[9px] text-amber-400/70 truncate font-mono">{chipTag}</div>
                           {grp.length > 1 && focused && (
                             <div className="text-[9px] text-amber-400/60 mt-0.5">↑↓ 切换 {grp.length} 个</div>
                           )}
@@ -1586,8 +1564,8 @@ export default function SingleTaskPage() {
                                 <span className="text-xl">{asset.file_type === 'video' ? '🎬' : asset.file_type === 'audio' ? '🎵' : '🖼️'}</span>
                               )}
                               <div className="text-left">
-                                <div className={`text-xs font-medium ${isFocused ? 'text-white' : 'text-amber-300'}`}>{chipTag}</div>
-                                <div className="text-[10px] text-gray-500 truncate max-w-[80px]">{asset.name}</div>
+                                <div className={`text-xs font-medium ${isFocused ? 'text-white' : 'text-gray-300'}`}>{asset.name}</div>
+                                <div className="text-[9px] text-amber-400/70 truncate max-w-[80px] font-mono">{chipTag}</div>
                               </div>
                             </button>
                           );
@@ -2038,7 +2016,7 @@ export default function SingleTaskPage() {
                               deletedNames.push(ref.originalName?.replace('asset://', '') || volcId);
                               return;
                             }
-                            const newTag = getAssetChipTag(asset, currentProjectAssets);
+                            const newTag = getAssetChipTag(asset);
                             if (oldTag && oldTag !== newTag) {
                               newPrompt = newPrompt.split(oldTag).join(newTag);
                             }

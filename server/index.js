@@ -73,6 +73,40 @@ const DEFAULT_SESSION_ID = process.env.VITE_DEFAULT_SESSION_ID || '';
 app.use(cors());
 app.use(express.json());
 
+// GET /api/status - 维护模式状态（无需登录）
+app.get('/api/status', (req, res) => {
+  try {
+    const db = getDatabase();
+    const mRow = db.prepare("SELECT value FROM system_config WHERE key = 'maintenance_mode'").get();
+    const msgRow = db.prepare("SELECT value FROM system_config WHERE key = 'maintenance_message'").get();
+    const maintenance = mRow?.value === '1';
+    const message = msgRow?.value || '系统维护中，请稍后再试。';
+    res.json({ maintenance, message });
+  } catch {
+    res.json({ maintenance: false, message: '' });
+  }
+});
+
+// 维护模式中间件（admin/super_admin 跳过）
+app.use((req, res, next) => {
+  if (req.path === '/api/status' || req.path === '/api/login' || req.path === '/api/register') return next();
+  try {
+    const db = getDatabase();
+    const mRow = db.prepare("SELECT value FROM system_config WHERE key = 'maintenance_mode'").get();
+    if (mRow?.value !== '1') return next();
+    // 已登录的 admin 跳过
+    const sessionId = req.headers['x-session-id'];
+    if (sessionId) {
+      const session = db.prepare('SELECT u.role FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = ? AND s.expires_at > datetime(\'now\')').get(sessionId);
+      if (session && ['admin', 'super_admin'].includes(session.role)) return next();
+    }
+    const msgRow = db.prepare("SELECT value FROM system_config WHERE key = 'maintenance_message'").get();
+    return res.status(503).json({ maintenance: true, message: msgRow?.value || '系统维护中，请稍后再试。' });
+  } catch {
+    next();
+  }
+});
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 200 * 1024 * 1024 }, // 200MB for video/audio
@@ -876,12 +910,9 @@ app.post('/api/upload/oss', authenticate, ossUpload.single('file'), async (req, 
 
     const MULTIPART_THRESHOLD = 10 * 1024 * 1024; // 10MB 以上走分片上传
     if (size > MULTIPART_THRESHOLD) {
-      const { Readable } = await import('stream');
-      const stream = Readable.from(buffer);
-      stream.size = size;
-      await client.multipartUpload(key, stream, {
+      await client.multipartUpload(key, buffer, {
         mime: mimetype,
-        partSize: 5 * 1024 * 1024, // 每片 5MB
+        partSize: 5 * 1024 * 1024,
         parallel: 3,
       });
     } else {
@@ -898,66 +929,102 @@ app.post('/api/upload/oss', authenticate, ossUpload.single('file'), async (req, 
 });
 
 // POST /api/generate-image - 使用速创异步API生成图片（Nano Banana 2 / GPT-Image-2）
-// 流程：提交任务 -> 轮询 detail 直到 status=2(成功) / 3(失败)
+// 积分流程与视频一致：先 lockForImage → 生成 → settleForImage / releaseForImage
 app.post('/api/generate-image', authenticate, async (req, res) => {
+  const db = getDatabase();
+  const { prompt, model, size, aspectRatio, urls, projectId: reqProjectId, sizeLabel, refUrls: reqRefUrls } = req.body;
+
+  if (!prompt) return res.status(400).json({ error: 'prompt 不能为空' });
+  if (!['gpt-image-2', 'nano-banana-2'].includes(model)) {
+    return res.status(400).json({ error: '不支持的图片生成模型' });
+  }
+
+  const IMAGE_GEN_COST = 10; // 固定 10 积分/次（0.1 元）
+
+  const wuyinRow = db.prepare("SELECT value FROM system_config WHERE key = 'wuyin_api_key'").get();
+  const WUYIN_API_KEY = wuyinRow?.value || 'H8ZPElPf5BKM1amJrauK6txc73';
+  const WUYIN_BASE = 'https://api.wuyinkeji.com';
+
+  // 1) 预插入 image_record（status='pending'），获取 id 供 lock 使用
+  let imageRecordId;
   try {
-    const db = getDatabase();
-    const { prompt, model, size, aspectRatio, urls } = req.body;
-    if (!prompt) return res.status(400).json({ error: 'prompt 不能为空' });
-    if (!['gpt-image-2', 'nano-banana-2'].includes(model)) {
-      return res.status(400).json({ error: '不支持的图片生成模型' });
-    }
+    const ins = db.prepare(
+      `INSERT INTO image_records (user_id, project_id, prompt, model, size_label, ref_urls, result_urls, credits_used, status)
+       VALUES (?, ?, ?, ?, ?, ?, '[]', 0, 'pending')`
+    ).run(
+      req.user.id,
+      reqProjectId || null,
+      prompt,
+      model,
+      sizeLabel || '',
+      JSON.stringify(Array.isArray(reqRefUrls) ? reqRefUrls : []),
+    );
+    imageRecordId = ins.lastInsertRowid;
+  } catch (e) {
+    return res.status(500).json({ error: '初始化记录失败：' + e.message });
+  }
 
-    // 积分检查（每次生图固定扣 5 积分）
-    const IMAGE_GEN_COST = 5;
-    const userRow = db.prepare('SELECT credits, unlimited_credits FROM users WHERE id = ?').get(req.user.id);
-    if (!userRow) return res.status(404).json({ error: '用户不存在' });
-    if (!userRow.unlimited_credits && userRow.credits < IMAGE_GEN_COST) {
-      return res.status(402).json({ error: `积分不足（当前 ${userRow.credits}，生图需要 ${IMAGE_GEN_COST} 积分）` });
-    }
+  // 2) 积分锁定（等同视频 lock，可用余额 = credits - 已锁定视频积分）
+  try {
+    creditLockService.lockForImage({
+      userId: req.user.id,
+      imageRecordId,
+      credits: IMAGE_GEN_COST,
+      meta: { model },
+    });
+  } catch (e) {
+    // 积分不足：清理 pending 记录
+    db.prepare(`DELETE FROM image_records WHERE id = ?`).run(imageRecordId);
+    return res.status(402).json({ error: e.message });
+  }
 
-    const wuyinRow = db.prepare("SELECT value FROM system_config WHERE key = 'wuyin_api_key'").get();
-    const WUYIN_API_KEY = wuyinRow?.value || 'H8ZPElPf5BKM1amJrauK6txc73';
-    const WUYIN_BASE = 'https://api.wuyinkeji.com';
+  // 3) 提交异步任务
+  const endpoint = model === 'gpt-image-2' ? 'image_gpt' : 'image_nanoBanana2';
+  const submitBody = { prompt };
+  if (model === 'gpt-image-2') {
+    if (size) submitBody.size = size;
+  } else {
+    if (size) submitBody.size = size;
+    if (aspectRatio) submitBody.aspectRatio = aspectRatio;
+  }
+  if (Array.isArray(urls) && urls.length > 0) submitBody.urls = urls;
 
-    // 1) 提交异步任务
-    const endpoint = model === 'gpt-image-2' ? 'image_gpt' : 'image_nanoBanana2';
-    const submitBody = { prompt };
-    if (model === 'gpt-image-2') {
-      if (size) submitBody.size = size;
-    } else {
-      if (size) submitBody.size = size;
-      if (aspectRatio) submitBody.aspectRatio = aspectRatio;
-    }
-    if (Array.isArray(urls) && urls.length > 0) submitBody.urls = urls;
-
+  let wuyinTaskId;
+  try {
     const submitResp = await fetch(`${WUYIN_BASE}/api/async/${endpoint}?key=${encodeURIComponent(WUYIN_API_KEY)}`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': WUYIN_API_KEY,
-      },
+      headers: { 'Content-Type': 'application/json', 'Authorization': WUYIN_API_KEY },
       body: JSON.stringify(submitBody),
     });
     const submitData = await submitResp.json();
     if (!submitResp.ok || submitData?.code !== 200 || !submitData?.data?.id) {
+      creditLockService.releaseForImage({ imageRecordId, reason: submitData?.msg || '任务提交失败' });
+      db.prepare(`UPDATE image_records SET status='error' WHERE id=?`).run(imageRecordId);
       return res.status(502).json({ error: submitData?.msg || submitData?.message || '任务提交失败' });
     }
-    const taskId = submitData.data.id;
+    wuyinTaskId = submitData.data.id;
+  } catch (e) {
+    creditLockService.releaseForImage({ imageRecordId, reason: e.message });
+    db.prepare(`UPDATE image_records SET status='error' WHERE id=?`).run(imageRecordId);
+    return res.status(502).json({ error: '提交请求异常：' + e.message });
+  }
 
-    // 2) 轮询查询结果
-    const POLL_INTERVAL_MS = 3000;
-    const POLL_TIMEOUT_MS = 5 * 60 * 1000; // 5 分钟
-    const startedAt = Date.now();
-    let resultUrls = null;
+  // 4) 轮询查询结果
+  const POLL_INTERVAL_MS = 3000;
+  const POLL_TIMEOUT_MS = 5 * 60 * 1000;
+  const startedAt = Date.now();
+  let resultUrls = null;
+  try {
     while (Date.now() - startedAt < POLL_TIMEOUT_MS) {
       await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
       const detailResp = await fetch(
-        `${WUYIN_BASE}/api/async/detail?id=${encodeURIComponent(taskId)}&key=${encodeURIComponent(WUYIN_API_KEY)}`,
+        `${WUYIN_BASE}/api/async/detail?id=${encodeURIComponent(wuyinTaskId)}&key=${encodeURIComponent(WUYIN_API_KEY)}`,
         { headers: { 'Authorization': WUYIN_API_KEY } }
       );
       const detailData = await detailResp.json();
       if (!detailResp.ok || detailData?.code !== 200) {
+        creditLockService.releaseForImage({ imageRecordId, reason: detailData?.msg || '查询任务失败' });
+        db.prepare(`UPDATE image_records SET status='error' WHERE id=?`).run(imageRecordId);
         return res.status(502).json({ error: detailData?.msg || '查询任务失败' });
       }
       const status = detailData?.data?.status;
@@ -966,31 +1033,64 @@ app.post('/api/generate-image', authenticate, async (req, res) => {
         break;
       }
       if (status === 3) {
-        return res.status(502).json({ error: detailData?.data?.message || '生成失败' });
-      }
-      // 0/1 继续轮询
-    }
-
-    if (!resultUrls) {
-      return res.status(504).json({ error: '生成超时，请稍后再试' });
-    }
-
-    // 3) 成功后原子扣积分（防止并发透支）
-    if (!userRow.unlimited_credits) {
-      const result = db.prepare(
-        'UPDATE users SET credits = credits - ?, updated_at = datetime(\'now\') WHERE id = ? AND credits >= ?'
-      ).run(IMAGE_GEN_COST, req.user.id, IMAGE_GEN_COST);
-      if (result.changes === 0) {
-        return res.status(402).json({ error: '积分不足，扣除失败' });
+        const errMsg = detailData?.data?.message || '生成失败';
+        creditLockService.releaseForImage({ imageRecordId, reason: errMsg });
+        db.prepare(`UPDATE image_records SET status='error' WHERE id=?`).run(imageRecordId);
+        return res.status(502).json({ error: errMsg });
       }
     }
+  } catch (e) {
+    creditLockService.releaseForImage({ imageRecordId, reason: e.message });
+    db.prepare(`UPDATE image_records SET status='error' WHERE id=?`).run(imageRecordId);
+    return res.status(500).json({ error: '轮询异常：' + e.message });
+  }
 
-    res.json({
-      success: true,
-      taskId,
-      urls: resultUrls,
-      creditsUsed: userRow.unlimited_credits ? 0 : IMAGE_GEN_COST,
-    });
+  if (!resultUrls) {
+    creditLockService.releaseForImage({ imageRecordId, reason: '生成超时' });
+    db.prepare(`UPDATE image_records SET status='error' WHERE id=?`).run(imageRecordId);
+    return res.status(504).json({ error: '生成超时，请稍后再试' });
+  }
+
+  // 5) 生成成功：settle 积分（等同视频 settle，usage_logs 自动写入）
+  const userRow = db.prepare('SELECT unlimited_credits FROM users WHERE id = ?').get(req.user.id);
+  const actualCost = userRow?.unlimited_credits ? 0 : IMAGE_GEN_COST;
+  creditLockService.settleForImage({ imageRecordId, actualCredits: actualCost });
+
+  // 6) 更新 image_record 为完成状态
+  db.prepare(
+    `UPDATE image_records SET result_urls=?, credits_used=?, status='done' WHERE id=?`
+  ).run(JSON.stringify(resultUrls), actualCost, imageRecordId);
+
+  res.json({
+    success: true,
+    taskId: wuyinTaskId,
+    urls: resultUrls,
+    creditsUsed: actualCost,
+  });
+});
+
+// GET /api/image-records - 图片生成历史（按工作组过滤，无限滚动分页）
+app.get('/api/image-records', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const { page = 1, pageSize = 20, projectId } = req.query;
+    const limit = Math.min(parseInt(pageSize) || 20, 100);
+    const offset = (parseInt(page) - 1) * limit;
+    const conditions = ['user_id = ?'];
+    const params = [req.user.id];
+    if (projectId && projectId !== 'all') {
+      conditions.push('project_id = ?');
+      params.push(parseInt(projectId));
+    }
+    const where = conditions.join(' AND ');
+    const total = db.prepare(`SELECT COUNT(*) as n FROM image_records WHERE ${where} AND status='done'`).get(...params).n;
+    const rows = db.prepare(`SELECT * FROM image_records WHERE ${where} AND status='done' ORDER BY created_at DESC LIMIT ? OFFSET ?`).all(...params, limit, offset);
+    const records = rows.map((r) => ({
+      ...r,
+      ref_urls: JSON.parse(r.ref_urls || '[]'),
+      result_urls: JSON.parse(r.result_urls || '[]'),
+    }));
+    res.json({ success: true, data: { records, total, page: parseInt(page), pageSize: limit } });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -2672,15 +2772,33 @@ app.delete('/api/admin/activation-codes/:id', authenticate, requireAdmin, (req, 
 app.get('/api/admin/system-config', authenticate, requireAdmin, (req, res) => {
   const db = getDatabase();
   const row = db.prepare("SELECT value FROM system_config WHERE key = 'registration_enabled'").get();
-  res.json({ success: true, data: { registrationEnabled: row ? row.value !== '0' : true } });
+  const mRow = db.prepare("SELECT value FROM system_config WHERE key = 'maintenance_mode'").get();
+  const msgRow = db.prepare("SELECT value FROM system_config WHERE key = 'maintenance_message'").get();
+  res.json({
+    success: true,
+    data: {
+      registrationEnabled: row ? row.value !== '0' : true,
+      maintenanceMode: mRow?.value === '1',
+      maintenanceMessage: msgRow?.value || '系统维护中，请稍后再试。',
+    },
+  });
 });
 
 // PUT /api/admin/system-config
 app.put('/api/admin/system-config', authenticate, requireAdmin, (req, res) => {
   const db = getDatabase();
-  const { registrationEnabled } = req.body;
-  const val = registrationEnabled ? '1' : '0';
-  db.prepare("INSERT INTO system_config (key, value, description) VALUES ('registration_enabled', ?, '是否允许用户注册') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(val);
+  const { registrationEnabled, maintenanceMode, maintenanceMessage } = req.body;
+  if (registrationEnabled !== undefined) {
+    const val = registrationEnabled ? '1' : '0';
+    db.prepare("INSERT INTO system_config (key, value, description) VALUES ('registration_enabled', ?, '是否允许用户注册') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(val);
+  }
+  if (maintenanceMode !== undefined) {
+    const val = maintenanceMode ? '1' : '0';
+    db.prepare("INSERT INTO system_config (key, value, description) VALUES ('maintenance_mode', ?, '维护模式') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(val);
+  }
+  if (maintenanceMessage !== undefined) {
+    db.prepare("INSERT INTO system_config (key, value, description) VALUES ('maintenance_message', ?, '维护公告内容') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(maintenanceMessage);
+  }
   res.json({ success: true });
 });
 
@@ -3665,8 +3783,10 @@ app.get('/api/projects/:id/assets', authenticate, async (req, res) => {
     const project = projectService.getProjectById(projectId, req.user.id, ['admin','super_admin'].includes(req.user.role));
     if (!project) return res.status(404).json({ error: '项目不存在' });
 
-    const { page = 1, pageSize = 20, status, autoInject } = req.query;
-    const result = await assetService.listProjectAssetsLive(projectId, {
+    const { page = 1, pageSize = 20, status, autoInject, skipLive } = req.query;
+    const result = skipLive === 'true'
+      ? assetService.listProjectAssets(projectId, { page: parseInt(page), pageSize: parseInt(pageSize), status, autoInject: autoInject !== undefined ? autoInject === 'true' : undefined })
+      : await assetService.listProjectAssetsLive(projectId, {
       page: parseInt(page),
       pageSize: parseInt(pageSize),
       status,
