@@ -279,23 +279,23 @@ export async function listProjectAssetsLive(projectId, options = {}) {
     return listProjectAssets(projectId, options);
   }
 
-  // 并发拉取所有资产组的 ARK 素材（全量翻页）
+  // 串行拉取所有资产组（避免并发触发 ARK rate limit 导致部分失败、数量不稳定）
   let arkItems = [];
-  const settledResults = await Promise.allSettled(volcGroupIds.map(async (volcGroupId) => {
-    const items = [];
-    let pageNum = 1;
-    while (pageNum <= 20) {
-      const resp = await listAssets({ groupId: volcGroupId, pageSize: 100, pageNum });
-      const batch = resp?.Items || [];
-      items.push(...batch);
-      if (!batch.length || batch.length < 100) break;
-      pageNum++;
+  for (const volcGroupId of volcGroupIds) {
+    try {
+      const items = [];
+      let pageNum = 1;
+      while (pageNum <= 20) {
+        const resp = await listAssets({ groupId: volcGroupId, pageSize: 100, pageNum });
+        const batch = resp?.Items || [];
+        items.push(...batch);
+        if (!batch.length || batch.length < 100) break;
+        pageNum++;
+      }
+      arkItems.push(...items);
+    } catch (e) {
+      console.warn('[assets] ARK ListAssets 拉取失败:', e.message);
     }
-    return items;
-  }));
-  for (const r of settledResults) {
-    if (r.status === 'fulfilled') arkItems.push(...r.value);
-    else console.warn('[assets] ARK ListAssets 部分失败:', r.reason?.message);
   }
 
   // 过滤已删除，按 CreateTime 升序排列（保证每次顺序一致）

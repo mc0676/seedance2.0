@@ -762,7 +762,25 @@ export default function SingleTaskPage() {
     if (!sel?.rangeCount) return;
     const range = sel.getRangeAt(0);
 
-    if (text[cursor - 1] === '@') {
+    // 用 DOM Range 直接取光标前一字符（多行时比 text[cursor-1] 更可靠）
+    const charBeforeCursor = (() => {
+      try {
+        const r = range.cloneRange();
+        if (r.startContainer.nodeType === Node.TEXT_NODE && r.startOffset >= 1) {
+          r.setStart(r.startContainer, r.startOffset - 1);
+          return r.toString();
+        }
+        // 光标在节点起始位置，找前一个兄弟节点的最后字符
+        const prev = r.startContainer.previousSibling || r.startContainer.parentNode?.previousSibling;
+        if (prev) {
+          const t = prev.textContent || '';
+          return t[t.length - 1] ?? '';
+        }
+      } catch { /* ignore */ }
+      return text[cursor - 1] ?? '';
+    })();
+
+    if (charBeforeCursor === '@') {
       // Save DOM position of '@': cursor is right after '@', so offset-1 points to '@'
       const node = range.startContainer;
       const offset = range.startOffset;
