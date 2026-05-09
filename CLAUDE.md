@@ -163,4 +163,139 @@ server/
 2. `src/types/index.ts`
 3. `src/App.tsx` / `src/context/AppContext.tsx`
 4. `src/services/*.ts` / `server/services/*.js`
-5. `README.md` / `doc/*.md`
+
+---
+
+## 生产服务器
+
+- **IP**：`47.94.174.146`
+- **SSH 密钥**：`~/.ssh/云屿`（本地 Windows 路径）
+- **SSH 连接**：`ssh -i ~/.ssh/云屿 root@47.94.174.146`
+- **容器名**：`seedance-blue`
+- **对外端口**：`3001`
+- **数据库 volume**：`seedance-data`（挂载到容器 `/app/server/data`，重启不丢失）
+- **前端 volume**：`seedance-dist`（挂载到容器 `/app/dist`，路径 `/var/lib/docker/volumes/seedance-dist/_data`）
+
+### 热更新（只改前端）
+
+```bash
+# 1. 本地构建
+npm run build
+cp -r dist/* server/public/
+
+# 2. 上传新构建文件
+scp -i ~/.ssh/云屿 dist/index.html dist/assets/<新JS>.js dist/assets/<新CSS>.css root@47.94.174.146:/tmp/
+
+# 3. 写入服务器 volume（无需重启容器）
+ssh -i ~/.ssh/云屿 root@47.94.174.146 "
+  DIST=/var/lib/docker/volumes/seedance-dist/_data
+  cp /tmp/index.html \$DIST/
+  cp /tmp/<新JS>.js \$DIST/assets/
+  cp /tmp/<新CSS>.css \$DIST/assets/
+"
+```
+
+### 热更新（改了后端 server/*.js）
+
+```bash
+# 1. 上传服务端文件
+scp -i ~/.ssh/云屿 server/index.js root@47.94.174.146:/tmp/server_index.js
+scp -i ~/.ssh/云屿 server/services/creditLockService.js root@47.94.174.146:/tmp/
+scp -i ~/.ssh/云屿 server/database/index.js root@47.94.174.146:/tmp/db_index.js
+
+# 2. 写入容器 overlay（容器运行时执行）
+ssh -i ~/.ssh/云屿 root@47.94.174.146 "
+  UPPER=\$(docker inspect seedance-blue --format '{{.GraphDriver.Data.UpperDir}}')
+  cp /tmp/server_index.js \$UPPER/app/server/index.js
+  cp /tmp/creditLockService.js \$UPPER/app/server/services/creditLockService.js
+  cp /tmp/db_index.js \$UPPER/app/server/database/index.js
+  docker restart seedance-blue
+"
+```
+
+### 重启容器
+
+```bash
+ssh -i ~/.ssh/云屿 root@47.94.174.146 "docker restart seedance-blue"
+```
+
+### 验证服务正常
+
+```bash
+ssh -i ~/.ssh/云屿 root@47.94.174.146 "docker ps && curl -s http://localhost:3001/api/status"
+```
+
+### 查看运行日志
+
+```bash
+ssh -i ~/.ssh/云屿 root@47.94.174.146 "docker logs seedance-blue --tail 50"
+```
+
+### 直接查询数据库
+
+```bash
+ssh -i ~/.ssh/云屿 root@47.94.174.146 "docker exec seedance-blue node -e \"
+  const db = require('/app/server/node_modules/better-sqlite3')('/app/server/data/seedance.db');
+  // 在这里写查询，例如：
+  console.log(db.prepare('SELECT count(*) as c FROM users').get());
+\""
+```
+
+---
+
+## GitHub
+
+- **Remote**：`mc0676`
+- **仓库**：`https://github.com/mc0676/seedance2.0.git`
+- **Token**：`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`
+- **分支**：`main`
+
+### 本地网络能连 GitHub 时
+
+```bash
+git push mc0676 HEAD
+```
+
+### 本地无法连接 GitHub（走服务器中转）
+
+```bash
+# 1. 打包本地 commits
+git bundle create /tmp/seedance_push.bundle HEAD
+
+# 2. 上传到服务器
+scp -i ~/.ssh/云屿 /tmp/seedance_push.bundle root@47.94.174.146:/tmp/
+
+# 3. 从服务器推送到 GitHub
+ssh -i ~/.ssh/云屿 root@47.94.174.146 "
+  cd /tmp
+  git clone seedance_push.bundle seedance_tmp
+  cd seedance_tmp
+  git remote add mc0676 'https://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@github.com/mc0676/seedance2.0.git'
+  git push mc0676 HEAD:main
+  rm -rf /tmp/seedance_tmp /tmp/seedance_push.bundle
+"
+```
+
+---
+
+## 第三方 API
+
+### 吴音图片生成 API
+
+- **Key**：`PzDdXUlAiWmmtWVjWC0g8XjHD7`（存储于 DB `system_config.wuyin_api_key`）
+- **安全模式**：IP 白名单（已加白：`47.94.174.146`、`112.32.64.228`）
+- **认证方式**：`?key=<KEY>` + `Authorization: <KEY>` 请求头
+- **提交接口**：`POST https://api.wuyinkeji.com/api/async/image_nanoBanana2?key=<KEY>`
+- **查询接口**：`GET https://api.wuyinkeji.com/api/async/detail?id=<taskId>&key=<KEY>`
+- **成功状态**：`data.status === 2`，`data.result` 为图片 URL 数组
+- **费用**：10 积分/张（`IMAGE_GEN_COST = 10` in `server/index.js`）
+
+### 更新吴音 Key（在生产 DB 中）
+
+```bash
+ssh -i ~/.ssh/云屿 root@47.94.174.146 "docker exec seedance-blue node -e \"
+  const db = require('/app/server/node_modules/better-sqlite3')('/app/server/data/seedance.db');
+  db.prepare(\\\"INSERT OR REPLACE INTO system_config (key, value) VALUES ('wuyin_api_key', ?)\\\").run('新KEY');
+  console.log('已更新');
+\""
+```
