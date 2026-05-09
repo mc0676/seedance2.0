@@ -323,7 +323,7 @@ export default function ImageGenPage() {
                 <><SparkleIcon className="w-4 h-4" />生成图片</>
               )}
             </button>
-            <p className="text-xs text-gray-600 text-center mt-2">每次消耗 5 积分</p>
+            <p className="text-xs text-gray-600 text-center mt-2">每次消耗 10 积分</p>
           </div>
         </div>
       </div>
