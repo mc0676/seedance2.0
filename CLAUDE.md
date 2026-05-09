@@ -32,8 +32,6 @@ Seedance 2.0 Web 是一个 React + TypeScript 前端、Express + SQLite 后端�
 |---|---|---|---|---|
 | `seedance-2.0` | `dreamina_seedance_40_pro` | `dreamina_video_seedance_20_pro` | `3.3.9` | 全能模型（schema.sql 已启用） |
 | `seedance-2.0-fast` | `dreamina_seedance_40` | `dreamina_seedance_20_fast` | `3.3.9` | 快速模型（schema.sql 已启用） |
-| `seedance-2.0-vip` | `dreamina_seedance_40_pro_vision` | `seedance_20_pro_720p_output` | `3.3.12` | 全能模型 VIP 720p（未启用） |
-| `seedance-2.0-fast-vip` | `dreamina_seedance_40_vision` | `seedance_20_fast_720p_output` | `3.3.12` | 快速模型 VIP 720p（未启用） |
 
 VIP 模型未在 `schema.sql` 的 `model_pricing` 中插入，默认不显示。如需启用，在管理后台 → 模型计费管理中手动添加。
 
@@ -166,11 +164,32 @@ server/
 
 ---
 
+## ⚠️ 数据安全红线（AI 必读，每次操作前确认）
+
+**以下操作绝对禁止，无论任何理由：**
+
+1. `docker volume rm seedance-data` — 删除数据库 volume，**所有用户数据永久丢失**
+2. `docker rm -f seedance-blue` 后不挂载 volume 重建 — 容器重建必须带 `-v seedance-data:/app/server/data`
+3. 在服务器上执行任何覆盖 `/app/server/data/seedance.db` 的操作（`cp`、`mv`、`>`）
+4. `docker run` 启动新容器时不带 `-v seedance-data` 参数
+5. 用本地数据库文件 `scp` 覆盖服务器数据库
+
+**热更新只允许以下操作：**
+- 向 `seedance-dist` volume 写入新的前端静态文件（index.html / JS / CSS）
+- 用 `docker cp` 或直接写 overlay UpperDir 替换 `server/index.js` / `server/services/*.js` 等后端代码文件
+- `docker restart seedance-blue`（不会影响 volume 中的数据）
+
+**每次数据库操作前，先用只读查询确认数据存在，再执行写操作。**
+
+---
+
 ## 生产服务器
 
 - **IP**：`47.94.174.146`
-- **SSH 密钥**：`~/.ssh/云屿`（本地 Windows 路径）
-- **SSH 连接**：`ssh -i ~/.ssh/云屿 root@47.94.174.146`
+- **SSH 密钥**：项目目录下 `.ssh/yunyu_server`（已加入 .gitignore，不会上传 GitHub）
+  - Windows 本地路径：`C:\Users\vomag\Pictures\2\seed\seedance2.0\.ssh\yunyu_server`
+  - 也可使用原始位置：`~/.ssh/云屿`
+- **SSH 连接**：`ssh -i .ssh/yunyu_server root@47.94.174.146`
 - **容器名**：`seedance-blue`
 - **对外端口**：`3001`
 - **数据库 volume**：`seedance-data`（挂载到容器 `/app/server/data`，重启不丢失）
@@ -184,10 +203,10 @@ npm run build
 cp -r dist/* server/public/
 
 # 2. 上传新构建文件
-scp -i ~/.ssh/云屿 dist/index.html dist/assets/<新JS>.js dist/assets/<新CSS>.css root@47.94.174.146:/tmp/
+scp -i .ssh/yunyu_server dist/index.html dist/assets/<新JS>.js dist/assets/<新CSS>.css root@47.94.174.146:/tmp/
 
 # 3. 写入服务器 volume（无需重启容器）
-ssh -i ~/.ssh/云屿 root@47.94.174.146 "
+ssh -i .ssh/yunyu_server root@47.94.174.146 "
   DIST=/var/lib/docker/volumes/seedance-dist/_data
   cp /tmp/index.html \$DIST/
   cp /tmp/<新JS>.js \$DIST/assets/
@@ -199,12 +218,12 @@ ssh -i ~/.ssh/云屿 root@47.94.174.146 "
 
 ```bash
 # 1. 上传服务端文件
-scp -i ~/.ssh/云屿 server/index.js root@47.94.174.146:/tmp/server_index.js
-scp -i ~/.ssh/云屿 server/services/creditLockService.js root@47.94.174.146:/tmp/
-scp -i ~/.ssh/云屿 server/database/index.js root@47.94.174.146:/tmp/db_index.js
+scp -i .ssh/yunyu_server server/index.js root@47.94.174.146:/tmp/server_index.js
+scp -i .ssh/yunyu_server server/services/creditLockService.js root@47.94.174.146:/tmp/
+scp -i .ssh/yunyu_server server/database/index.js root@47.94.174.146:/tmp/db_index.js
 
 # 2. 写入容器 overlay（容器运行时执行）
-ssh -i ~/.ssh/云屿 root@47.94.174.146 "
+ssh -i .ssh/yunyu_server root@47.94.174.146 "
   UPPER=\$(docker inspect seedance-blue --format '{{.GraphDriver.Data.UpperDir}}')
   cp /tmp/server_index.js \$UPPER/app/server/index.js
   cp /tmp/creditLockService.js \$UPPER/app/server/services/creditLockService.js
@@ -216,25 +235,25 @@ ssh -i ~/.ssh/云屿 root@47.94.174.146 "
 ### 重启容器
 
 ```bash
-ssh -i ~/.ssh/云屿 root@47.94.174.146 "docker restart seedance-blue"
+ssh -i .ssh/yunyu_server root@47.94.174.146 "docker restart seedance-blue"
 ```
 
 ### 验证服务正常
 
 ```bash
-ssh -i ~/.ssh/云屿 root@47.94.174.146 "docker ps && curl -s http://localhost:3001/api/status"
+ssh -i .ssh/yunyu_server root@47.94.174.146 "docker ps && curl -s http://localhost:3001/api/status"
 ```
 
 ### 查看运行日志
 
 ```bash
-ssh -i ~/.ssh/云屿 root@47.94.174.146 "docker logs seedance-blue --tail 50"
+ssh -i .ssh/yunyu_server root@47.94.174.146 "docker logs seedance-blue --tail 50"
 ```
 
 ### 直接查询数据库
 
 ```bash
-ssh -i ~/.ssh/云屿 root@47.94.174.146 "docker exec seedance-blue node -e \"
+ssh -i .ssh/yunyu_server root@47.94.174.146 "docker exec seedance-blue node -e \"
   const db = require('/app/server/node_modules/better-sqlite3')('/app/server/data/seedance.db');
   // 在这里写查询，例如：
   console.log(db.prepare('SELECT count(*) as c FROM users').get());
@@ -263,10 +282,10 @@ git push mc0676 HEAD
 git bundle create /tmp/seedance_push.bundle HEAD
 
 # 2. 上传到服务器
-scp -i ~/.ssh/云屿 /tmp/seedance_push.bundle root@47.94.174.146:/tmp/
+scp -i .ssh/yunyu_server /tmp/seedance_push.bundle root@47.94.174.146:/tmp/
 
 # 3. 从服务器推送到 GitHub
-ssh -i ~/.ssh/云屿 root@47.94.174.146 "
+ssh -i .ssh/yunyu_server root@47.94.174.146 "
   cd /tmp
   git clone seedance_push.bundle seedance_tmp
   cd seedance_tmp
@@ -293,7 +312,7 @@ ssh -i ~/.ssh/云屿 root@47.94.174.146 "
 ### 更新吴音 Key（在生产 DB 中）
 
 ```bash
-ssh -i ~/.ssh/云屿 root@47.94.174.146 "docker exec seedance-blue node -e \"
+ssh -i .ssh/yunyu_server root@47.94.174.146 "docker exec seedance-blue node -e \"
   const db = require('/app/server/node_modules/better-sqlite3')('/app/server/data/seedance.db');
   db.prepare(\\\"INSERT OR REPLACE INTO system_config (key, value) VALUES ('wuyin_api_key', ?)\\\").run('新KEY');
   console.log('已更新');
