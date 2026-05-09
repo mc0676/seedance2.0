@@ -7,11 +7,14 @@ const ARK_ERROR_MAP = [
   { pattern: /output video may contain sensitive/i,  zh: '视频内容触发平台安全审核，请修改提示词后重试' },
   { pattern: /output video may be related to copyright/i, zh: '视频内容可能涉及版权限制，请修改提示词后重试' },
   { pattern: /input text may contain sens/i,          zh: '提示词触发安全审核，请检查文字内容后重试' },
+  { pattern: /input image may contain real person/i,  zh: '图片包含真人，请更换素材后重试' },
   { pattern: /input.*sensitive/i,                     zh: '输入内容触发安全审核，请修改后重试' },
   { pattern: /output.*sensitive/i,                    zh: '生成内容触发安全审核，请修改提示词后重试' },
   { pattern: /copyright/i,                            zh: '内容涉及版权限制，请修改提示词后重试' },
   { pattern: /rate limit/i,                           zh: '请求过于频繁，请稍后重试' },
-  { pattern: /insufficient.*balance/i,                zh: 'API 账户余额不足，请联系管理员' },
+  { pattern: /insufficient.*balance/i,                zh: '火山服务端临时异常，请稍后重试' },
+  { pattern: /AccountOverdueError|account.*overdue/i, zh: '火山服务端临时异常，请稍后重试' },
+  { pattern: /InternalServiceError|internal.*error|unexpected internal/i, zh: '火山服务端临时异常，请稍后重试' },
   { pattern: /timeout/i,                              zh: '生成超时，请稍后重试' },
 ];
 
@@ -61,7 +64,7 @@ async function createArkTask(apiKey, model, content, options = {}) {
   });
   if (!resp.ok) {
     const text = await resp.text();
-    throw new Error(`Ark API 创建任务失败 HTTP ${resp.status}: ${text}`);
+    throw new Error(`Ark API 创建任务失败 HTTP ${resp.status}: ${translateArkError(text)}`);
   }
   return await resp.json();
 }
@@ -73,7 +76,7 @@ async function getArkTask(apiKey, taskId) {
   });
   if (!resp.ok) {
     const text = await resp.text();
-    throw new Error(`Ark API 查询任务失败 HTTP ${resp.status}: ${text}`);
+    throw new Error(`Ark API 查询任务失败 HTTP ${resp.status}: ${translateArkError(text)}`);
   }
   return await resp.json();
 }
