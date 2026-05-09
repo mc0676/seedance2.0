@@ -321,6 +321,13 @@ export default function SingleTaskPage() {
     return `@${asset.volc_asset_id || asset.id}`;
   }
 
+  // 精确匹配 chipTag，避免 @abc123 误匹配 @abc12345（substring 前缀碰撞）
+  // chipTag 形如 @<volcId> 或 @<localId>，后跟非单词字符或字符串结尾即为完整匹配
+  function promptHasChip(text: string, chipTag: string): boolean {
+    const escaped = chipTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(escaped + '(?![\\w-])').test(text);
+  }
+
   // 只匹配当前已上传素材的合法 tag，避免误把普通文字里的 @ 变成 chip
   function buildHtml(text: string, overrideSelections?: AssetSelection[]) {
     const sels = overrideSelections ?? assetSelections;
@@ -558,6 +565,22 @@ export default function SingleTaskPage() {
           .filter((a) => a.review_status !== 'rejected' && (a.volc_asset_id || a.file_url))
           .map((a) => ({ ...a, project_id: pid }));
         setProjectAssets(tagged);
+        // 修复A：ARK数据到达后，已插入chip若当时无volc_asset_id（用了file_url），现在补全为 asset:// URI
+        setAssetSelections((prev) => prev.map((sel) => {
+          if (sel.volcAssetId) {
+            // 已有volcAssetId，确认URI格式正确
+            return sel.assetUri.startsWith('asset://') ? sel : { ...sel, assetUri: `asset://${sel.volcAssetId}` };
+          }
+          // 无volcAssetId，尝试通过file_url找到对应的live资产
+          const match = tagged.find((a) => a.file_url === sel.assetUri && a.volc_asset_id);
+          if (!match) return sel;
+          return {
+            ...sel,
+            volcAssetId: match.volc_asset_id!,
+            assetUri: `asset://${match.volc_asset_id}`,
+            chipTag: `@${match.volc_asset_id}`,
+          };
+        }));
       })
       .catch(() => { if (!cancelled) setProjectAssets([]); });
 
@@ -1167,7 +1190,17 @@ export default function SingleTaskPage() {
       ...mentionItems.map((m) => m.tag),
       ...assetSelections.map((a) => a.chipTag),
     ];
-    const hasAnyChip = allChipTags.some((tag) => prompt.includes(tag));
+    const hasAnyChip = allChipTags.some((tag) => promptHasChip(prompt, tag));
+
+    // 提交前用最新 projectAssets 刷新 assetSelections 的 assetUri（修复C：快照过期问题）
+    const assetMap = new Map(projectAssets.map((a) => [a.volc_asset_id, a]));
+    const freshSelections = assetSelections.map((sel) => {
+      if (!sel.volcAssetId) return sel;
+      const live = assetMap.get(sel.volcAssetId);
+      if (!live) return sel;
+      const freshUri = live.volc_asset_id ? `asset://${live.volc_asset_id}` : (live.file_url || sel.assetUri);
+      return freshUri !== sel.assetUri ? { ...sel, assetUri: freshUri } : sel;
+    });
 
     let uploadedImageUrls: string[];
     let resolvedVideoUrl: string | undefined;
@@ -1182,14 +1215,14 @@ export default function SingleTaskPage() {
       // 有 @ chip：只发送 prompt 中明确提及的素材
       uploadedImageUrls = images
         .map((f, i) => ({ f, tag: `@图片${i + 1}` }))
-        .filter(({ f, tag }) => f.ossUrl && prompt.includes(tag))
+        .filter(({ f, tag }) => f.ossUrl && promptHasChip(prompt, tag))
         .map(({ f }) => f.ossUrl!);
       resolvedVideoUrl = videos
         .map((f, i) => ({ f, tag: `@视频${i + 1}` }))
-        .find(({ f, tag }) => f.ossUrl && prompt.includes(tag))?.f.ossUrl;
+        .find(({ f, tag }) => f.ossUrl && promptHasChip(prompt, tag))?.f.ossUrl;
       resolvedAudioUrl = audios
         .map((f, i) => ({ f, tag: `@音频${i + 1}` }))
-        .find(({ f, tag }) => f.ossUrl && prompt.includes(tag))?.f.ossUrl;
+        .find(({ f, tag }) => f.ossUrl && promptHasChip(prompt, tag))?.f.ossUrl;
     } else {
       // 无 @ chip：发送全部上传素材（传统用法）
       uploadedImageUrls = images.filter((f) => f.ossUrl).map((f) => f.ossUrl!);
@@ -1197,23 +1230,25 @@ export default function SingleTaskPage() {
       resolvedAudioUrl = audios[0]?.ossUrl;
     }
 
-    // 资产库素材：只提交 prompt 中明确 @ 的
-    const activeAssetImgUris = assetSelections
-      .filter((a) => a.fileType === 'image' && prompt.includes(a.chipTag))
+    // 资产库素材：只提交 prompt 中明确 @ 的（使用刷新后的URI + 精确匹配）
+    const activeAssetImgUris = freshSelections
+      .filter((a) => a.fileType === 'image' && promptHasChip(prompt, a.chipTag))
       .map((a) => a.assetUri);
-    const activeAssetVidUri = assetSelections
-      .find((a) => a.fileType === 'video' && prompt.includes(a.chipTag))?.assetUri;
-    const activeAssetAudUri = assetSelections
-      .find((a) => a.fileType === 'audio' && prompt.includes(a.chipTag))?.assetUri;
+    const activeAssetVidUris = freshSelections
+      .filter((a) => a.fileType === 'video' && promptHasChip(prompt, a.chipTag))
+      .map((a) => a.assetUri);
+    const activeAssetAudUri = freshSelections
+      .find((a) => a.fileType === 'audio' && promptHasChip(prompt, a.chipTag))?.assetUri;
 
     // 有资产库 @ 引用时，上传区素材不再混入（避免 @素材1 时带出其他上传图片）
-    const hasAssetChip = assetSelections.some((a) => prompt.includes(a.chipTag));
+    const hasAssetChip = freshSelections.some((a) => promptHasChip(prompt, a.chipTag));
     const imageUrls = hasAssetChip
       ? activeAssetImgUris
       : [...uploadedImageUrls, ...activeAssetImgUris];
+    // 多视频素材全部合入（ARK 支持多路 video 作参考），取第一个非空
     const videoUrl = hasAssetChip
-      ? (activeAssetVidUri || resolvedVideoUrl)
-      : (resolvedVideoUrl || activeAssetVidUri);
+      ? (activeAssetVidUris[0] || resolvedVideoUrl)
+      : (resolvedVideoUrl || activeAssetVidUris[0]);
     const audioUrl = hasAssetChip
       ? (activeAssetAudUri || resolvedAudioUrl)
       : (resolvedAudioUrl || activeAssetAudUri);
