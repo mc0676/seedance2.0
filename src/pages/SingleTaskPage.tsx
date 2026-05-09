@@ -193,6 +193,11 @@ function UnifiedUploadZone({ images, videos, audios, onAdd, onRemove, uploading 
 
 const ARK_ERROR_TRANSLATIONS: Record<string, string> = {
   'The request failed because the input image may contain real person': '请求失败：输入图片中可能含有真实人脸，平台隐私保护拒绝处理，请更换图片后重试',
+  'The request failed because the output video may contain sensitive': '视频内容触发平台安全审核，请修改提示词后重试',
+  'The request failed because the output video may be related to copyright': '视频内容可能涉及版权限制，请修改提示词后重试',
+  'The request failed because the input text may contain sens': '提示词触发安全审核，请检查文字内容后重试',
+  'input text may contain sensitive': '提示词触发安全审核，请检查文字内容后重试',
+  'output video may contain sensitive': '视频内容触发平台安全审核，请修改提示词后重试',
   'invalid role specified for image content': '图片参数格式错误，请检查参考图片后重试',
   'role must be specified for image contents': '多图模式需要指定图片角色，请检查后重试',
   'The request failed due to input content policy': '输入内容不符合平台内容政策，请修改提示词或素材后重试',
@@ -203,6 +208,10 @@ const ARK_ERROR_TRANSLATIONS: Record<string, string> = {
 };
 
 function parseArkError(raw: string): string {
+  // 先直接对原始字符串做翻译匹配（覆盖 "视频生成失败: The request..." 格式）
+  for (const [en, zh] of Object.entries(ARK_ERROR_TRANSLATIONS)) {
+    if (raw.includes(en)) return zh;
+  }
   // 尝试从 "HTTP 400: {...}" 格式中提取 JSON
   const jsonMatch = raw.match(/HTTP \d+:\s*(\{.*\})/s);
   if (jsonMatch) {
@@ -210,17 +219,15 @@ function parseArkError(raw: string): string {
       const obj = JSON.parse(jsonMatch[1]);
       const msg: string = obj?.error?.message || obj?.message || '';
       if (msg) {
-        // 查找翻译
         for (const [en, zh] of Object.entries(ARK_ERROR_TRANSLATIONS)) {
           if (msg.includes(en)) return zh;
         }
-        return msg; // 没有翻译时直接显示英文 message
+        return msg;
       }
     } catch {
       // JSON 解析失败，继续走下面逻辑
     }
   }
-  // 非 API 错误，直接返回
   return raw;
 }
 

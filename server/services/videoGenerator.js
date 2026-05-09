@@ -2,6 +2,27 @@ import { getDatabase } from '../database/index.js';
 import fs from 'fs';
 import path from 'path';
 
+// ARK 英文错误 → 中文提示映射
+const ARK_ERROR_MAP = [
+  { pattern: /output video may contain sensitive/i,  zh: '视频内容触发平台安全审核，请修改提示词后重试' },
+  { pattern: /output video may be related to copyright/i, zh: '视频内容可能涉及版权限制，请修改提示词后重试' },
+  { pattern: /input text may contain sens/i,          zh: '提示词触发安全审核，请检查文字内容后重试' },
+  { pattern: /input.*sensitive/i,                     zh: '输入内容触发安全审核，请修改后重试' },
+  { pattern: /output.*sensitive/i,                    zh: '生成内容触发安全审核，请修改提示词后重试' },
+  { pattern: /copyright/i,                            zh: '内容涉及版权限制，请修改提示词后重试' },
+  { pattern: /rate limit/i,                           zh: '请求过于频繁，请稍后重试' },
+  { pattern: /insufficient.*balance/i,                zh: 'API 账户余额不足，请联系管理员' },
+  { pattern: /timeout/i,                              zh: '生成超时，请稍后重试' },
+];
+
+function translateArkError(msg) {
+  if (!msg) return msg;
+  for (const { pattern, zh } of ARK_ERROR_MAP) {
+    if (pattern.test(msg)) return zh;
+  }
+  return msg;
+}
+
 const ARK_BASE_URL = process.env.ARK_BASE_URL || 'https://ark.cn-beijing.volces.com/api/v3';
 
 const MODEL_MAP = {
@@ -227,8 +248,8 @@ async function generateSeedanceVideo(options) {
     }
 
     if (status === 'failed') {
-      const errMsg = result.error?.message || result.error?.code || JSON.stringify(result.error || result);
-      throw new Error(`视频生成失败: ${errMsg}`);
+      const rawMsg = result.error?.message || result.error?.code || JSON.stringify(result.error || result);
+      throw new Error(`视频生成失败: ${translateArkError(rawMsg)}`);
     }
 
     await new Promise(r => setTimeout(r, pollInterval));
