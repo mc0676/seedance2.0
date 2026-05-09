@@ -7,6 +7,7 @@ import {
   removeProjectMember,
 } from '../services/assetService';
 import type { ProjectMember } from '../types';
+import { formatDateTime, formatDate, useUserTimezone } from '../utils/datetime';
 
 type Tab = 'volc' | 'members';
 
@@ -69,6 +70,7 @@ function DeleteConfirmModal({ name, onConfirm, onCancel }: { name: string; onCon
 }
 
 export default function ProjectWorkspacePage() {
+  useUserTimezone();
   const { state, currentUser } = useApp();
   const currentProject = state.currentProject;
   const [tab, setTab] = useState<Tab>('volc');
@@ -586,7 +588,7 @@ export default function ProjectWorkspacePage() {
                           : <p className="text-gray-700 text-xs">—</p>}
                         <p className="text-gray-600 text-xs font-mono truncate" title={g.Id}>{g.Id}</p>
                         {g.CreateTime && (
-                          <p className="text-gray-600 text-xs">{new Date(g.CreateTime).toLocaleString('zh-CN')}</p>
+                          <p className="text-gray-600 text-xs">{formatDateTime(g.CreateTime)}</p>
                         )}
                         <div className="mt-auto pt-1 flex items-center justify-between gap-2">
                           <span className="text-xs text-purple-400 group-hover:text-purple-300">查看素材 →</span>
@@ -656,7 +658,7 @@ export default function ProjectWorkspacePage() {
                           <p className="text-gray-600 text-xs font-mono truncate" title={a.Id}>{a.Id}</p>
                           <code className="text-xs text-cyan-400 font-mono select-all break-all">asset://{a.Id}</code>
                           {a.CreateTime && (
-                            <p className="text-gray-600 text-xs">{new Date(a.CreateTime).toLocaleString('zh-CN')}</p>
+                            <p className="text-gray-600 text-xs">{formatDateTime(a.CreateTime)}</p>
                           )}
                           <div className="mt-auto pt-1">
                             <button onClick={() => handleDeleteAsset(a)}
@@ -722,7 +724,7 @@ export default function ProjectWorkspacePage() {
                     <tr key={m.id} className="hover:bg-[#0f111a]/50">
                       <td className="px-5 py-3 text-sm text-white">{m.email}</td>
                       <td className="px-5 py-3 text-sm"><MemberRoleTag role={m.role} /></td>
-                      <td className="px-5 py-3 text-sm text-gray-400">{new Date(m.created_at).toLocaleDateString('zh-CN')}</td>
+                      <td className="px-5 py-3 text-sm text-gray-400">{formatDate(m.created_at)}</td>
                       <td className="px-5 py-3 text-sm">
                         {m.role !== 'owner' && (isAdmin || currentUser?.id === m.user_id) && (
                           <button onClick={() => handleRemoveMember(m)}

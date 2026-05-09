@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import * as downloadService from '../services/downloadService';
 import type { DownloadTask } from '../types/index';
 import { useApp } from '../context/AppContext';
+import { formatDateTime, elapsedSeconds, useUserTimezone } from '../utils/datetime';
 
 async function downloadImageUrl(url: string, filename?: string) {
   try {
@@ -61,6 +62,7 @@ interface GeneratingTask {
 }
 
 export default function DownloadManagementPage() {
+  useUserTimezone(); // 订阅时区变更，自动重渲染
   const { state: appState } = useApp();
   const currentProjectId = appState.currentProject?.id ?? null;
   const projectsLoaded = !appState.loading;
@@ -91,7 +93,7 @@ export default function DownloadManagementPage() {
       taskId: task.taskId,
       historyId: task.historyId,
       createdAt: task.createdAt,
-      elapsedSeconds: Math.floor((Date.now() - new Date(task.createdAt).getTime()) / 1000),
+      elapsedSeconds: elapsedSeconds(task.createdAt),
     }));
 
   // 手动添加单个任务到轮询列表
@@ -106,7 +108,7 @@ export default function DownloadManagementPage() {
           taskId,
           historyId,
           createdAt,
-          elapsedSeconds: Math.floor((Date.now() - new Date(createdAt).getTime()) / 1000),
+          elapsedSeconds: elapsedSeconds(createdAt),
         },
       ];
     });
@@ -548,7 +550,7 @@ export default function DownloadManagementPage() {
                     </span>
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-400">
-                    {new Date(task.created_at).toLocaleString('zh-CN')}
+                    {formatDateTime(task.created_at)}
                   </td>
                   <td className="px-4 py-3 text-right" onMouseDown={(e) => e.stopPropagation()}>
                     <div className="flex justify-end gap-2">

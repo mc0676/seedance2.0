@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import * as settingsService from '../services/settingsService';
 import { RATIO_OPTIONS, DURATION_OPTIONS, MODEL_OPTIONS } from '../types/index';
+import { TIMEZONE_OPTIONS, getUserTimezone, setUserTimezone, formatDateTime } from '../utils/datetime';
 
 export default function SettingsPage() {
   const { state, updateSettingsAction } = useApp();
@@ -26,6 +27,13 @@ export default function SettingsPage() {
   const [activateError, setActivateError] = useState('');
   const [activating, setActivating] = useState(false);
   const [activateSuccess, setActivateSuccess] = useState(false);
+
+  // 时区设置（localStorage，独立于服务器侧的 settings）
+  const [timezone, setTimezone] = useState<string>(() => getUserTimezone());
+  const handleTimezoneChange = (tz: string) => {
+    setTimezone(tz);
+    setUserTimezone(tz);
+  };
 
   const handleActivate = async () => {
     setActivateError('');
@@ -343,6 +351,31 @@ export default function SettingsPage() {
               生成的视频将自动保存到此目录下的对应项目文件夹中
             </p>
           </div>
+        </div>
+
+        {/* 时区设置 */}
+        <div className="bg-[#1c1f2e] rounded-xl p-6 mb-6 border border-gray-800">
+          <h2 className="text-lg font-bold mb-2">时区设置</h2>
+          <p className="text-sm text-gray-400 mb-4">
+            影响系统内所有时间的显示。服务器存储时间均为 UTC，根据此处选择转换为对应时区显示。
+          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <select
+              value={timezone}
+              onChange={(e) => handleTimezoneChange(e.target.value)}
+              className="bg-[#0f111a] border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500 min-w-[260px]"
+            >
+              {TIMEZONE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+            <span className="text-xs text-gray-500">
+              当前时间：<span className="text-gray-300">{formatDateTime(new Date(), { timeZone: timezone })}</span>
+            </span>
+          </div>
+          <p className="text-xs text-gray-600 mt-2">
+            该设置仅保存在当前浏览器（localStorage），切换设备需重新选择。
+          </p>
         </div>
 
         {/* 保存按钮 */}

@@ -318,3 +318,28 @@ ssh -i .ssh/yunyu_server root@47.94.174.146 "docker exec seedance-blue node -e \
   console.log('已更新');
 \""
 ```
+
+### 火山 AI MediaKit（视频画质增强）
+
+- **Key**：存储于 DB `system_config.mediakit_api_key`，管理后台 → "火山 AI MediaKit Key" 卡片可改
+- **Base URL**：`https://mediakit.cn-beijing.volces.com/api/v1`
+- **认证**：`Authorization: Bearer <KEY>`
+- **提交**：`POST /tools/enhance-video`，body `{ video_url, scene, tool_version, resolution }`，返回 `{ task_id }`
+- **查询**：`GET /tasks/{task_id}`，`status=completed` 时 `result.video_url` 为增强后视频（48h 有效）
+- **场景**：`aigc` / `short_series` / `ugc` / `old_film`；**版本**：`standard`（RTF≈10）/ `professional`（RTF≈30+）
+- **计费**：表 `enhancement_pricing`，每秒视频积分 × 视频时长，后台可调
+- **存储**：`video_enhancements` 表与源 `tasks.id` 一对多；`credit_locks.enhancement_id` 走与图片/视频相同的 lock/settle/release 流程
+- **后台 worker**：`server/services/enhancementWorker.js` 每 30s 扫 `status='processing'` 的行轮询 MediaKit 同步状态，容器重启自动恢复
+- **入口**：左侧菜单「画质增强」（`/enhancement`，[src/pages/EnhancementPage.tsx](src/pages/EnhancementPage.tsx)），与「视频生成」并列。支持两种来源：(1) 选已生成的视频任务；(2) 粘贴外部视频 URL 或上传 mp4 到 OSS。SingleTaskPage 历史卡片不再有增强按钮和角标
+- **提交接口**：`POST /api/video-enhancements`，body 任选其一：`{ taskId, ... }`（已生成视频）或 `{ videoUrl, durationSeconds, ... }`（外部视频）；外部视频时 `video_enhancements.task_id = NULL`
+- **列表接口**：`GET /api/video-enhancements/list?page=&pageSize=` 分页拉当前用户全部增强记录（含外部）
+
+### 更新 MediaKit Key（在生产 DB 中）
+
+```bash
+ssh -i ~/.ssh/云屿 root@47.94.174.146 "docker exec seedance-blue node -e \"
+  const db = require('/app/server/node_modules/better-sqlite3')('/app/server/data/seedance.db');
+  db.prepare(\\\"INSERT OR REPLACE INTO system_config (key, value) VALUES ('mediakit_api_key', ?)\\\").run('新KEY');
+  console.log('已更新');
+\""
+```

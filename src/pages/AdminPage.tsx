@@ -1,5 +1,6 @@
 import { useState, useEffect, Fragment } from 'react';
 import { useApp } from '../context/AppContext';
+import { formatDateTime, formatDate, useUserTimezone } from '../utils/datetime';
 import {
   getSystemStats,
   getUserList,
@@ -24,6 +25,11 @@ import {
   type VolcKeyGroup,
   getWuyinKey,
   updateWuyinKey,
+  getMediaKitKey,
+  updateMediaKitKey,
+  listEnhancementPricing,
+  updateEnhancementPricing,
+  type AdminEnhancementPricing,
 } from '../services/authService';
 import { getAuthHeaders } from '../services/authService';
 import type { User, FeatureKey, ModelPricing } from '../types';
@@ -110,6 +116,7 @@ async function toggleUnlimitedCredits(userId: number, unlimited: boolean): Promi
 }
 
 export default function AdminPage() {
+  useUserTimezone();
   const { currentUser } = useApp();
   const isSuperAdmin = currentUser?.role === 'super_admin';
   const [stats, setStats] = useState<SystemStats | null>(null);
@@ -148,6 +155,11 @@ export default function AdminPage() {
   const [wuyinKey, setWuyinKey] = useState('');
   const [wuyinKeyEditing, setWuyinKeyEditing] = useState(false);
   const [wuyinKeyDraft, setWuyinKeyDraft] = useState('');
+  // MediaKit
+  const [mediaKitKey, setMediaKitKey] = useState('');
+  const [mediaKitKeyEditing, setMediaKitKeyEditing] = useState(false);
+  const [mediaKitKeyDraft, setMediaKitKeyDraft] = useState('');
+  const [enhancementPricing, setEnhancementPricing] = useState<AdminEnhancementPricing[]>([]);
 
   // 火山原生资产库
   interface VolcAssetGroup { Id: string; Name: string; Description?: string; GroupType?: string; ProjectName?: string; CreateTime?: string; UpdateTime?: string; coverUrl?: string; }
@@ -493,6 +505,8 @@ export default function AdminPage() {
       listAllModelPricing().then((list) => { setModelPricings(list); setActiveModelTab(list[0]?.model_key ?? ''); }).catch(() => {});
       loadVolcKeyGroups();
       getWuyinKey().then((d) => setWuyinKey(d.key)).catch(() => {});
+      getMediaKitKey().then((d) => setMediaKitKey(d.key)).catch(() => {});
+      listEnhancementPricing().then(setEnhancementPricing).catch(() => {});
       loadVolcAkSk();
     }
   }, []);
@@ -592,6 +606,25 @@ export default function AdminPage() {
       await updateWuyinKey(wuyinKeyDraft);
       setWuyinKey(wuyinKeyDraft);
       setWuyinKeyEditing(false);
+    } catch (e) { alert(e instanceof Error ? e.message : '保存失败'); }
+  };
+
+  const handleSaveMediaKitKey = async () => {
+    try {
+      await updateMediaKitKey(mediaKitKeyDraft);
+      setMediaKitKey(mediaKitKeyDraft);
+      setMediaKitKeyEditing(false);
+    } catch (e) { alert(e instanceof Error ? e.message : '保存失败'); }
+  };
+
+  const handleUpdateEnhancementPricing = async (
+    toolVersion: 'standard' | 'professional',
+    patch: Partial<Pick<AdminEnhancementPricing, 'credits_per_second' | 'enabled' | 'label' | 'description'>>,
+  ) => {
+    try {
+      await updateEnhancementPricing(toolVersion, patch);
+      const fresh = await listEnhancementPricing();
+      setEnhancementPricing(fresh);
     } catch (e) { alert(e instanceof Error ? e.message : '保存失败'); }
   };
 
@@ -958,7 +991,7 @@ export default function AdminPage() {
                         )}
                       </td>
                       <td className="px-6 py-4 text-sm text-gray-400">
-                        {new Date(c.created_at).toLocaleDateString('zh-CN')}
+                        {formatDate(c.created_at)}
                       </td>
                       <td className="px-6 py-4 text-sm">
                         <div className="flex gap-2">
@@ -1218,7 +1251,7 @@ export default function AdminPage() {
                             ? <p className="text-gray-500 text-xs truncate" title={g.Description}>{g.Description}</p>
                             : <p className="text-gray-700 text-xs">—</p>}
                           <p className="text-gray-600 text-xs font-mono truncate" title={g.Id}>{g.Id}</p>
-                          {g.CreateTime && <p className="text-gray-600 text-xs">{new Date(g.CreateTime).toLocaleString('zh-CN')}</p>}
+                          {g.CreateTime && <p className="text-gray-600 text-xs">{formatDateTime(g.CreateTime)}</p>}
                           <div className="mt-auto pt-1 flex items-center justify-between gap-2" onClick={(e) => e.stopPropagation()}>
                             <button onClick={() => { setEditingGroup(g); setEditGroupName(g.Name); setEditGroupDesc(g.Description || ''); setEditingAsset(null); }}
                               className="px-2 py-1 bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 rounded text-xs transition-colors">编辑</button>
@@ -1293,7 +1326,7 @@ export default function AdminPage() {
                               : <p className="text-gray-700 text-xs">—</p>}
                             <p className="text-gray-600 text-xs font-mono truncate" title={a.Id}>{a.Id}</p>
                             <code className="text-xs text-cyan-400 font-mono select-all break-all">asset://{a.Id}</code>
-                            {a.CreateTime && <p className="text-gray-600 text-xs">{new Date(a.CreateTime).toLocaleString('zh-CN')}</p>}
+                            {a.CreateTime && <p className="text-gray-600 text-xs">{formatDateTime(a.CreateTime)}</p>}
                             <div className="mt-auto pt-1 flex items-center gap-1 flex-wrap">
                               <button onClick={() => handleGetAsset(a)} disabled={detailLoading}
                                 className="flex-1 py-1.5 bg-gray-700/50 text-gray-300 hover:bg-gray-700 rounded text-xs disabled:opacity-50 transition-colors">详情</button>
@@ -1401,6 +1434,70 @@ export default function AdminPage() {
           )}
         </div>
 
+        {/* MediaKit API Key 管理 */}
+        <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
+          <h2 className="text-xl font-semibold text-white mb-2">火山 AI MediaKit Key</h2>
+          <p className="text-xs text-gray-500 mb-4">用于视频画质增强（mediakit.cn-beijing.volces.com）</p>
+          {mediaKitKeyEditing ? (
+            <div className="flex gap-2">
+              <input
+                className="flex-1 px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-white text-sm font-mono focus:outline-none focus:border-purple-500"
+                value={mediaKitKeyDraft}
+                onChange={(e) => setMediaKitKeyDraft(e.target.value)}
+              />
+              <button onClick={handleSaveMediaKitKey} className="px-4 py-2 bg-green-600 hover:bg-green-500 rounded text-white text-sm font-medium">保存</button>
+              <button onClick={() => setMediaKitKeyEditing(false)} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-white text-sm">取消</button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-3">
+              <code className="flex-1 px-3 py-2 bg-[#0f111a] rounded text-gray-300 text-sm font-mono truncate">{mediaKitKey || '（未配置）'}</code>
+              <button onClick={() => { setMediaKitKeyDraft(mediaKitKey); setMediaKitKeyEditing(true); }} className="px-4 py-2 bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 rounded text-sm">修改</button>
+            </div>
+          )}
+
+          {/* 计费配置 */}
+          <div className="mt-6">
+            <h3 className="text-sm font-semibold text-white mb-2">画质增强计费</h3>
+            <p className="text-xs text-gray-500 mb-3">每秒视频积分 × 视频时长 = 单次扣费</p>
+            <div className="space-y-2">
+              {enhancementPricing.map((p) => (
+                <div key={p.tool_version} className="flex items-center gap-3 bg-[#0f111a] rounded-lg px-3 py-2">
+                  <div className="flex-shrink-0 w-24">
+                    <div className="text-sm text-white">{p.label}</div>
+                    <div className="text-[10px] text-gray-500">{p.tool_version}</div>
+                  </div>
+                  <div className="flex items-center gap-1 text-xs text-gray-400">
+                    <input
+                      type="number"
+                      min={0}
+                      defaultValue={p.credits_per_second}
+                      onBlur={(e) => {
+                        const v = Number(e.target.value);
+                        if (v !== p.credits_per_second) {
+                          void handleUpdateEnhancementPricing(p.tool_version, { credits_per_second: v });
+                        }
+                      }}
+                      className="w-20 px-2 py-1 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm"
+                    />
+                    <span>积分/秒</span>
+                  </div>
+                  <label className="flex items-center gap-1.5 text-xs text-gray-400 ml-auto cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={!!p.enabled}
+                      onChange={(e) => void handleUpdateEnhancementPricing(p.tool_version, { enabled: e.target.checked ? 1 : 0 })}
+                    />
+                    启用
+                  </label>
+                </div>
+              ))}
+              {enhancementPricing.length === 0 && (
+                <div className="text-xs text-gray-600">暂无配置（数据库初始化后会自动写入两条默认行）</div>
+              )}
+            </div>
+          </div>
+        </div>
+
         {/* 速创API Key 管理 */}
         <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
           <h2 className="text-xl font-semibold text-white mb-2">速创API Key</h2>
@@ -1502,7 +1599,7 @@ export default function AdminPage() {
                       const id = (t.id || t.task_id || '') + '';
                       const tokens = t.usage?.total_tokens ?? t.usage?.completion_tokens ?? '-';
                       const ts = t.created_at;
-                      const tsStr = typeof ts === 'number' ? new Date(ts * 1000).toLocaleString('zh-CN') : (ts ? new Date(ts).toLocaleString('zh-CN') : '-');
+                      const tsStr = ts == null ? '-' : formatDateTime(typeof ts === 'number' ? ts * 1000 : ts);
                       const expanded = expandedTaskId === id;
                       return (
                         <Fragment key={id}>
@@ -1647,7 +1744,7 @@ export default function AdminPage() {
                           </td>
                         )}
                         <td className="px-6 py-4 text-sm text-gray-400">
-                          {new Date(user.createdAt!).toLocaleString('zh-CN')}
+                          {formatDateTime(user.createdAt!)}
                         </td>
                         <td className="px-6 py-4 text-sm">
                           <div className="flex items-center gap-2">

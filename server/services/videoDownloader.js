@@ -404,6 +404,7 @@ export function getDownloadTasks(options = {}) {
   // 批量拉取素材（image_uri 有内容的才有意义）
   const taskIds = tasks.map((t) => t.id);
   let assetsByTask = {};
+  let enhancementsByTask = {};
   if (taskIds.length > 0) {
     const placeholders = taskIds.map(() => '?').join(',');
     const assets = db.prepare(
@@ -413,6 +414,17 @@ export function getDownloadTasks(options = {}) {
       if (!assetsByTask[a.task_id]) assetsByTask[a.task_id] = [];
       assetsByTask[a.task_id].push({ assetType: a.asset_type, uri: a.image_uri, originalName: a.original_name || null });
     }
+    const enhancements = db.prepare(
+      `SELECT id, task_id, status, tool_version, scene, target_resolution,
+              enhanced_video_url, error_message, credits_used, duration_seconds,
+              created_at, finished_at
+       FROM video_enhancements WHERE task_id IN (${placeholders})
+       ORDER BY created_at DESC`
+    ).all(...taskIds);
+    for (const e of enhancements) {
+      if (!enhancementsByTask[e.task_id]) enhancementsByTask[e.task_id] = [];
+      enhancementsByTask[e.task_id].push(e);
+    }
   }
 
   const videoTasks = tasks.map((task) => ({
@@ -420,6 +432,7 @@ export function getDownloadTasks(options = {}) {
     hasHistory: !!task.history_id,
     model_type: 'video',
     assets: assetsByTask[task.id] || [],
+    enhancements: enhancementsByTask[task.id] || [],
   }));
 
   // type=all 时合并图片记录

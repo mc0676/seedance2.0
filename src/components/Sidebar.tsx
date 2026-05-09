@@ -57,6 +57,12 @@ export default function Sidebar({ currentUser, onLogout }: SidebarProps) {
       icon: ImageIcon,
     },
     {
+      id: 'ENHANCEMENT',
+      label: '画质增强',
+      path: '/enhancement',
+      icon: SparkleIcon,
+    },
+    {
       id: 'ASSETS',
       label: '素材组管理',
       path: '/assets',

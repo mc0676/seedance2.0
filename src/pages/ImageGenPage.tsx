@@ -2,6 +2,7 @@ import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { getAuthHeaders } from '../services/authService';
 import { SparkleIcon } from '../components/Icons';
 import { useApp } from '../context/AppContext';
+import { formatShortDateTime, useUserTimezone } from '../utils/datetime';
 
 async function downloadImageUrl(url: string, filename?: string) {
   try {
@@ -46,6 +47,7 @@ interface ImageRecord {
 }
 
 export default function ImageGenPage() {
+  useUserTimezone();
   const { state } = useApp();
   const currentProjectId = state.currentProject?.id ?? null;
   const projectsLoaded = !state.loading;
@@ -394,7 +396,7 @@ export default function ImageGenPage() {
                   {/* 底部：时间 + 参数 + 操作 */}
                   <div className="flex items-end justify-between gap-2 mt-auto">
                     <span className="text-[10px] text-gray-600 flex-shrink-0">
-                      {new Date(item.created_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                      {formatShortDateTime(item.created_at)}
                     </span>
                     <div className="flex flex-col items-end gap-1.5">
                       <div className="flex flex-wrap justify-end gap-1">

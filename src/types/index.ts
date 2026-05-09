@@ -348,6 +348,37 @@ export interface DownloadTask {
   effective_download_status: DownloadStatus;
   assets?: Array<{ assetType: string; uri: string; originalName?: string | null }>;
   credits_used?: number;
+  enhancements?: VideoEnhancement[];
+}
+
+/**
+ * 视频画质增强记录（火山 AI MediaKit）
+ */
+export interface VideoEnhancement {
+  id: number;
+  task_id: number | null;
+  status: 'pending' | 'processing' | 'done' | 'error';
+  tool_version: 'standard' | 'professional';
+  scene: 'aigc' | 'short_series' | 'ugc' | 'old_film';
+  target_resolution: '720p' | '1080p' | '4k';
+  source_video_url?: string | null;
+  enhanced_video_url?: string | null;
+  error_message?: string | null;
+  credits_used?: number;
+  duration_seconds?: number;
+  created_at: string;
+  finished_at?: string | null;
+}
+
+/**
+ * 画质增强计费配置
+ */
+export interface EnhancementPricing {
+  tool_version: 'standard' | 'professional';
+  label: string;
+  credits_per_second: number;
+  enabled?: number;
+  description?: string;
 }
 
 /**

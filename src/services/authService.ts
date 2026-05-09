@@ -638,6 +638,37 @@ export const getWuyinKey = () =>
 export const updateWuyinKey = (key: string) =>
   adminFetch<unknown>('/admin/wuyin-key', { method: 'PUT', body: JSON.stringify({ key }) });
 
+// ==================== 火山 MediaKit Key ====================
+
+export const getMediaKitKey = () =>
+  adminFetch<{ key: string }>('/admin/mediakit-key');
+
+export const updateMediaKitKey = (key: string) =>
+  adminFetch<unknown>('/admin/mediakit-key', { method: 'PUT', body: JSON.stringify({ key }) });
+
+// ==================== 画质增强计费 ====================
+
+export interface AdminEnhancementPricing {
+  tool_version: 'standard' | 'professional';
+  label: string;
+  credits_per_second: number;
+  enabled: number;
+  description: string | null;
+  updated_at?: string;
+}
+
+export const listEnhancementPricing = () =>
+  adminFetch<AdminEnhancementPricing[]>('/admin/enhancement-pricing');
+
+export const updateEnhancementPricing = (
+  toolVersion: 'standard' | 'professional',
+  patch: Partial<Pick<AdminEnhancementPricing, 'credits_per_second' | 'enabled' | 'label' | 'description'>>,
+) =>
+  adminFetch<unknown>(`/admin/enhancement-pricing/${toolVersion}`, {
+    method: 'PUT',
+    body: JSON.stringify(patch),
+  });
+
 // ==================== 模型计费管理 ====================
 
 import type { ModelPricing } from '../types/index';

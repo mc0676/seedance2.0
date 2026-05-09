@@ -9,6 +9,7 @@ import RegisterPage from './pages/RegisterPage';
 import AdminPage from './pages/AdminPage';
 import SingleTaskPage from './pages/SingleTaskPage';
 import ImageGenPage from './pages/ImageGenPage';
+import EnhancementPage from './pages/EnhancementPage';
 import SettingsPage from './pages/Settings';
 import DownloadManagementPage from './pages/DownloadManagement';
 import ProjectWorkspacePage from './pages/ProjectWorkspacePage';
@@ -223,6 +224,17 @@ function AppContent() {
             <ProtectedRoute currentUser={currentUser}>
               <MainLayout currentUser={currentUser} onLogout={handleLogout}>
                 <ImageGenPage />
+              </MainLayout>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/enhancement"
+          element={
+            <ProtectedRoute currentUser={currentUser}>
+              <MainLayout currentUser={currentUser} onLogout={handleLogout}>
+                <EnhancementPage />
               </MainLayout>
             </ProtectedRoute>
           }

@@ -343,6 +343,7 @@ CREATE TABLE IF NOT EXISTS credit_locks (
   user_id            INTEGER NOT NULL,
   task_id            INTEGER UNIQUE,
   image_record_id    INTEGER UNIQUE,
+  enhancement_id     INTEGER UNIQUE,
   estimated_credits  INTEGER NOT NULL,
   locked_credits     INTEGER NOT NULL,
   status             TEXT NOT NULL DEFAULT 'locked' CHECK (status IN ('locked', 'settled', 'released')),
@@ -357,6 +358,45 @@ CREATE TABLE IF NOT EXISTS credit_locks (
 CREATE INDEX IF NOT EXISTS idx_credit_locks_user_status ON credit_locks(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_credit_locks_task ON credit_locks(task_id);
 CREATE INDEX IF NOT EXISTS idx_credit_locks_image ON credit_locks(image_record_id);
+CREATE INDEX IF NOT EXISTS idx_credit_locks_enhancement ON credit_locks(enhancement_id);
+
+-- 视频画质增强（火山 AI MediaKit）
+CREATE TABLE IF NOT EXISTS video_enhancements (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER,
+  user_id INTEGER NOT NULL,
+  project_id INTEGER,
+  source_video_url TEXT NOT NULL,
+  mediakit_task_id TEXT,
+  tool_version TEXT NOT NULL DEFAULT 'standard' CHECK (tool_version IN ('standard', 'professional')),
+  scene TEXT NOT NULL DEFAULT 'aigc' CHECK (scene IN ('aigc', 'short_series', 'ugc', 'old_film')),
+  target_resolution TEXT NOT NULL CHECK (target_resolution IN ('720p', '1080p', '4k')),
+  duration_seconds INTEGER,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'done', 'error')),
+  enhanced_video_url TEXT,
+  credits_used INTEGER DEFAULT 0,
+  error_message TEXT,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  finished_at DATETIME,
+  FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_video_enhancements_task ON video_enhancements(task_id);
+CREATE INDEX IF NOT EXISTS idx_video_enhancements_status ON video_enhancements(status);
+CREATE INDEX IF NOT EXISTS idx_video_enhancements_user ON video_enhancements(user_id);
+
+-- 画质增强计费配置
+CREATE TABLE IF NOT EXISTS enhancement_pricing (
+  tool_version       TEXT PRIMARY KEY CHECK (tool_version IN ('standard', 'professional')),
+  label              TEXT NOT NULL,
+  credits_per_second INTEGER NOT NULL,
+  enabled            INTEGER NOT NULL DEFAULT 1,
+  description        TEXT,
+  updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+INSERT OR IGNORE INTO enhancement_pricing (tool_version, label, credits_per_second, enabled, description) VALUES
+  ('standard',     '画质增强 标准版', 25,  1, '6~10x 实时；1分钟 1080p ≈ 1500 积分（≈1.5元）'),
+  ('professional', '画质增强 专业版', 250, 1, '30x+ 实时；1分钟 1080p ≈ 15000 积分（≈15元）');
 
 -- 激活码表
 CREATE TABLE IF NOT EXISTS activation_codes (

@@ -23,10 +23,14 @@ import * as permissionService from './services/permissionService.js';
 import * as pricingService from './services/pricingService.js';
 import * as creditLockService from './services/creditLockService.js';
 import * as volcArkService from './services/volcArkService.js';
+import * as mediaKitService from './services/mediaKitService.js';
+import * as enhancementWorker from './services/enhancementWorker.js';
 import { readFileSync } from 'fs';
 
 // 初始化数据库
 initDatabase();
+// 启动画质增强后台轮询
+enhancementWorker.start();
 
 // 启动时：若环境变量中有火山引擎 AK/SK，写入 system_config（Docker 部署首次配置兜底）
 try {
@@ -3269,6 +3273,250 @@ app.put('/api/admin/wuyin-key', authenticate, requireAdmin, (req, res) => {
     if (!key) return res.status(400).json({ error: 'key 不能为空' });
     db.prepare("INSERT OR REPLACE INTO system_config (key, value) VALUES ('wuyin_api_key', ?)").run(key);
     res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================
+// 火山 AI MediaKit Key 管理
+// ============================================================
+
+app.get('/api/admin/mediakit-key', authenticate, requireAdmin, (req, res) => {
+  try {
+    const row = getDatabase().prepare("SELECT value FROM system_config WHERE key = 'mediakit_api_key'").get();
+    res.json({ success: true, data: { key: row?.value || '' } });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/api/admin/mediakit-key', authenticate, requireAdmin, (req, res) => {
+  try {
+    const { key } = req.body;
+    if (!key) return res.status(400).json({ error: 'key 不能为空' });
+    getDatabase()
+      .prepare("INSERT OR REPLACE INTO system_config (key, value, description) VALUES ('mediakit_api_key', ?, '火山 AI MediaKit API Key（画质增强）')")
+      .run(key);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 画质增强计费配置
+app.get('/api/admin/enhancement-pricing', authenticate, requireAdmin, (req, res) => {
+  try {
+    const rows = getDatabase().prepare(
+      `SELECT tool_version, label, credits_per_second, enabled, description, updated_at
+       FROM enhancement_pricing ORDER BY tool_version ASC`
+    ).all();
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/api/admin/enhancement-pricing/:toolVersion', authenticate, requireAdmin, (req, res) => {
+  try {
+    const { toolVersion } = req.params;
+    if (!['standard', 'professional'].includes(toolVersion)) {
+      return res.status(400).json({ error: '无效的 tool_version' });
+    }
+    const { credits_per_second, enabled, label, description } = req.body;
+    const db = getDatabase();
+    const existing = db.prepare(`SELECT * FROM enhancement_pricing WHERE tool_version = ?`).get(toolVersion);
+    if (!existing) return res.status(404).json({ error: '配置不存在' });
+    const next = {
+      credits_per_second: credits_per_second != null ? Math.max(0, Math.floor(Number(credits_per_second))) : existing.credits_per_second,
+      enabled: enabled != null ? (enabled ? 1 : 0) : existing.enabled,
+      label: label != null ? String(label) : existing.label,
+      description: description != null ? String(description) : existing.description,
+    };
+    db.prepare(
+      `UPDATE enhancement_pricing SET credits_per_second=?, enabled=?, label=?, description=?, updated_at=CURRENT_TIMESTAMP
+       WHERE tool_version=?`
+    ).run(next.credits_per_second, next.enabled, next.label, next.description, toolVersion);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================
+// 视频画质增强（用户侧）
+// ============================================================
+
+// GET /api/enhancement-pricing - 普通用户也能读，用于弹窗预估积分
+app.get('/api/enhancement-pricing', authenticate, (req, res) => {
+  try {
+    const rows = getDatabase().prepare(
+      `SELECT tool_version, label, credits_per_second, enabled, description
+       FROM enhancement_pricing WHERE enabled = 1 ORDER BY tool_version ASC`
+    ).all();
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/video-enhancements?taskId=:id - 列出某任务的所有增强记录
+app.get('/api/video-enhancements', authenticate, (req, res) => {
+  try {
+    const taskId = parseInt(req.query.taskId);
+    if (!taskId) return res.status(400).json({ error: 'taskId 必填' });
+    const db = getDatabase();
+    const task = db.prepare(`SELECT user_id FROM tasks WHERE id = ?`).get(taskId);
+    if (!task) return res.status(404).json({ error: '任务不存在' });
+    if (task.user_id !== req.user.id && req.user.role !== 'super_admin') {
+      return res.status(403).json({ error: '无权访问' });
+    }
+    const rows = db.prepare(
+      `SELECT id, task_id, status, tool_version, scene, target_resolution,
+              enhanced_video_url, error_message, credits_used, duration_seconds,
+              created_at, finished_at
+       FROM video_enhancements WHERE task_id = ? ORDER BY created_at DESC`
+    ).all(taskId);
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/video-enhancements - 提交画质增强任务
+// 支持两种模式：
+//   1) { taskId, ... }                              —— 增强本平台已生成的视频
+//   2) { videoUrl, durationSeconds, ... }           —— 增强外部视频（http/https URL）
+app.post('/api/video-enhancements', authenticate, async (req, res) => {
+  const db = getDatabase();
+  const { taskId, videoUrl, durationSeconds, scene = 'aigc', toolVersion = 'standard', resolution = '1080p' } = req.body;
+
+  if (!['aigc', 'short_series', 'ugc', 'old_film'].includes(scene)) {
+    return res.status(400).json({ error: '无效的 scene' });
+  }
+  if (!['standard', 'professional'].includes(toolVersion)) {
+    return res.status(400).json({ error: '无效的 tool_version' });
+  }
+  if (!['720p', '1080p', '4k'].includes(resolution)) {
+    return res.status(400).json({ error: '无效的 resolution' });
+  }
+
+  // 1) 来源分支：taskId 优先；否则走外部 videoUrl
+  let sourceUrl, durationSec, sourceTaskId = null, projectId = null;
+  if (taskId) {
+    const task = db.prepare(
+      `SELECT id, user_id, project_id, video_url, duration, status FROM tasks WHERE id = ?`
+    ).get(taskId);
+    if (!task) return res.status(404).json({ error: '任务不存在' });
+    if (task.user_id !== req.user.id) return res.status(403).json({ error: '无权操作他人任务' });
+    if (task.status !== 'done' || !task.video_url) {
+      return res.status(400).json({ error: '源视频未生成完成，无法增强' });
+    }
+    sourceUrl = task.video_url;
+    durationSec = Math.max(1, Math.round(Number(task.duration) || 5));
+    sourceTaskId = task.id;
+    projectId = task.project_id || null;
+  } else if (videoUrl && durationSeconds) {
+    if (!/^https?:\/\//i.test(videoUrl)) {
+      return res.status(400).json({ error: '视频 URL 必须为 http/https' });
+    }
+    const d = Number(durationSeconds);
+    if (!Number.isFinite(d) || d <= 0) {
+      return res.status(400).json({ error: '时长必须为正数' });
+    }
+    sourceUrl = videoUrl;
+    durationSec = Math.max(1, Math.min(300, Math.round(d)));
+  } else {
+    return res.status(400).json({ error: '请提供 taskId 或 videoUrl+durationSeconds' });
+  }
+
+  // 2) 取计费配置 + Key
+  const pricing = db.prepare(
+    `SELECT credits_per_second, label FROM enhancement_pricing WHERE tool_version = ? AND enabled = 1`
+  ).get(toolVersion);
+  if (!pricing) return res.status(400).json({ error: '该版本未启用计费配置' });
+
+  const apiKeyRow = db.prepare("SELECT value FROM system_config WHERE key = 'mediakit_api_key'").get();
+  const apiKey = apiKeyRow?.value || '';
+  if (!apiKey) return res.status(503).json({ error: 'MediaKit API Key 未配置，请联系管理员' });
+
+  const estimatedCredits = durationSec * pricing.credits_per_second;
+
+  // 3) 预插入 video_enhancements 行
+  let enhancementId;
+  try {
+    const ins = db.prepare(
+      `INSERT INTO video_enhancements
+         (task_id, user_id, project_id, source_video_url, tool_version, scene, target_resolution, duration_seconds, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`
+    ).run(sourceTaskId, req.user.id, projectId, sourceUrl, toolVersion, scene, resolution, durationSec);
+    enhancementId = ins.lastInsertRowid;
+  } catch (e) {
+    return res.status(500).json({ error: '初始化记录失败：' + e.message });
+  }
+
+  // 4) 锁定积分
+  try {
+    creditLockService.lockForEnhancement({
+      userId: req.user.id,
+      enhancementId,
+      credits: estimatedCredits,
+      meta: { tool_version: toolVersion, scene, resolution, duration: durationSec, model: pricing.label, source: sourceTaskId ? 'task' : 'url' },
+    });
+  } catch (e) {
+    db.prepare(`DELETE FROM video_enhancements WHERE id = ?`).run(enhancementId);
+    return res.status(402).json({ error: e.message });
+  }
+
+  // 5) 调 MediaKit
+  let mediakitTaskId;
+  try {
+    mediakitTaskId = await mediaKitService.submitEnhanceVideo({
+      apiKey,
+      videoUrl: sourceUrl,
+      scene,
+      toolVersion,
+      resolution,
+    });
+  } catch (e) {
+    creditLockService.releaseForEnhancement({ enhancementId, reason: 'MediaKit 提交失败：' + e.message });
+    db.prepare(`UPDATE video_enhancements SET status='error', error_message=?, finished_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(e.message, enhancementId);
+    return res.status(502).json({ error: 'MediaKit 提交失败：' + e.message });
+  }
+
+  // 6) 写回 mediakit_task_id 并切到 processing
+  db.prepare(
+    `UPDATE video_enhancements SET mediakit_task_id=?, status='processing' WHERE id=?`
+  ).run(mediakitTaskId, enhancementId);
+
+  const row = db.prepare(`SELECT * FROM video_enhancements WHERE id = ?`).get(enhancementId);
+  res.json({ success: true, data: row, estimatedCredits });
+});
+
+// GET /api/video-enhancements/list - 列出当前用户的所有增强记录（含外部视频，分页）
+app.get('/api/video-enhancements/list', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const pageSize = Math.max(1, Math.min(100, parseInt(req.query.pageSize) || 20));
+    const offset = (page - 1) * pageSize;
+
+    const total = db.prepare(
+      `SELECT COUNT(*) AS n FROM video_enhancements WHERE user_id = ?`
+    ).get(req.user.id).n;
+
+    const items = db.prepare(
+      `SELECT id, task_id, user_id, project_id, source_video_url, mediakit_task_id,
+              tool_version, scene, target_resolution, duration_seconds, status,
+              enhanced_video_url, credits_used, error_message, created_at, finished_at
+       FROM video_enhancements
+       WHERE user_id = ?
+       ORDER BY created_at DESC
+       LIMIT ? OFFSET ?`
+    ).all(req.user.id, pageSize, offset);
+
+    res.json({ success: true, data: { items, total, page, pageSize } });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

@@ -17,6 +17,7 @@ import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { getProjectAssets } from '../services/projectService';
 import type { ProjectAsset } from '../types/index';
+import { formatShortDateTime, useUserTimezone } from '../utils/datetime';
 
 interface AssetSelection {
   id: string;
@@ -232,6 +233,7 @@ function parseArkError(raw: string): string {
 }
 
 export default function SingleTaskPage() {
+  useUserTimezone();
   const { currentUser, state, loadProjectTasks } = useApp();
   const { settings } = state;
   const [images, setImages] = useState<UploadedFile[]>([]);
@@ -672,7 +674,7 @@ export default function SingleTaskPage() {
     const projectId = overrideProjectId !== undefined ? overrideProjectId : (state.currentProject?.id ?? null);
     const gen = historyGenRef.current;
     try {
-      const result = await getDownloadTasks('all', 'all', page, 20, projectId);
+      const result = await getDownloadTasks('all', 'video', page, 20, projectId);
       if (gen !== historyGenRef.current) return; // 工作组已切换，丢弃过期响应
       setHistoryItems((prev) => append ? [...prev, ...result.tasks] : result.tasks);
       setHistoryHasMore(result.tasks.length === 20 && result.tasks.length + (append ? historyItems.length : 0) < result.total);
@@ -1918,24 +1920,26 @@ export default function SingleTaskPage() {
         )}
 
         <div className="px-4 pb-4 space-y-3">
-          {historyItems.map((item) => (
+          {historyItems.map((item) => {
+            const playUrl = item.video_url;
+            return (
             <div key={item.id} className="bg-[#1c1f2e] border border-gray-800 hover:border-gray-700 rounded-2xl overflow-hidden transition-all">
               <div className="flex gap-3 p-3 items-start">
                 {/* Thumbnail / status */}
                 <div
                   className="w-[25vh] h-[25vh] min-w-[120px] min-h-[120px] flex-shrink-0 rounded-xl overflow-hidden bg-[#0f111a] flex items-center justify-center cursor-pointer relative group"
                   onClick={() => {
-                    if (item.video_url) {
-                      setPreviewVideo({ url: item.video_url, prompt: item.prompt, error: item.status === 'error' && item.error_message ? parseArkError(item.error_message) : null });
+                    if (playUrl) {
+                      setPreviewVideo({ url: playUrl, prompt: item.prompt, error: item.status === 'error' && item.error_message ? parseArkError(item.error_message) : null });
                     } else if (item.status === 'error' && item.error_message) {
                       setPreviewVideo({ url: '', prompt: item.prompt, error: parseArkError(item.error_message) });
                     }
                   }}
                 >
-                  {item.status === 'done' && item.video_url ? (
+                  {item.status === 'done' && playUrl ? (
                     <>
                       <video
-                        src={item.video_url}
+                        src={playUrl}
                         muted
                         className="w-full h-full object-cover"
                         preload="metadata"
@@ -1986,7 +1990,7 @@ export default function SingleTaskPage() {
 
                   {/* Bottom row: date (left) + params+actions (right) */}
                   <div className="flex items-end justify-between gap-2 mt-auto">
-                    <span className="text-[10px] text-gray-600 flex-shrink-0">{new Date(item.created_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
+                    <span className="text-[10px] text-gray-600 flex-shrink-0">{formatShortDateTime(item.created_at)}</span>
                     <div className="flex flex-col items-end gap-1.5">
                       {/* 右下角参数角标 */}
                       <div className="flex flex-wrap justify-end gap-1">
@@ -1999,19 +2003,20 @@ export default function SingleTaskPage() {
                         {item.duration && <span className="text-[9px] px-1 py-0.5 rounded bg-gray-700/60 text-gray-400 leading-none">{item.duration}s</span>}
                         {item.resolution && <span className="text-[9px] px-1 py-0.5 rounded bg-gray-700/60 text-gray-400 leading-none">{item.resolution}</span>}
                       </div>
+                      {/* 增强相关 UI 已移至 /enhancement 页面 */}
                       <div className="flex gap-2">
-                        {(item.video_url || (item.status === 'error' && item.error_message)) && (
+                        {(playUrl || (item.status === 'error' && item.error_message)) && (
                           <button
                             onClick={() => {
-                              if (item.video_url) {
-                                setPreviewVideo({ url: item.video_url, prompt: item.prompt, error: item.status === 'error' && item.error_message ? parseArkError(item.error_message) : null });
+                              if (playUrl) {
+                                setPreviewVideo({ url: playUrl, prompt: item.prompt, error: item.status === 'error' && item.error_message ? parseArkError(item.error_message) : null });
                               } else {
                                 setPreviewVideo({ url: '', prompt: item.prompt, error: item.error_message ? parseArkError(item.error_message) : null });
                               }
                             }}
                             className="text-[11px] px-2 py-1 rounded-lg border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition-all"
                           >
-                            {item.video_url ? '预览' : '报错'}
+                            {playUrl ? '预览' : '报错'}
                           </button>
                         )}
                       <button
@@ -2151,7 +2156,8 @@ export default function SingleTaskPage() {
                 </div>
               </div>
             </div>
-          ))}
+            );
+          })}
 
           {/* Infinite scroll sentinel */}
           <div ref={historyBottomRef} className="h-4" />
@@ -2165,6 +2171,7 @@ export default function SingleTaskPage() {
           )}
         </div>
       </div>
+
 
       {/* Video preview modal */}
       {previewVideo && (
