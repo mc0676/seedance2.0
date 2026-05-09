@@ -335,6 +335,12 @@ export default function SingleTaskPage() {
     return new RegExp(escaped + '(?![\\w-])').test(text);
   }
 
+  // volcAssetId → user-written asset name（用于 chip 显示名称映射）
+  const assetDisplayMap = useMemo(() =>
+    new Map(projectAssets.filter(a => a.volc_asset_id).map(a => [a.volc_asset_id!, a.name])),
+    [projectAssets]
+  );
+
   // 只匹配当前已上传素材的合法 tag，避免误把普通文字里的 @ 变成 chip
   function buildHtml(text: string, overrideSelections?: AssetSelection[]) {
     const sels = overrideSelections ?? assetSelections;
@@ -349,9 +355,18 @@ export default function SingleTaskPage() {
     const tagPattern = allTags
       .map(m => m.replace(/[.*+?^${}()|[]\]/g, '\$&'))
       .join('|');
+    // 从 assetSelections 建立 chipTag → displayName 映射
+    const tagDisplayMap = new Map(sels.map((a) => {
+      const volcId = a.volcAssetId || a.chipTag.replace(/^@/, '');
+      const displayName = assetDisplayMap.get(volcId) || a.name || a.chipTag;
+      return [a.chipTag, displayName];
+    }));
     // ZWS on both sides prevents Chrome phantom line-break around contenteditable=false
     return escaped.replace(new RegExp(tagPattern, 'g'),
-      m => `​<span contenteditable="false" class="mention-chip">${m}</span>​`);
+      m => {
+        const display = tagDisplayMap.get(m) || m;
+        return `​<span contenteditable="false" class="mention-chip" data-tag="${m}">@${display}</span>​`;
+      });
   }
 
   // 不依赖闭包状态，直接传入所有素材数组——用于复用时精确重建编辑器 HTML
@@ -363,6 +378,7 @@ export default function SingleTaskPage() {
     auds: UploadedFile[],
     firstImgs: UploadedFile[] = [],
     lastImgs: UploadedFile[] = [],
+    displayMap?: Map<string, string>,
   ) {
     const escaped = text
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -379,8 +395,16 @@ export default function SingleTaskPage() {
     const tagPattern = allTags
       .map((m) => m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
       .join('|');
+    const tagDisplayMap = new Map(selections.map((a) => {
+      const volcId = a.volcAssetId || a.chipTag.replace(/^@/, '');
+      const displayName = displayMap?.get(volcId) || a.name || a.chipTag;
+      return [a.chipTag, displayName];
+    }));
     return escaped.replace(new RegExp(tagPattern, 'g'),
-      m => `​<span contenteditable="false" class="mention-chip">${m}</span>​`);
+      m => {
+        const display = tagDisplayMap.get(m) || m;
+        return `​<span contenteditable="false" class="mention-chip" data-tag="${m}">@${display}</span>​`;
+      });
   }
 
   function extractText(el: Node): string {
@@ -395,6 +419,9 @@ export default function SingleTaskPage() {
         const prev = n.previousSibling as Element | null;
         if (prev?.classList?.contains('mention-chip')) continue;
         t += '\n';
+      } else if ((n as Element).classList?.contains('mention-chip')) {
+        // chip 显示的是用户名称，但逻辑 tag 存在 data-tag 属性
+        t += (n as Element).getAttribute('data-tag') ?? (n.textContent ?? '').replace(/​/g, '');
       } else {
         t += extractText(n);
       }
@@ -565,13 +592,15 @@ export default function SingleTaskPage() {
       .catch(() => {});
 
     // 第二阶段：再请求 ARK 实时数据覆盖
+    setAssetSyncing(true);
     getProjectAssets(pid, { pageSize: 100 })
       .then((r) => {
         if (cancelled) return;
         const tagged = r.assets
           .filter((a) => a.review_status !== 'rejected' && (a.volc_asset_id || a.file_url))
           .map((a) => ({ ...a, project_id: pid }));
-        setProjectAssets(tagged);
+        // ARK 偶发抖动保护：若实时数据比本地 DB 少，保留本地 DB 更多的结果
+        setProjectAssets((prev) => tagged.length >= prev.length ? tagged : prev);
         // 修复A：ARK数据到达后，已插入chip若当时无volc_asset_id（用了file_url），现在补全为 asset:// URI
         setAssetSelections((prev) => prev.map((sel) => {
           if (sel.volcAssetId) {
@@ -589,7 +618,8 @@ export default function SingleTaskPage() {
           };
         }));
       })
-      .catch(() => { if (!cancelled) setProjectAssets([]); });
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setAssetSyncing(false); });
 
     return () => { cancelled = true; };
   }, [state.currentProject?.id]);
@@ -996,7 +1026,7 @@ export default function SingleTaskPage() {
     }
   };
 
-  const insertMention = (tag: string) => {
+  const insertMention = (tag: string, displayName?: string) => {
     if (!editorRef.current || !mentionAnchorNodeRef.current) return;
 
     // Snapshot undo before modifying DOM
@@ -1030,7 +1060,8 @@ export default function SingleTaskPage() {
     const chip = document.createElement('span');
     chip.className = 'mention-chip';
     chip.setAttribute('contenteditable', 'false');
-    chip.textContent = tag;
+    chip.setAttribute('data-tag', tag);
+    chip.textContent = displayName ? `@${displayName}` : tag;
     const zwsAfter = document.createTextNode('\u200B');
     frag.appendChild(zwsBefore);
     frag.appendChild(chip);
@@ -1092,7 +1123,7 @@ export default function SingleTaskPage() {
       if (prev.some((s) => s.id === sel.id)) return prev;
       return [...prev, sel];
     });
-    insertMention(chipTag);
+    insertMention(chipTag, asset.name);
   };
 
   useEffect(() => { if (!showMention) setMentionFocusIdx(-1); }, [showMention]);
@@ -1463,7 +1494,7 @@ export default function SingleTaskPage() {
           {state.currentProject && assetGroups.length > 0 && (
             <div className="bg-[#1c1f2e] rounded-2xl p-4 border border-gray-800">
               <div className="flex items-center justify-between mb-3">
-                <label className="text-sm font-bold text-gray-300">素材组 <span className="text-amber-400">（{availableAssets.length}）</span></label>
+                <label className="text-sm font-bold text-gray-300">素材组 <span className="text-amber-400">（{availableAssets.length}）</span>{assetSyncing && <span className="ml-1 text-[10px] text-gray-500 animate-pulse">同步中…</span>}</label>
                 <span className="text-[10px] text-gray-500">↑↓ 切换组内 · ←→ 切换组 · Enter 插入</span>
               </div>
               <div
@@ -2100,7 +2131,7 @@ export default function SingleTaskPage() {
 
                           // 6. 把目标 HTML 存入 ref，下一次 render（useLayoutEffect）时写入编辑器
                           // 不用 setTimeout，避免被 useEffect([projectAssets]) 覆盖
-                          const finalHtml = buildHtmlExplicit(newPrompt, newSelections, restoredImages, restoredVideos, restoredAudios);
+                          const finalHtml = buildHtmlExplicit(newPrompt, newSelections, restoredImages, restoredVideos, restoredAudios, [], [], assetDisplayMap);
                           pendingEditorHtmlRef.current = finalHtml;
 
                           // 7. 提示已删除素材

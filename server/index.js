@@ -1455,6 +1455,20 @@ app.get('/api/task/:taskId', authenticate, async (req, res) => {
             const videoUrl = arkResult.content?.video_url;
             if (videoUrl) {
               taskService.updateTask(dbTask.id, { status: 'done', video_url: videoUrl, download_status: 'pending', progress: '', completed_at: new Date().toISOString() });
+              // 同步结算积分锁（settle 幂等，若 generator 的 .then() 已结算会跳过）
+              try {
+                const tokens = Number(arkResult?.usage?.total_tokens) || Number(arkResult?.usage?.completion_tokens) || 0;
+                if (tokens > 0) {
+                  const lockRow = db.prepare('SELECT meta FROM credit_locks WHERE task_id = ? AND status = ?').get(dbTask.id, 'locked');
+                  if (lockRow) {
+                    const estimateParams = JSON.parse(lockRow.meta || '{}');
+                    const actualCredits = pricingService.actualCredits(estimateParams.model || dbTask.model || 'seedance-2.0', tokens, estimateParams);
+                    creditLockService.settle({ taskId: dbTask.id, actualCredits });
+                  }
+                } else {
+                  creditLockService.release({ taskId: dbTask.id, reason: '轮询补结算：usage 缺失' });
+                }
+              } catch (e) { console.error('[poll] 补结算失败:', e.message); }
               return res.json({ status: 'done', result: { created: Math.floor(Date.now() / 1000), data: [{ url: videoUrl, revised_prompt: dbTask.prompt }] } });
             }
           }
@@ -1462,6 +1476,7 @@ app.get('/api/task/:taskId', authenticate, async (req, res) => {
           if (arkResult.status === 'failed') {
             const errMsg = arkResult.error?.message || arkResult.error?.code || 'Ark 任务失败';
             taskService.updateTask(dbTask.id, { status: 'error', error_message: errMsg, progress: '' });
+            try { creditLockService.release({ taskId: dbTask.id, reason: '轮询补结算：' + errMsg }); } catch (e) { console.error('[poll] 补释放失败:', e.message); }
             return res.json({ status: 'error', error: errMsg });
           }
         }
