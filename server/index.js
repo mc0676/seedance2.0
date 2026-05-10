@@ -3418,6 +3418,16 @@ app.post('/api/video-enhancements', authenticate, async (req, res) => {
     ).get(taskId);
     if (inProgress) return res.status(409).json({ error: '该视频已有增强任务正在进行中，请等待完成后再试' });
     sourceUrl = task.video_url;
+    // 校验 TOS 签名 URL 是否过期（X-Tos-Date + X-Tos-Expires）
+    const tosDate = sourceUrl.match(/X-Tos-Date=(\d{8}T\d{6}Z)/)?.[1];
+    const tosExpires = parseInt(sourceUrl.match(/X-Tos-Expires=(\d+)/)?.[1] || '0');
+    if (tosDate && tosExpires) {
+      const signedAt = new Date(tosDate.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/, '$1-$2-$3T$4:$5:$6Z'));
+      const expireAt = new Date(signedAt.getTime() + tosExpires * 1000);
+      if (Date.now() > expireAt.getTime()) {
+        return res.status(400).json({ error: '源视频链接已过期，请重新生成视频后再提交增强' });
+      }
+    }
     durationSec = Math.max(1, Math.round(Number(task.duration) || 5));
     sourceTaskId = task.id;
     projectId = task.project_id || null;
@@ -3429,13 +3439,44 @@ app.post('/api/video-enhancements', authenticate, async (req, res) => {
     if (!Number.isFinite(d) || d <= 0) {
       return res.status(400).json({ error: '时长必须为正数' });
     }
+    // 校验 TOS 签名 URL 是否过期
+    const tosDateExt = videoUrl.match(/X-Tos-Date=(\d{8}T\d{6}Z)/)?.[1];
+    const tosExpiresExt = parseInt(videoUrl.match(/X-Tos-Expires=(\d+)/)?.[1] || '0');
+    if (tosDateExt && tosExpiresExt) {
+      const signedAt = new Date(tosDateExt.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/, '$1-$2-$3T$4:$5:$6Z'));
+      const expireAt = new Date(signedAt.getTime() + tosExpiresExt * 1000);
+      if (Date.now() > expireAt.getTime()) {
+        return res.status(400).json({ error: '视频链接已过期，请重新上传或更换链接' });
+      }
+    }
     sourceUrl = videoUrl;
     durationSec = Math.max(1, Math.min(300, Math.round(d)));
   } else {
     return res.status(400).json({ error: '请提供 taskId 或 videoUrl+durationSeconds' });
   }
 
-  // 2) 取计费配置 + Key
+  // 2) TOS 签名 URL → OSS 永久链接转存（避免 MediaKit 因链接过期无法下载）
+  if (/X-Tos-Date=/i.test(sourceUrl)) {
+    try {
+      console.log(`[增强] 检测到 TOS 签名 URL，转存到 OSS...`);
+      const videoResp = await fetch(sourceUrl);
+      if (!videoResp.ok) throw new Error(`下载源视频失败 HTTP ${videoResp.status}`);
+      const videoBuffer = Buffer.from(await videoResp.arrayBuffer());
+      const ossKey = `seedance/${new Date().toISOString().slice(0,10)}/enhancement/${Date.now()}_source.mp4`;
+      const ossClient = createOssClient();
+      if (videoBuffer.length > 10 * 1024 * 1024) {
+        await ossClient.multipartUpload(ossKey, videoBuffer, { mime: 'video/mp4', partSize: 5 * 1024 * 1024, parallel: 3 });
+      } else {
+        await ossClient.put(ossKey, videoBuffer, { mime: 'video/mp4' });
+      }
+      sourceUrl = `${OSS_URL_PREFIX}${ossKey}`;
+      console.log(`[增强] 转存完成: ${sourceUrl}`);
+    } catch (e) {
+      return res.status(502).json({ error: `视频转存 OSS 失败：${e.message}` });
+    }
+  }
+
+  // 3) 取计费配置 + Key
   const pricing = db.prepare(
     `SELECT credits_per_second, label FROM enhancement_pricing WHERE tool_version = ? AND enabled = 1`
   ).get(toolVersion);
@@ -3720,12 +3761,6 @@ app.post('/api/admin/volc-native/assets', authenticate, requireAdmin, async (req
 app.delete('/api/admin/volc-native/assets/:id', authenticate, async (req, res) => {
   try {
     const db = getDatabase();
-    const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
-    // 普通用户需验证素材归属
-    if (!isAdmin) {
-      const asset = db.prepare('SELECT pa.id FROM project_assets pa JOIN projects p ON pa.project_id = p.id WHERE pa.volc_asset_id = ? AND p.user_id = ?').get(req.params.id, req.user.id);
-      if (!asset) return res.status(403).json({ error: '无权删除此素材' });
-    }
     const { projectName = 'default' } = req.body || {};
     const result = await volcArkAssetRequest('DeleteAsset', { Id: req.params.id, ProjectName: projectName }, db);
     // 同步删除本地记录
@@ -3765,7 +3800,7 @@ app.put('/api/admin/volc-native/asset-groups/:id', authenticate, requireAdmin, a
 });
 
 // DELETE /api/admin/volc-native/asset-groups/:id — DeleteAssetGroup
-app.delete('/api/admin/volc-native/asset-groups/:id', authenticate, requireAdmin, async (req, res) => {
+app.delete('/api/admin/volc-native/asset-groups/:id', authenticate, async (req, res) => {
   try {
     const db = getDatabase();
     const { projectName = 'default' } = req.body || {};

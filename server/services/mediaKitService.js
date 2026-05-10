@@ -6,6 +6,8 @@
  * 鉴权：Authorization: Bearer <MEDIAKIT_API_KEY>
  */
 
+import { randomUUID } from 'crypto';
+
 const MEDIAKIT_BASE_URL = 'https://mediakit.cn-beijing.volces.com/api/v1';
 
 async function _parse(res) {
@@ -31,6 +33,7 @@ export async function submitEnhanceVideo({ apiKey, videoUrl, scene = 'aigc', too
     scene,
     tool_version: toolVersion,
     resolution,
+    client_token: randomUUID(),  // 每次提交唯一 token，防止 MediaKit 静默复用旧任务
   };
 
   const res = await fetch(`${MEDIAKIT_BASE_URL}/tools/enhance-video`, {
