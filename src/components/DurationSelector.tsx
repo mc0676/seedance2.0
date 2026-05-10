@@ -38,7 +38,7 @@ export default function DurationSelector({ value, onChange, onClose }: DurationS
                 onChange(d);
                 onClose();
               }}
-              className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors ${
+              className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm transition-colors ${
                 isSelected
                   ? 'bg-cyan-500/15 text-cyan-400'
                   : 'text-gray-300 hover:bg-gray-800'

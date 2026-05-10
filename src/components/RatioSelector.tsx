@@ -42,7 +42,7 @@ export default function RatioSelector({ value, onChange, onClose }: RatioSelecto
                 onChange(opt.value);
                 onClose();
               }}
-              className={`flex flex-col items-center gap-1.5 p-2 rounded-lg transition-colors ${
+              className={`flex flex-col items-center gap-1.5 p-2 rounded-xl transition-colors ${
                 isSelected
                   ? 'bg-cyan-500/10 ring-1 ring-cyan-500'
                   : 'hover:bg-gray-800'

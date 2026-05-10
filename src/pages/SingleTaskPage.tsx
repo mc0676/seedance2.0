@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo } from 'react';
+﻿import { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo } from 'react';
 import type {
   AspectRatio,
   Duration,
@@ -349,20 +349,30 @@ export default function SingleTaskPage() {
     const escaped = text
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       .replace(/\n/g, '<br>');
+    // 除 assetSelections 外，还包含所有可用素材的 chipTag，
+    // 确保复制粘贴带 @asset-xxx 的 chip 后也能正确渲染
+    const allAvailableAssetTags = availableAssets
+      .filter(a => a.volc_asset_id)
+      .map(a => `@${a.volc_asset_id}`);
     const allTags = [
       ...mentionItems.map((m) => m.tag),
       ...sels.map((a) => a.chipTag),
+      ...allAvailableAssetTags.filter(t => !sels.some(s => s.chipTag === t)),
     ];
     if (allTags.length === 0) return escaped;
     const tagPattern = allTags
       .map(m => m.replace(/[.*+?^${}()|[]\]/g, '\$&'))
       .join('|');
-    // 从 assetSelections 建立 chipTag → displayName 映射
-    const tagDisplayMap = new Map(sels.map((a) => {
-      const volcId = a.volcAssetId || a.chipTag.replace(/^@/, '');
-      const displayName = assetDisplayMap.get(volcId) || a.name || a.chipTag;
-      return [a.chipTag, displayName];
-    }));
+    // 从 assetSelections + availableAssets 建立 chipTag → displayName 映射
+    const tagDisplayMap = new Map<string, string>([
+      ...sels.map((a): [string, string] => {
+        const volcId = a.volcAssetId || a.chipTag.replace(/^@/, '');
+        return [a.chipTag, assetDisplayMap.get(volcId) || a.name || a.chipTag];
+      }),
+      ...availableAssets
+        .filter(a => a.volc_asset_id)
+        .map((a): [string, string] => [`@${a.volc_asset_id}`, a.name || `@${a.volc_asset_id}`]),
+    ]);
     // ZWS on both sides prevents Chrome phantom line-break around contenteditable=false
     return escaped.replace(new RegExp(tagPattern, 'g'),
       m => {
@@ -435,11 +445,20 @@ export default function SingleTaskPage() {
     const sel = window.getSelection();
     if (!sel?.rangeCount) return 0;
     const range = sel.getRangeAt(0);
-    const pre = range.cloneRange();
-    pre.selectNodeContents(root);
-    pre.setEnd(range.startContainer, range.startOffset);
-    // 去掉零宽空格后得到逻辑偏移
-    return pre.toString().replace(/\u200B/g, '').length;
+    // Clone DOM from root start to cursor, run extractText so <br>→
+
+    // is counted the same way as in the full-text extraction.
+    try {
+      const pre = document.createRange();
+      pre.setStart(root, 0);
+      pre.setEnd(range.startContainer, range.startOffset);
+      const frag = pre.cloneContents();
+      const tmp = document.createElement('div');
+      tmp.appendChild(frag);
+      return extractText(tmp).length;
+    } catch {
+      return 0;
+    }
   }
 
   function setCursorOffset(root: HTMLDivElement, offset: number) {
@@ -620,7 +639,23 @@ export default function SingleTaskPage() {
           };
         }));
       })
-      .catch(() => {})
+      .catch(() => {
+        // ARK 实时数据失败，1.5s 后自动重试一次
+        if (!cancelled) {
+          setTimeout(() => {
+            if (cancelled) return;
+            getProjectAssets(pid, { pageSize: 100 })
+              .then((r2) => {
+                if (cancelled) return;
+                const tagged2 = r2.assets
+                  .filter((a) => a.review_status !== 'rejected' && (a.volc_asset_id || a.file_url))
+                  .map((a) => ({ ...a, project_id: pid }));
+                setProjectAssets((prev) => tagged2.length >= prev.length ? tagged2 : prev);
+              })
+              .catch(() => {});
+          }, 1500);
+        }
+      })
       .finally(() => { if (!cancelled) setAssetSyncing(false); });
 
     return () => { cancelled = true; };
@@ -995,7 +1030,7 @@ export default function SingleTaskPage() {
       } else if ((node as Element).tagName === 'BR') {
         out += '\n';
       } else if ((node as Element).classList?.contains('mention-chip')) {
-        out += `<ref>${node.textContent ?? ''}</ref>`;
+        out += `<ref>${(node as Element).getAttribute('data-tag') ?? node.textContent ?? ''}</ref>`;
       } else {
         node.childNodes.forEach(walk);
       }
@@ -1396,40 +1431,44 @@ export default function SingleTaskPage() {
       {/* Mobile Header */}
       <div className="md:hidden sticky top-0 z-40 bg-[#0f111a]/95 backdrop-blur-sm px-4 py-3 flex items-center justify-between border-b border-gray-800">
         <h1 className="text-lg font-bold">{currentModelLabel}</h1>
-        <button onClick={() => navigate('/settings')} className="p-2 rounded-lg hover:bg-gray-800 transition-colors">
-          <GearIcon className="w-5 h-5 text-gray-400" />
+        <button onClick={() => navigate('/settings')} className="btn-ghost">
+          <GearIcon className="w-4 h-4" />
         </button>
       </div>
 
       {/* Left Panel */}
       <div className="flex-1 md:w-[520px] md:flex-none md:border-r border-gray-800 overflow-y-auto custom-scrollbar p-4 md:p-6 bg-[#0f111a]">
-        <div className="hidden md:flex items-center justify-between mb-6">
-          <div className="flex items-center gap-2">
-            <h2 className="text-xl font-bold">{currentModelLabel} 视频配置</h2>
-            {state.currentProject && (
-              <span className="text-xs px-2 py-0.5 rounded bg-purple-500/20 text-purple-300">
+        <div className="hidden md:flex flex-col gap-1 mb-4">
+          {/* 第一行：模型名称 + 操作按钮 */}
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-xl font-bold truncate">{currentModelLabel} 视频配置</h2>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <button
+                onClick={() => void refreshWorkgroup()}
+                disabled={assetSyncing}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 rounded-xl text-xs font-medium text-white transition-all disabled:opacity-50"
+              >
+                <svg
+                  className={`w-4 h-4 ${assetSyncing ? 'animate-spin' : ''}`}
+                  viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}
+                >
+                  <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                {assetSyncing ? '同步中...' : '刷新'}
+              </button>
+              <button onClick={() => navigate('/settings')} className="btn-ghost" title="设置">
+                <GearIcon className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+          {/* 第二行：项目/组名称 */}
+          {state.currentProject && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs px-2.5 py-1 rounded-xl bg-purple-500/20 border border-purple-500/30 text-purple-300 font-medium truncate max-w-[300px]">
                 {state.currentProject.name}
               </span>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => void refreshWorkgroup()}
-              disabled={assetSyncing}
-              className="p-2 rounded-lg hover:bg-gray-800 transition-colors"
-              title="刷新工作组素材"
-            >
-              <svg
-                className={`w-4 h-4 text-gray-400 ${assetSyncing ? 'animate-spin' : ''}`}
-                viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}
-              >
-                <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </button>
-            <button onClick={() => navigate('/settings')} className="p-2 rounded-lg hover:bg-gray-800 transition-colors" title="设置">
-              <GearIcon className="w-5 h-5 text-gray-400" />
-            </button>
-          </div>
+            </div>
+          )}
         </div>
 
         <div className="space-y-4">
@@ -1693,7 +1732,7 @@ export default function SingleTaskPage() {
                   <button
                     key={opt.value}
                     onClick={() => { setModel(opt.value); if (opt.value === 'seedance-2.0-fast' && resolution === '1080p') setResolution('720p'); }}
-                    className={`w-full text-left px-4 py-3 rounded-lg border transition-all ${
+                    className={`w-full text-left px-4 py-3 rounded-xl border transition-all ${
                       model === opt.value ? 'border-purple-500 bg-purple-500/10' : 'border-gray-700 bg-[#161824] hover:border-gray-600'
                     }`}
                   >
@@ -1717,7 +1756,7 @@ export default function SingleTaskPage() {
                     <button
                       key={opt.value}
                       onClick={() => setRatio(opt.value)}
-                      className={`flex flex-col items-center gap-1.5 py-2 rounded-lg border transition-all ${
+                      className={`flex flex-col items-center gap-1.5 py-2 rounded-xl border transition-all ${
                         isSelected ? 'border-purple-500 bg-purple-500/10' : 'border-gray-700 bg-[#161824] hover:border-gray-600'
                       }`}
                     >
@@ -1744,7 +1783,7 @@ export default function SingleTaskPage() {
                       onClick={() => { if (!disabled) setResolution(opt); }}
                       disabled={disabled}
                       title={disabled ? '快速模型不支持 1080p' : undefined}
-                      className={`py-2 rounded-lg border text-sm transition-all ${
+                      className={`py-2 rounded-xl border text-sm transition-all ${
                         isSelected
                           ? 'border-purple-500 bg-purple-500/10 text-purple-300'
                           : disabled
@@ -1787,7 +1826,7 @@ export default function SingleTaskPage() {
                         }
                       }}
                       title={opt.desc}
-                      className={`py-2 px-3 rounded-lg border text-sm transition-all text-left ${
+                      className={`py-2 px-3 rounded-xl border text-sm transition-all text-left ${
                         isSelected
                           ? 'border-purple-500 bg-purple-500/10 text-purple-300'
                           : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
@@ -1809,7 +1848,7 @@ export default function SingleTaskPage() {
                   <button
                     key={d}
                     onClick={() => setDuration(d)}
-                    className={`px-3 py-2 rounded-lg text-sm font-medium border transition-all ${
+                    className={`px-3 py-2 rounded-xl text-sm font-medium border transition-all ${
                       duration === d ? 'border-purple-500 bg-purple-500/10 text-purple-400' : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
                     }`}
                   >
@@ -1834,7 +1873,7 @@ export default function SingleTaskPage() {
               <button
                 onClick={handleGenerate}
                 disabled={!canGenerate}
-                className={`flex-1 font-bold py-3.5 rounded-xl transition-all flex items-center justify-center gap-2 ${
+                className={`flex-1 font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2 ${
                   creditInsufficient
                     ? 'bg-amber-600 hover:bg-amber-500 text-white shadow-lg shadow-amber-900/20'
                     : 'bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:from-gray-700 disabled:to-gray-700 disabled:text-gray-500 text-white shadow-lg shadow-purple-900/20'
@@ -1853,7 +1892,7 @@ export default function SingleTaskPage() {
               <button
                 onClick={handleReset}
                 disabled={isGenerating || uploading}
-                className="px-6 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-600 text-white font-bold py-3.5 rounded-xl transition-all"
+                className="px-6 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-600 text-white font-bold py-3 rounded-xl transition-all"
               >
                 重置
               </button>
@@ -2014,7 +2053,7 @@ export default function SingleTaskPage() {
                                 setPreviewVideo({ url: '', prompt: item.prompt, error: item.error_message ? parseArkError(item.error_message) : null });
                               }
                             }}
-                            className="text-[11px] px-2 py-1 rounded-lg border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition-all"
+                            className="text-[11px] px-2 py-1 rounded-xl border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition-all"
                           >
                             {playUrl ? '预览' : '报错'}
                           </button>
@@ -2132,6 +2171,8 @@ export default function SingleTaskPage() {
                           setVideos(restoredVideos);
                           setAudios(restoredAudios);
                           setAssetSelections(newSelections);
+                          setPanelGroupIdx(0);
+                          setPanelSubIdxMap({});
                           setPrompt(newPrompt);
 
                           // 6. 把目标 HTML 存入 ref，下一次 render（useLayoutEffect）时写入编辑器
@@ -2146,7 +2187,7 @@ export default function SingleTaskPage() {
 
                           window.scrollTo({ top: 0, behavior: 'smooth' });
                         }}
-                        className="text-[11px] px-2 py-1 rounded-lg border border-purple-500/40 text-purple-400 hover:bg-purple-500/10 transition-all"
+                        className="text-[11px] px-2 py-1 rounded-xl border border-purple-500/40 text-purple-400 hover:bg-purple-500/10 transition-all"
                       >
                         复用
                       </button>
@@ -2237,3 +2278,4 @@ export default function SingleTaskPage() {
     </div>
   );
 }
+

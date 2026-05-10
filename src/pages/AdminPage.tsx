@@ -869,7 +869,7 @@ export default function AdminPage() {
               <button
                 onClick={handleSaveMaintenanceMessage}
                 disabled={savingConfig}
-                className="px-4 py-2 bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 rounded text-sm disabled:opacity-50"
+                className="btn-save disabled:opacity-50"
               >
                 保存
               </button>
@@ -997,16 +997,16 @@ export default function AdminPage() {
                         <div className="flex gap-2">
                           {editingCodeId === c.id ? (
                             <>
-                              <button onClick={() => handleUpdateCode(c.id)} className="px-3 py-1.5 bg-green-600 hover:bg-green-500 rounded text-xs font-medium transition-colors">保存</button>
-                              <button onClick={() => setEditingCodeId(null)} className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs font-medium transition-colors">取消</button>
+                              <button onClick={() => handleUpdateCode(c.id)} className="btn-save">保存</button>
+                              <button onClick={() => setEditingCodeId(null)} className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-md text-xs font-medium transition-colors">取消</button>
                             </>
                           ) : (
                             <>
                               <button
                                 onClick={() => { setEditingCodeId(c.id); setEditingCodeData({ maxUses: c.max_uses, note: c.note, creditsValue: c.credits_value }); }}
-                                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs font-medium transition-colors"
+                                className="btn-edit"
                               >编辑</button>
-                              <button onClick={() => handleDeleteCode(c.id)} className="px-3 py-1.5 bg-red-600 hover:bg-red-500 rounded text-xs font-medium transition-colors">删除</button>
+                              <button onClick={() => handleDeleteCode(c.id)} className="btn-danger">删除</button>
                             </>
                           )}
                         </div>
@@ -1034,7 +1034,7 @@ export default function AdminPage() {
               <button
                 key={m.model_key}
                 onClick={() => { setActiveModelTab(m.model_key); setEditingModel(null); }}
-                className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeModelTab === m.model_key ? 'bg-purple-600 text-white' : 'bg-[#0f111a] border border-gray-700 text-gray-400 hover:text-white'}`}
+                className={`px-4 py-2 rounded-xl text-sm font-medium transition-colors ${activeModelTab === m.model_key ? 'bg-purple-600 text-white' : 'bg-[#0f111a] border border-gray-700 text-gray-400 hover:text-white'}`}
               >
                 {m.label || m.model_key}
                 {!m.enabled && <span className="ml-1 text-xs text-gray-500">(禁用)</span>}
@@ -1042,7 +1042,7 @@ export default function AdminPage() {
             ))}
             <button
               onClick={() => setActiveModelTab('__new__')}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeModelTab === '__new__' ? 'bg-green-600 text-white' : 'bg-[#0f111a] border border-gray-700 text-gray-400 hover:text-white'}`}
+              className={`px-4 py-2 rounded-xl text-sm font-medium transition-colors ${activeModelTab === '__new__' ? 'bg-green-600 text-white' : 'bg-[#0f111a] border border-gray-700 text-gray-400 hover:text-white'}`}
             >+ 添加模型</button>
           </div>
 
@@ -1060,8 +1060,8 @@ export default function AdminPage() {
                 <div><label className="block text-xs text-gray-400 mb-1">描述</label><input className="w-full px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm" value={newModel.description} onChange={(e) => setNewModel((s) => ({ ...s, description: e.target.value }))} /></div>
               </div>
               <div className="mt-4 flex gap-2">
-                <button onClick={handleCreateModel} className="px-4 py-2 bg-purple-600 hover:bg-purple-500 rounded text-white text-sm font-medium">新增</button>
-                <button onClick={() => setActiveModelTab(modelPricings[0]?.model_key ?? '')} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-white text-sm">取消</button>
+                <button onClick={handleCreateModel} className="btn-primary">新增</button>
+                <button onClick={() => setActiveModelTab(modelPricings[0]?.model_key ?? '')} className="btn-secondary">取消</button>
               </div>
             </div>
           ) : modelPricings.filter((m) => m.model_key === activeModelTab).map((m) => {
@@ -1082,8 +1082,8 @@ export default function AdminPage() {
                         <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${m.enabled ? 'translate-x-5' : 'translate-x-1'}`} />
                       </button>
                     </div>
-                    {!isEditing && <button onClick={() => setEditingModel({ ...m })} className="px-3 py-1.5 bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 rounded text-xs">编辑</button>}
-                    <button onClick={() => handleDeleteModel(m.model_key)} className="px-3 py-1.5 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded text-xs">删除</button>
+                    {!isEditing && <button onClick={() => setEditingModel({ ...m })} className="btn-edit">编辑</button>}
+                    <button onClick={() => handleDeleteModel(m.model_key)} className="btn-danger">删除</button>
                   </div>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1099,8 +1099,8 @@ export default function AdminPage() {
                 </div>
                 {isEditing && (
                   <div className="mt-4 flex gap-2">
-                    <button onClick={() => handleSaveModelEdit(ev)} className="px-4 py-2 bg-green-600 hover:bg-green-500 rounded text-white text-sm font-medium">保存</button>
-                    <button onClick={() => setEditingModel(null)} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-white text-sm">取消</button>
+                    <button onClick={() => handleSaveModelEdit(ev)} className="btn-save">保存</button>
+                    <button onClick={() => setEditingModel(null)} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-xl text-white text-sm">取消</button>
                   </div>
                 )}
               </div>
@@ -1114,7 +1114,7 @@ export default function AdminPage() {
           <div className="mb-4 flex items-start justify-between flex-wrap gap-3">
             <div className="flex items-center gap-3">
               {volcLevel === 'assets' && (
-                <button onClick={handleBackToGroups} className="p-1.5 bg-[#0f111a] border border-gray-700 hover:border-gray-500 rounded-lg text-gray-400 hover:text-white text-xs transition-colors">← 返回</button>
+                <button onClick={handleBackToGroups} className="p-1.5 bg-[#0f111a] border border-gray-700 hover:border-gray-500 rounded-xl text-gray-400 hover:text-white text-xs transition-colors">← 返回</button>
               )}
               <div>
                 <h2 className="text-xl font-semibold text-white">私域虚拟人像素材库</h2>
@@ -1129,18 +1129,18 @@ export default function AdminPage() {
             <div className="flex gap-2 flex-wrap">
               {volcLevel === 'groups' && (
                 <button onClick={() => loadVolcGroups(1)} disabled={volcGroupsLoading}
-                  className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 rounded-lg text-white text-xs">
+                  className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 rounded-xl text-white text-xs">
                   {volcGroupsLoading ? '加载中...' : '查询'}
                 </button>
               )}
               {volcLevel === 'assets' && (
                 <button onClick={() => loadVolcAssets(1)} disabled={volcAssetsLoading}
-                  className="px-3 py-1.5 bg-[#0f111a] border border-gray-700 rounded-lg text-gray-400 hover:text-white text-xs disabled:opacity-50">
+                  className="px-3 py-1.5 bg-[#0f111a] border border-gray-700 rounded-xl text-gray-400 hover:text-white text-xs disabled:opacity-50">
                   {volcAssetsLoading ? '加载中...' : '刷新'}
                 </button>
               )}
               <button onClick={() => { setVolcAkSkEditing(v => !v); setVolcAkIdDraft(volcAkId); setVolcSkKeyDraft(volcSkKey); }}
-                className="px-3 py-1.5 bg-[#0f111a] border border-gray-700 rounded-lg text-gray-400 hover:text-white text-xs">配置 AK/SK</button>
+                className="px-3 py-1.5 bg-[#0f111a] border border-gray-700 rounded-xl text-gray-400 hover:text-white text-xs">配置 AK/SK</button>
             </div>
           </div>
 
@@ -1149,13 +1149,13 @@ export default function AdminPage() {
             <div className="mb-4 p-4 bg-[#0f111a] border border-gray-700 rounded-xl space-y-3">
               <div><label className="block text-xs text-gray-400 mb-1">Access Key ID</label>
                 <input value={volcAkIdDraft} onChange={(e) => setVolcAkIdDraft(e.target.value)}
-                  className="w-full bg-[#1c1f2e] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500" /></div>
+                  className="w-full bg-[#1c1f2e] border border-gray-700 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500" /></div>
               <div><label className="block text-xs text-gray-400 mb-1">Secret Access Key</label>
                 <input value={volcSkKeyDraft} onChange={(e) => setVolcSkKeyDraft(e.target.value)} type="password"
-                  className="w-full bg-[#1c1f2e] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500" /></div>
+                  className="w-full bg-[#1c1f2e] border border-gray-700 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500" /></div>
               <div className="flex gap-2">
-                <button onClick={handleSaveVolcAkSk} className="px-4 py-2 bg-purple-600 hover:bg-purple-500 rounded-lg text-white text-sm">保存</button>
-                <button onClick={() => setVolcAkSkEditing(false)} className="px-4 py-2 bg-gray-700 rounded-lg text-white text-sm">取消</button>
+                <button onClick={handleSaveVolcAkSk} className="btn-save">保存</button>
+                <button onClick={() => setVolcAkSkEditing(false)} className="px-4 py-2 bg-gray-700 rounded-xl text-white text-sm">取消</button>
               </div>
             </div>
           )}
@@ -1165,13 +1165,13 @@ export default function AdminPage() {
             <div className="mb-4 p-4 bg-[#0f111a] border border-purple-500/30 rounded-xl space-y-3">
               <h3 className="text-sm font-medium text-white">编辑素材组 · <span className="text-gray-400 font-mono text-xs">{editingGroup.Id}</span></h3>
               <input value={editGroupName} onChange={(e) => setEditGroupName(e.target.value)} placeholder="名称 *"
-                className="w-full bg-[#1c1f2e] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500" />
+                className="w-full bg-[#1c1f2e] border border-gray-700 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500" />
               <input value={editGroupDesc} onChange={(e) => setEditGroupDesc(e.target.value)} placeholder="描述（可选）"
-                className="w-full bg-[#1c1f2e] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500" />
+                className="w-full bg-[#1c1f2e] border border-gray-700 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500" />
               <div className="flex gap-2">
                 <button onClick={handleUpdateGroup} disabled={editGroupLoading}
-                  className="px-4 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 rounded-lg text-white text-sm">{editGroupLoading ? '保存中...' : '保存'}</button>
-                <button onClick={() => setEditingGroup(null)} className="px-4 py-2 bg-gray-700 rounded-lg text-white text-sm">取消</button>
+                  className="btn-save disabled:opacity-50">{editGroupLoading ? '保存中...' : '保存'}</button>
+                <button onClick={() => setEditingGroup(null)} className="px-4 py-2 bg-gray-700 rounded-xl text-white text-sm">取消</button>
               </div>
             </div>
           )}
@@ -1181,11 +1181,11 @@ export default function AdminPage() {
             <div className="mb-4 p-4 bg-[#0f111a] border border-purple-500/30 rounded-xl space-y-3">
               <h3 className="text-sm font-medium text-white">编辑素材名称 · <span className="text-gray-400 font-mono text-xs">{editingAsset.Id}</span></h3>
               <input value={editAssetName} onChange={(e) => setEditAssetName(e.target.value)} placeholder="新名称"
-                className="w-full bg-[#1c1f2e] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500" />
+                className="w-full bg-[#1c1f2e] border border-gray-700 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500" />
               <div className="flex gap-2">
                 <button onClick={handleUpdateAsset} disabled={editAssetLoading}
-                  className="px-4 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 rounded-lg text-white text-sm">{editAssetLoading ? '保存中...' : '保存'}</button>
-                <button onClick={() => setEditingAsset(null)} className="px-4 py-2 bg-gray-700 rounded-lg text-white text-sm">取消</button>
+                  className="btn-save disabled:opacity-50">{editAssetLoading ? '保存中...' : '保存'}</button>
+                <button onClick={() => setEditingAsset(null)} className="px-4 py-2 bg-gray-700 rounded-xl text-white text-sm">取消</button>
               </div>
             </div>
           )}
@@ -1221,7 +1221,7 @@ export default function AdminPage() {
                 <span className="text-xs text-gray-500">共 {volcGroupTotal} 个素材组</span>
                 <input value={volcGroupSearch} onChange={(e) => setVolcGroupSearch(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && loadVolcGroups(1, volcGroupSearch)}
-                  placeholder="按名称搜索..." className="flex-1 min-w-32 max-w-48 bg-[#0f111a] border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-purple-500" />
+                  placeholder="按名称搜索..." className="flex-1 min-w-32 max-w-48 bg-[#0f111a] border border-gray-700 rounded-xl px-3 py-1.5 text-white text-xs focus:outline-none focus:border-purple-500" />
               </div>
               {volcGroupsLoading ? (
                 <div className="flex items-center justify-center h-40">
@@ -1254,9 +1254,9 @@ export default function AdminPage() {
                           {g.CreateTime && <p className="text-gray-600 text-xs">{formatDateTime(g.CreateTime)}</p>}
                           <div className="mt-auto pt-1 flex items-center justify-between gap-2" onClick={(e) => e.stopPropagation()}>
                             <button onClick={() => { setEditingGroup(g); setEditGroupName(g.Name); setEditGroupDesc(g.Description || ''); setEditingAsset(null); }}
-                              className="px-2 py-1 bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 rounded text-xs transition-colors">编辑</button>
+                              className="btn-edit">编辑</button>
                             <button onClick={() => handleDeleteGroup(g)}
-                              className="px-2 py-1 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded text-xs transition-colors">删除</button>
+                              className="btn-danger">删除</button>
                           </div>
                         </div>
                       </div>
@@ -1265,10 +1265,10 @@ export default function AdminPage() {
                   {volcGroupTotal > 20 && (
                     <div className="mt-6 flex items-center justify-center gap-3">
                       <button onClick={() => loadVolcGroups(volcGroupPage - 1)} disabled={volcGroupPage <= 1}
-                        className="px-4 py-2 bg-[#0f111a] border border-gray-700 rounded-xl text-white text-sm disabled:opacity-50">上一页</button>
+                        className="btn-page">上一页</button>
                       <span className="text-gray-400 text-sm">{volcGroupPage} · 共 {volcGroupTotal} 个</span>
                       <button onClick={() => loadVolcGroups(volcGroupPage + 1)} disabled={volcAssetGroups.length < 20}
-                        className="px-4 py-2 bg-[#0f111a] border border-gray-700 rounded-xl text-white text-sm disabled:opacity-50">下一页</button>
+                        className="btn-page">下一页</button>
                     </div>
                   )}
                 </>
@@ -1283,7 +1283,7 @@ export default function AdminPage() {
                 <span className="text-xs text-gray-500">共 {volcAssetTotal} 个素材</span>
                 <input value={volcAssetSearch} onChange={(e) => setVolcAssetSearch(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && loadVolcAssets(1, selectedGroup?.Id, volcAssetSearch)}
-                  placeholder="按名称搜索..." className="flex-1 min-w-32 max-w-48 bg-[#0f111a] border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-purple-500" />
+                  placeholder="按名称搜索..." className="flex-1 min-w-32 max-w-48 bg-[#0f111a] border border-gray-700 rounded-xl px-3 py-1.5 text-white text-xs focus:outline-none focus:border-purple-500" />
               </div>
               {volcAssetsLoading ? (
                 <div className="flex items-center justify-center h-40">
@@ -1329,11 +1329,11 @@ export default function AdminPage() {
                             {a.CreateTime && <p className="text-gray-600 text-xs">{formatDateTime(a.CreateTime)}</p>}
                             <div className="mt-auto pt-1 flex items-center gap-1 flex-wrap">
                               <button onClick={() => handleGetAsset(a)} disabled={detailLoading}
-                                className="flex-1 py-1.5 bg-gray-700/50 text-gray-300 hover:bg-gray-700 rounded text-xs disabled:opacity-50 transition-colors">详情</button>
+                                className="btn-edit disabled:opacity-50">详情</button>
                               <button onClick={() => { setEditingAsset(a); setEditAssetName(a.Name || ''); setEditingGroup(null); }}
-                                className="flex-1 py-1.5 bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 rounded text-xs transition-colors">编辑</button>
+                                className="btn-edit">编辑</button>
                               <button onClick={() => handleDeleteAsset(a)}
-                                className="flex-1 py-1.5 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded text-xs transition-colors">删除</button>
+                                className="btn-danger">删除</button>
                             </div>
                           </div>
                         </div>
@@ -1343,10 +1343,10 @@ export default function AdminPage() {
                   {(volcAssetPage > 1 || volcAssets.length >= 20) && (
                     <div className="mt-6 flex items-center justify-center gap-3">
                       <button onClick={() => loadVolcAssets(volcAssetPage - 1)} disabled={volcAssetPage <= 1}
-                        className="px-4 py-2 bg-[#0f111a] border border-gray-700 rounded-xl text-white text-sm disabled:opacity-50">上一页</button>
+                        className="btn-page">上一页</button>
                       <span className="text-gray-400 text-sm">{volcAssetPage} · 共 {volcAssetTotal} 个</span>
                       <button onClick={() => loadVolcAssets(volcAssetPage + 1)} disabled={volcAssets.length < 20}
-                        className="px-4 py-2 bg-[#0f111a] border border-gray-700 rounded-xl text-white text-sm disabled:opacity-50">下一页</button>
+                        className="btn-page">下一页</button>
                     </div>
                   )}
                 </>
@@ -1373,7 +1373,7 @@ export default function AdminPage() {
               <input className="px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm font-mono" placeholder="资产库 Secret Access Key（SK）" type="password" value={newKeyGroup.volc_secret_key} onChange={(e) => setNewKeyGroup((s) => ({ ...s, volc_secret_key: e.target.value }))} />
               <input className="px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm md:col-span-2" placeholder="备注（可选）" value={newKeyGroup.note} onChange={(e) => setNewKeyGroup((s) => ({ ...s, note: e.target.value }))} />
             </div>
-            <button onClick={handleCreateKeyGroup} className="mt-3 px-4 py-2 bg-purple-600 hover:bg-purple-500 rounded text-white text-sm font-medium flex items-center gap-2">
+            <button onClick={handleCreateKeyGroup} className="mt-3 btn-primary flex items-center gap-2">
               <PlusIcon className="w-4 h-4" />新增
             </button>
           </div>
@@ -1397,8 +1397,8 @@ export default function AdminPage() {
                         <input className="px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm md:col-span-2" placeholder="备注（可选）" value={editingKeyGroup.note} onChange={(e) => setEditingKeyGroup((s) => s ? { ...s, note: e.target.value } : s)} />
                       </div>
                       <div className="flex gap-2">
-                        <button onClick={handleSaveKeyGroup} className="px-3 py-1.5 bg-green-600 hover:bg-green-500 rounded text-white text-xs font-medium">保存</button>
-                        <button onClick={() => setEditingKeyGroup(null)} className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-white text-xs">取消</button>
+                        <button onClick={handleSaveKeyGroup} className="btn-save">保存</button>
+                        <button onClick={() => setEditingKeyGroup(null)} className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-md text-white text-xs">取消</button>
                       </div>
                     </div>
                   ) : (
@@ -1419,11 +1419,11 @@ export default function AdminPage() {
                       </div>
                       <div className="flex items-center gap-2 flex-shrink-0">
                         {!g.is_active && (
-                          <button onClick={() => handleActivateKeyGroup(g.id)} className="px-3 py-1.5 bg-green-600 hover:bg-green-500 rounded text-white text-xs font-medium">激活</button>
+                          <button onClick={() => handleActivateKeyGroup(g.id)} className="px-3 py-1.5 bg-green-600 hover:bg-green-500 rounded-md text-white text-xs font-medium">激活</button>
                         )}
-                        <button onClick={() => setEditingKeyGroup({ ...g })} className="px-3 py-1.5 bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 rounded text-xs">编辑</button>
+                        <button onClick={() => setEditingKeyGroup({ ...g })} className="btn-edit">编辑</button>
                         {!g.is_active && (
-                          <button onClick={() => handleDeleteKeyGroup(g.id, g.name)} className="px-3 py-1.5 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded text-xs">删除</button>
+                          <button onClick={() => handleDeleteKeyGroup(g.id, g.name)} className="btn-danger">删除</button>
                         )}
                       </div>
                     </div>
@@ -1445,13 +1445,13 @@ export default function AdminPage() {
                 value={mediaKitKeyDraft}
                 onChange={(e) => setMediaKitKeyDraft(e.target.value)}
               />
-              <button onClick={handleSaveMediaKitKey} className="px-4 py-2 bg-green-600 hover:bg-green-500 rounded text-white text-sm font-medium">保存</button>
-              <button onClick={() => setMediaKitKeyEditing(false)} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-white text-sm">取消</button>
+              <button onClick={handleSaveMediaKitKey} className="btn-save">保存</button>
+              <button onClick={() => setMediaKitKeyEditing(false)} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-xl text-white text-sm">取消</button>
             </div>
           ) : (
             <div className="flex items-center gap-3">
               <code className="flex-1 px-3 py-2 bg-[#0f111a] rounded text-gray-300 text-sm font-mono truncate">{mediaKitKey || '（未配置）'}</code>
-              <button onClick={() => { setMediaKitKeyDraft(mediaKitKey); setMediaKitKeyEditing(true); }} className="px-4 py-2 bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 rounded text-sm">修改</button>
+              <button onClick={() => { setMediaKitKeyDraft(mediaKitKey); setMediaKitKeyEditing(true); }} className="btn-edit">修改</button>
             </div>
           )}
 
@@ -1461,7 +1461,7 @@ export default function AdminPage() {
             <p className="text-xs text-gray-500 mb-3">每秒视频积分 × 视频时长 = 单次扣费</p>
             <div className="space-y-2">
               {enhancementPricing.map((p) => (
-                <div key={p.tool_version} className="flex items-center gap-3 bg-[#0f111a] rounded-lg px-3 py-2">
+                <div key={p.tool_version} className="flex items-center gap-3 bg-[#0f111a] rounded-xl px-3 py-2">
                   <div className="flex-shrink-0 w-24">
                     <div className="text-sm text-white">{p.label}</div>
                     <div className="text-[10px] text-gray-500">{p.tool_version}</div>
@@ -1509,13 +1509,13 @@ export default function AdminPage() {
                 value={wuyinKeyDraft}
                 onChange={(e) => setWuyinKeyDraft(e.target.value)}
               />
-              <button onClick={handleSaveWuyinKey} className="px-4 py-2 bg-green-600 hover:bg-green-500 rounded text-white text-sm font-medium">保存</button>
-              <button onClick={() => setWuyinKeyEditing(false)} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-white text-sm">取消</button>
+              <button onClick={handleSaveWuyinKey} className="btn-save">保存</button>
+              <button onClick={() => setWuyinKeyEditing(false)} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-xl text-white text-sm">取消</button>
             </div>
           ) : (
             <div className="flex items-center gap-3">
               <code className="flex-1 px-3 py-2 bg-[#0f111a] rounded text-gray-300 text-sm font-mono truncate">{wuyinKey || '（未配置）'}</code>
-              <button onClick={() => { setWuyinKeyDraft(wuyinKey); setWuyinKeyEditing(true); }} className="px-4 py-2 bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 rounded text-sm">修改</button>
+              <button onClick={() => { setWuyinKeyDraft(wuyinKey); setWuyinKeyEditing(true); }} className="btn-edit">修改</button>
             </div>
           )}
         </div>
@@ -1561,7 +1561,7 @@ export default function AdminPage() {
               <div className="mb-3 flex items-center justify-between text-xs text-gray-400 flex-wrap gap-2">
                 <span>共 {volcTotal} 条 / 第 {volcPageNum} 页</span>
                 <div className="flex items-center gap-2">
-                  <button onClick={() => handleManualKeyQuery(Math.max(1, volcPageNum - 1))} disabled={volcPageNum <= 1} className="px-3 py-1 bg-[#0f111a] border border-gray-700 rounded disabled:opacity-50">上一页</button>
+                  <button onClick={() => handleManualKeyQuery(Math.max(1, volcPageNum - 1))} disabled={volcPageNum <= 1} className="btn-page">上一页</button>
                   <div className="flex items-center gap-1">
                     <span>跳至</span>
                     <input
@@ -1579,7 +1579,7 @@ export default function AdminPage() {
                     />
                     <span>页</span>
                   </div>
-                  <button onClick={() => handleManualKeyQuery(volcPageNum + 1)} disabled={volcTasks.length < 20} className="px-3 py-1 bg-[#0f111a] border border-gray-700 rounded disabled:opacity-50">下一页</button>
+                  <button onClick={() => handleManualKeyQuery(volcPageNum + 1)} disabled={volcTasks.length < 20} className="btn-page">下一页</button>
                 </div>
               </div>
               <div className="overflow-x-auto">
@@ -1713,7 +1713,7 @@ export default function AdminPage() {
                         <td className="px-6 py-4 text-sm text-gray-400">#{user.id}</td>
                         <td className="px-6 py-4 text-sm text-white">{user.email}</td>
                         <td className="px-6 py-4 text-sm">
-                          <span className={`px-2 py-1 rounded-lg text-xs font-medium ${
+                          <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                             user.role === 'super_admin' ? 'bg-red-500/20 text-red-400' :
                             user.role === 'admin' ? 'bg-amber-500/20 text-amber-400' :
                             'bg-gray-500/20 text-gray-400'
@@ -1722,7 +1722,7 @@ export default function AdminPage() {
                           </span>
                         </td>
                         <td className="px-6 py-4 text-sm">
-                          <span className={`px-2 py-1 rounded-lg text-xs font-medium ${user.status === 'active' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+                          <span className={`px-2 py-1 rounded-full text-xs font-medium ${user.status === 'active' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
                             {user.status === 'active' ? '正常' : '禁用'}
                           </span>
                         </td>
@@ -1752,7 +1752,7 @@ export default function AdminPage() {
                               <>
                                 <button
                                   onClick={() => handleStatusChange(user.id, user.status === 'active' ? 'disabled' : 'active')}
-                                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${user.status === 'active' ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30' : 'bg-green-500/20 text-green-400 hover:bg-green-500/30'}`}
+                                  className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${user.status === 'active' ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30' : 'bg-green-500/20 text-green-400 hover:bg-green-500/30'}`}
                                 >
                                   {user.status === 'active' ? '禁用' : '启用'}
                                 </button>
@@ -1774,7 +1774,7 @@ export default function AdminPage() {
                                 )}
                                 <button
                                   onClick={() => handleOpenUserModal(user)}
-                                  className="px-3 py-1.5 bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 rounded-lg text-xs font-medium transition-all"
+                                  className="px-3 py-1.5 bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 rounded-md text-xs font-medium transition-all"
                                 >
                                   编辑
                                 </button>
@@ -1796,8 +1796,8 @@ export default function AdminPage() {
               <div className="p-6 border-t border-gray-800 flex items-center justify-between">
                 <p className="text-sm text-gray-400">共 {totalUsers} 个用户，第 {currentPage} / {totalPages} 页</p>
                 <div className="flex items-center gap-2">
-                  <button onClick={() => loadUsers(currentPage - 1)} disabled={currentPage <= 1} className="px-4 py-2 bg-[#0f111a] border border-gray-700 rounded-xl text-white text-sm hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all">上一页</button>
-                  <button onClick={() => loadUsers(currentPage + 1)} disabled={currentPage >= totalPages} className="px-4 py-2 bg-[#0f111a] border border-gray-700 rounded-xl text-white text-sm hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all">下一页</button>
+                  <button onClick={() => loadUsers(currentPage - 1)} disabled={currentPage <= 1} className="btn-page">上一页</button>
+                  <button onClick={() => loadUsers(currentPage + 1)} disabled={currentPage >= totalPages} className="btn-page">下一页</button>
                 </div>
               </div>
             </>
@@ -1844,7 +1844,7 @@ export default function AdminPage() {
                   ) : (
                     <div className="space-y-2">
                       {featureKeys.map((f) => (
-                        <div key={f.key} className="flex items-center justify-between bg-[#0f111a] rounded-lg px-3 py-2">
+                        <div key={f.key} className="flex items-center justify-between bg-[#0f111a] rounded-xl px-3 py-2">
                           <div>
                             <p className="text-sm text-white">{f.label}</p>
                             <p className="text-[10px] text-gray-500 font-mono">{f.key}</p>
@@ -1865,7 +1865,7 @@ export default function AdminPage() {
                 <div className="flex gap-3">
                   <button onClick={handleResetPassword} className="flex-1 px-4 py-3 bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 rounded-xl font-medium transition-all">重置密码</button>
                   <button onClick={() => setShowUserModal(false)} className="flex-1 px-4 py-3 bg-[#0f111a] border border-gray-700 text-white hover:bg-gray-800 rounded-xl font-medium transition-all">取消</button>
-                  <button onClick={handleUpdateCredits} className="flex-1 px-4 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-xl font-medium transition-all">保存</button>
+                  <button onClick={handleUpdateCredits} className="btn-save flex-1">保存</button>
                 </div>
               </div>
             </div>

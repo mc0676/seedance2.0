@@ -90,12 +90,12 @@ export default function SettingsPage() {
               onChange={(e) => setActivateCode(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleActivate()}
               placeholder="输入激活码"
-              className="flex-1 bg-[#0f111a] border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
+              className="flex-1 bg-[#0f111a] border border-gray-700 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
             />
             <button
               onClick={handleActivate}
               disabled={activating || !activateCode}
-              className="px-4 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors"
+              className="px-4 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 rounded-xl text-sm font-medium transition-colors"
             >
               {activating ? '激活中...' : '激活'}
             </button>
@@ -120,7 +120,7 @@ export default function SettingsPage() {
                     onClick={() =>
                       setLocalSettings((prev) => ({ ...prev, model: option.value }))
                     }
-                    className={`w-full text-left px-4 py-3 rounded-lg border transition-all ${
+                    className={`w-full text-left px-4 py-3 rounded-xl border transition-all ${
                       localSettings.model === option.value
                         ? 'border-purple-500 bg-purple-500/10'
                         : 'border-gray-700 bg-[#161824] hover:border-gray-600'
@@ -154,7 +154,7 @@ export default function SettingsPage() {
                     onClick={() =>
                       setLocalSettings((prev) => ({ ...prev, ratio: opt.value }))
                     }
-                    className={`flex flex-col items-center gap-1.5 py-2 rounded-lg border transition-all ${
+                    className={`flex flex-col items-center gap-1.5 py-2 rounded-xl border transition-all ${
                       localSettings.ratio === opt.value
                         ? 'border-purple-500 bg-purple-500/10'
                         : 'border-gray-700 bg-[#161824] hover:border-gray-600'
@@ -201,7 +201,7 @@ export default function SettingsPage() {
                         duration: String(d),
                       }))
                     }
-                    className={`px-3 py-2 rounded-lg text-sm font-medium border transition-all ${
+                    className={`px-3 py-2 rounded-xl text-sm font-medium border transition-all ${
                       localSettings.duration === String(d)
                         ? 'border-purple-500 bg-purple-500/10 text-purple-400'
                         : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
@@ -222,7 +222,7 @@ export default function SettingsPage() {
                   <button
                     key={r}
                     onClick={() => setLocalSettings((prev) => ({ ...prev, resolution: r }))}
-                    className={`px-3 py-2 rounded-lg text-sm font-medium border transition-all ${
+                    className={`px-3 py-2 rounded-xl text-sm font-medium border transition-all ${
                       localSettings.resolution === r
                         ? 'border-purple-500 bg-purple-500/10 text-purple-400'
                         : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
@@ -246,7 +246,7 @@ export default function SettingsPage() {
                   <button
                     key={opt.value}
                     onClick={() => setLocalSettings((prev) => ({ ...prev, reference_mode: opt.value }))}
-                    className={`text-left px-4 py-2.5 rounded-lg border transition-all ${
+                    className={`text-left px-4 py-2.5 rounded-xl border transition-all ${
                       localSettings.reference_mode === opt.value
                         ? 'border-purple-500 bg-purple-500/10'
                         : 'border-gray-700 bg-[#161824] hover:border-gray-600'
@@ -281,7 +281,7 @@ export default function SettingsPage() {
                     max_concurrent: e.target.value,
                   }))
                 }
-                className="w-full bg-[#0f111a] border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
+                className="w-full bg-[#0f111a] border border-gray-700 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
               />
             </div>
 
@@ -301,7 +301,7 @@ export default function SettingsPage() {
                     min_interval: e.target.value,
                   }))
                 }
-                className="w-full bg-[#0f111a] border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
+                className="w-full bg-[#0f111a] border border-gray-700 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
               />
             </div>
 
@@ -321,7 +321,7 @@ export default function SettingsPage() {
                     max_interval: e.target.value,
                   }))
                 }
-                className="w-full bg-[#0f111a] border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
+                className="w-full bg-[#0f111a] border border-gray-700 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
               />
             </div>
           </div>
@@ -345,7 +345,7 @@ export default function SettingsPage() {
                 }))
               }
               placeholder="留空则使用默认路径：~/Videos/Seedance"
-              className="w-full bg-[#0f111a] border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
+              className="w-full bg-[#0f111a] border border-gray-700 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
             />
             <p className="text-xs text-gray-500 mt-2">
               生成的视频将自动保存到此目录下的对应项目文件夹中
@@ -363,7 +363,7 @@ export default function SettingsPage() {
             <select
               value={timezone}
               onChange={(e) => handleTimezoneChange(e.target.value)}
-              className="bg-[#0f111a] border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500 min-w-[260px]"
+              className="bg-[#0f111a] border border-gray-700 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-purple-500 min-w-[260px]"
             >
               {TIMEZONE_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -394,14 +394,14 @@ export default function SettingsPage() {
                 max_interval: settings.max_interval || '50000',
               })
             }
-            className="px-6 py-2.5 bg-[#1c1f2e] border border-gray-700 hover:border-gray-500 text-gray-300 hover:text-white rounded-lg transition-all font-medium"
+            className="px-6 py-2.5 bg-[#1c1f2e] border border-gray-700 hover:border-gray-500 text-gray-300 hover:text-white rounded-xl transition-all font-medium"
           >
             重置
           </button>
           <button
             onClick={handleSave}
             disabled={!hasChanges}
-            className="px-6 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:from-gray-700 disabled:to-gray-700 disabled:text-gray-500 rounded-lg transition-all font-medium shadow-lg shadow-purple-900/20"
+            className="px-6 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:from-gray-700 disabled:to-gray-700 disabled:text-gray-500 rounded-xl transition-all font-medium shadow-lg shadow-purple-900/20"
           >
             保存设置
           </button>

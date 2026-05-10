@@ -143,3 +143,87 @@ body {
 .mention-chip + br {
   display: none;
 }
+
+/* ============================================================
+   全局控件统一 class（@layer components）
+   按钮层级：primary > secondary > save > danger > edit
+   ============================================================ */
+@layer components {
+  /* 主要操作按钮：生成 / 创建 / 确认 */
+  .btn-primary {
+    @apply px-6 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600
+           hover:from-purple-500 hover:to-indigo-500
+           disabled:opacity-50 disabled:cursor-not-allowed
+           rounded-xl text-sm font-medium text-white transition-all;
+  }
+
+  /* 次要操作按钮：取消 / 返回 */
+  .btn-secondary {
+    @apply px-5 py-2.5 bg-gray-700 hover:bg-gray-600
+           disabled:opacity-50 disabled:cursor-not-allowed
+           rounded-xl text-sm text-white transition-colors;
+  }
+
+  /* 保存按钮：绿色实色 */
+  .btn-save {
+    @apply px-4 py-2 bg-green-600 hover:bg-green-500
+           disabled:opacity-50 disabled:cursor-not-allowed
+           rounded-xl text-sm text-white font-medium transition-colors;
+  }
+
+  /* 危险操作（删除） */
+  .btn-danger {
+    @apply px-3 py-1.5 bg-red-500/20 text-red-400 hover:bg-red-500/30
+           rounded-md text-xs transition-colors;
+  }
+
+  /* 行内编辑按钮 */
+  .btn-edit {
+    @apply px-3 py-1.5 bg-purple-500/20 text-purple-400 hover:bg-purple-500/30
+           rounded-md text-xs transition-colors;
+  }
+
+  /* 翻页按钮 */
+  .btn-page {
+    @apply px-4 py-2 bg-[#1c1f2e] border border-gray-700
+           rounded-xl text-sm text-gray-300 hover:bg-gray-800
+           disabled:opacity-50 disabled:cursor-not-allowed transition-colors;
+  }
+
+  /* 图标按钮（纯图标，无文字） */
+  .btn-ghost {
+    @apply p-2 rounded-lg hover:bg-gray-800 text-gray-400 hover:text-white
+           transition-colors inline-flex items-center justify-center;
+  }
+
+  /* 选择/切换按钮 — 非激活 */
+  .select-btn {
+    @apply px-4 py-2.5 rounded-xl border border-gray-700 bg-[#161824]
+           text-sm text-gray-400 hover:border-gray-600 transition-all;
+  }
+
+  /* 选择/切换按钮 — 激活态（叠加在 select-btn 上） */
+  .select-btn-active {
+    @apply border-purple-500 bg-purple-500/10 text-purple-400;
+  }
+
+  /* 输入框 */
+  .input-base {
+    @apply w-full px-3 py-2 bg-[#1c1f2e] border border-gray-700
+           rounded-xl text-white text-sm
+           focus:outline-none focus:border-purple-500/50 transition-colors;
+  }
+
+  /* 状态徽章基础 */
+  .badge        { @apply px-2 py-0.5 rounded-full text-xs font-medium; }
+  .badge-green  { @apply badge text-green-400 bg-green-400/10; }
+  .badge-red    { @apply badge text-red-400 bg-red-400/10; }
+  .badge-amber  { @apply badge text-amber-400 bg-amber-400/10; }
+  .badge-purple { @apply badge text-purple-400 bg-purple-400/10; }
+  .badge-gray   { @apply badge text-gray-400 bg-gray-700; }
+
+  /* 加载 Spinner */
+  .spinner {
+    @apply animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full;
+  }
+}

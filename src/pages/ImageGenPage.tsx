@@ -264,7 +264,7 @@ export default function ImageGenPage() {
               <div className="flex flex-col gap-2">
                 {IMAGE_MODELS.map((opt) => (
                   <button key={opt.value} onClick={() => setModel(opt.value)}
-                    className={`w-full text-left px-4 py-3 rounded-lg border transition-all ${model === opt.value ? 'border-purple-500 bg-purple-500/10' : 'border-gray-700 bg-[#161824] hover:border-gray-600'}`}
+                    className={`w-full text-left px-4 py-3 rounded-xl border transition-all ${model === opt.value ? 'border-purple-500 bg-purple-500/10' : 'border-gray-700 bg-[#161824] hover:border-gray-600'}`}
                   >
                     <div className={`text-sm font-medium ${model === opt.value ? 'text-purple-400' : 'text-gray-300'}`}>{opt.label}</div>
                     <div className="text-xs text-gray-500 mt-0.5">{opt.description}</div>
@@ -279,7 +279,7 @@ export default function ImageGenPage() {
                 <div className="flex flex-wrap gap-2">
                   {GPT_ASPECT_OPTIONS.map((s) => (
                     <button key={s} onClick={() => setGptAspect(s)}
-                      className={`px-3 py-2 rounded-lg border text-sm transition-all ${gptAspect === s ? 'border-purple-500 bg-purple-500/10 text-purple-400' : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'}`}
+                      className={`px-3 py-2 rounded-xl border text-sm transition-all ${gptAspect === s ? 'border-purple-500 bg-purple-500/10 text-purple-400' : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'}`}
                     >{s}</button>
                   ))}
                 </div>
@@ -291,7 +291,7 @@ export default function ImageGenPage() {
                   <div className="flex flex-wrap gap-2">
                     {NANO_SIZE_OPTIONS.map((s) => (
                       <button key={s} onClick={() => setNanoSize(s)}
-                        className={`px-4 py-2 rounded-lg border text-sm transition-all ${nanoSize === s ? 'border-purple-500 bg-purple-500/10 text-purple-400' : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'}`}
+                        className={`px-4 py-2 rounded-xl border text-sm transition-all ${nanoSize === s ? 'border-purple-500 bg-purple-500/10 text-purple-400' : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'}`}
                       >{s}</button>
                     ))}
                   </div>
@@ -302,7 +302,7 @@ export default function ImageGenPage() {
                   <div className="flex flex-wrap gap-2">
                     {NANO_ASPECT_OPTIONS.map((s) => (
                       <button key={s} onClick={() => setNanoAspect(s)}
-                        className={`px-3 py-2 rounded-lg border text-sm transition-all ${nanoAspect === s ? 'border-purple-500 bg-purple-500/10 text-purple-400' : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'}`}
+                        className={`px-3 py-2 rounded-xl border text-sm transition-all ${nanoAspect === s ? 'border-purple-500 bg-purple-500/10 text-purple-400' : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'}`}
                       >{s}</button>
                     ))}
                   </div>
@@ -317,7 +317,7 @@ export default function ImageGenPage() {
             <button
               onClick={handleGenerate}
               disabled={loading || !prompt.trim()}
-              className="w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:from-gray-700 disabled:to-gray-700 disabled:text-gray-500 text-white font-bold py-3.5 rounded-xl transition-all shadow-lg shadow-purple-900/20 flex items-center justify-center gap-2"
+              className="w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:from-gray-700 disabled:to-gray-700 disabled:text-gray-500 text-white font-bold py-3 rounded-xl transition-all shadow-lg shadow-purple-900/20 flex items-center justify-center gap-2"
             >
               {loading ? (
                 <><span className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />生成中...</>
@@ -417,19 +417,19 @@ export default function ImageGenPage() {
                         {item.result_urls.length > 0 && (
                           <button
                             onClick={() => setPreviewUrl(item.result_urls[0])}
-                            className="text-[11px] px-2 py-1 rounded-lg border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition-all"
+                            className="text-[11px] px-2 py-1 rounded-xl border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition-all"
                           >预览</button>
                         )}
                         {item.result_urls.map((url, i) => (
                           <button key={i}
                             onClick={() => downloadImageUrl(url, `image_${item.id}_${i + 1}.png`)}
-                            className="text-[11px] px-2 py-1 rounded-lg border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition-all">
+                            className="text-[11px] px-2 py-1 rounded-xl border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition-all">
                             {item.result_urls.length > 1 ? `下载${i + 1}` : '下载'}
                           </button>
                         ))}
                         <button
                           onClick={() => handleReuse(item)}
-                          className="text-[11px] px-2 py-1 rounded-lg border border-purple-500/40 text-purple-400 hover:bg-purple-500/10 transition-all"
+                          className="text-[11px] px-2 py-1 rounded-xl border border-purple-500/40 text-purple-400 hover:bg-purple-500/10 transition-all"
                         >复用</button>
                       </div>
                     </div>

@@ -160,7 +160,7 @@ export default function EnhancementPage() {
     <div className="min-h-screen bg-[#0f111a] text-white">
       <div className="max-w-6xl mx-auto px-6 py-8">
         {/* 警示框 */}
-        <div className="mb-6 p-4 bg-red-500/15 border border-red-500/50 rounded-lg flex items-center gap-3">
+        <div className="mb-6 p-4 bg-red-500/15 border border-red-500/50 rounded-xl flex items-center gap-3">
           <div className="w-2 h-2 bg-red-500 rounded-full flex-shrink-0" />
           <span className="text-red-300 text-sm font-medium">测试功能未启用</span>
         </div>
@@ -236,7 +236,7 @@ export default function EnhancementPage() {
                                 sourceResolution: t.resolution || undefined,
                               })
                             }
-                            className="text-xs px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-medium transition-all"
+                            className="text-xs px-3 py-1.5 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-medium transition-all"
                           >
                             ✨ 增强
                           </button>
@@ -271,10 +271,10 @@ export default function EnhancementPage() {
                   onChange={(e) => setExtUrl(e.target.value.trim())}
                   placeholder="https://example.com/video.mp4"
                   disabled={extUploading}
-                  className="flex-1 bg-[#0f111a] border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-purple-500 focus:outline-none disabled:opacity-50"
+                  className="flex-1 bg-[#0f111a] border border-gray-700 rounded-xl px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-purple-500 focus:outline-none disabled:opacity-50"
                 />
                 <label
-                  className={`px-4 py-2 rounded-lg text-sm font-medium cursor-pointer transition ${
+                  className={`px-4 py-2 rounded-xl text-sm font-medium cursor-pointer transition ${
                     extUploading
                       ? 'bg-gray-700 text-gray-400 cursor-not-allowed'
                       : 'bg-gray-700 hover:bg-gray-600 text-white'
@@ -308,7 +308,7 @@ export default function EnhancementPage() {
                   setExtDuration(v === '' ? '' : Math.max(1, Math.min(300, Number(v))));
                 }}
                 placeholder="自动探测；探测失败时手动输入"
-                className="w-full bg-[#0f111a] border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-purple-500 focus:outline-none"
+                className="w-full bg-[#0f111a] border border-gray-700 rounded-xl px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-purple-500 focus:outline-none"
               />
               {extProbeError && <div className="text-[11px] text-amber-400 mt-1">{extProbeError}</div>}
               <div className="text-[10px] text-gray-600 mt-1">单次提交时长上限 300 秒</div>
@@ -321,7 +321,7 @@ export default function EnhancementPage() {
                 muted
                 playsInline
                 preload="metadata"
-                className="w-full max-h-72 bg-black rounded-lg"
+                className="w-full max-h-72 bg-black rounded-xl"
               />
             )}
 
@@ -332,7 +332,7 @@ export default function EnhancementPage() {
                   if (!extUrl || !extDuration) return;
                   setDialogSource({ kind: 'url', videoUrl: extUrl, durationSec: Number(extDuration) });
                 }}
-                className="px-5 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed text-white text-sm font-medium transition-all"
+                className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium transition-all"
               >
                 ✨ 增强
               </button>
@@ -346,7 +346,7 @@ export default function EnhancementPage() {
             <h2 className="text-lg font-semibold">我的增强记录</h2>
             <button
               onClick={() => loadRecords(recordsPage)}
-              className="text-xs text-gray-400 hover:text-white"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 rounded-xl text-xs font-medium text-white transition-all"
             >
               刷新
             </button>

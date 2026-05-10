@@ -30,9 +30,9 @@ function StatusBadge({ status }: { status?: string }) {
 }
 
 function MemberRoleTag({ role }: { role: string }) {
-  if (role === 'owner') return <span className="px-2 py-0.5 rounded text-xs font-medium text-purple-400 bg-purple-400/10">创建者</span>;
-  if (role === 'admin') return <span className="px-2 py-0.5 rounded text-xs font-medium text-amber-400 bg-amber-400/10">管理员</span>;
-  return <span className="px-2 py-0.5 rounded text-xs font-medium text-gray-400 bg-gray-700">成员</span>;
+  if (role === 'owner') return <span className="px-2 py-0.5 rounded-full text-xs font-medium text-purple-400 bg-purple-400/10">创建者</span>;
+  if (role === 'admin') return <span className="px-2 py-0.5 rounded-full text-xs font-medium text-amber-400 bg-amber-400/10">管理员</span>;
+  return <span className="px-2 py-0.5 rounded-full text-xs font-medium text-gray-400 bg-gray-700">成员</span>;
 }
 
 async function uploadToOss(file: File): Promise<string> {
@@ -345,9 +345,10 @@ export default function ProjectWorkspacePage() {
   };
 
   useEffect(() => {
-    if (currentProject) { loadVolcGroups(1); loadMembers(); }
+    if (currentProject) { void loadVolcGroups(1); void loadMembers(); }
     return () => { if (volcPollRef.current) { clearInterval(volcPollRef.current); volcPollRef.current = null; } };
-  }, [currentProject?.id]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentProject?.id, loadVolcGroups]);
 
   if (!currentProject) {
     return (
@@ -388,7 +389,7 @@ export default function ProjectWorkspacePage() {
             <div className="flex items-center gap-3">
               {volcLevel === 'assets' && (
                 <button onClick={handleBackToGroups}
-                  className="px-3 py-2 bg-[#1c1f2e] border border-gray-700 hover:border-gray-500 rounded-xl text-sm text-gray-300 transition-all">
+                  className="px-3 py-1.5 bg-[#1c1f2e] border border-gray-700 hover:border-gray-500 rounded-xl text-sm text-gray-300 transition-all">
                   ← 返回
                 </button>
               )}
@@ -403,7 +404,7 @@ export default function ProjectWorkspacePage() {
                 <>
                   {hasPendingAssets && (
                     <button onClick={handleSyncStatus}
-                      className="px-4 py-2 bg-[#1c1f2e] border border-gray-700 hover:border-gray-500 rounded-xl text-sm text-gray-300 transition-all">
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1c1f2e] border border-gray-700 hover:border-gray-500 rounded-xl text-sm text-gray-300 transition-all">
                       同步审核状态
                     </button>
                   )}
@@ -416,8 +417,11 @@ export default function ProjectWorkspacePage() {
               {volcLevel === 'groups' && (
                 <>
                   <button onClick={() => loadVolcGroups(1)} disabled={volcGroupsLoading}
-                    className="px-4 py-2 bg-[#1c1f2e] border border-gray-700 hover:border-gray-500 rounded-xl text-sm text-gray-300 transition-all disabled:opacity-50">
-                    {volcGroupsLoading ? '加载中...' : '刷新'}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 rounded-xl text-sm font-medium text-white transition-all disabled:opacity-50">
+                    <svg className={`w-4 h-4 ${volcGroupsLoading ? 'animate-spin' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                      <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    {volcGroupsLoading ? '同步中...' : '刷新'}
                   </button>
                   <button onClick={() => setShowCreateGroup(v => !v)}
                     className="px-4 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 rounded-xl text-sm font-medium text-white transition-all">
@@ -472,11 +476,11 @@ export default function ProjectWorkspacePage() {
               {createGroupStep && <p className="text-xs text-purple-400">{createGroupStep}</p>}
               <div className="flex gap-2">
                 <button onClick={handleCreateGroup} disabled={createGroupLoading}
-                  className="px-5 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 rounded-xl text-white text-sm font-medium transition-colors">
+                  className="px-5 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:opacity-50 rounded-xl text-white text-sm font-medium transition-all">
                   {createGroupLoading ? '创建中...' : '创建'}
                 </button>
                 <button onClick={() => { setShowCreateGroup(false); setNewGroupFile(null); setNewGroupPreview(''); }}
-                  className="px-5 py-2 bg-gray-700 hover:bg-gray-600 rounded-xl text-white text-sm transition-colors">取消</button>
+                  className="px-5 py-2.5 bg-gray-700 hover:bg-gray-600 rounded-xl text-white text-sm font-medium transition-colors">取消</button>
               </div>
             </div>
           )}
@@ -527,11 +531,11 @@ export default function ProjectWorkspacePage() {
               {addAssetStep && <p className="text-xs text-purple-400">{addAssetStep}</p>}
               <div className="flex gap-2">
                 <button onClick={handleAddAsset} disabled={addAssetLoading || !addAssetFile}
-                  className="px-5 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 rounded-xl text-white text-sm font-medium transition-colors">
+                  className="px-5 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:opacity-50 rounded-xl text-white text-sm font-medium transition-all">
                   {addAssetLoading ? '提交中...' : '提交'}
                 </button>
                 <button onClick={() => { setShowAddAsset(false); setAddAssetFile(null); setAddAssetName(''); }}
-                  className="px-5 py-2 bg-gray-700 hover:bg-gray-600 rounded-xl text-white text-sm">取消</button>
+                  className="px-5 py-2.5 bg-gray-700 hover:bg-gray-600 rounded-xl text-white text-sm font-medium transition-colors">取消</button>
               </div>
             </div>
           )}
@@ -593,7 +597,7 @@ export default function ProjectWorkspacePage() {
                         <div className="mt-auto pt-1 flex items-center justify-between gap-2">
                           <span className="text-xs text-purple-400 group-hover:text-purple-300">查看素材 →</span>
                           <button onClick={(e) => { e.stopPropagation(); setDeleteGroupTarget(g); }}
-                            className="px-2 py-1 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded text-xs transition-colors">删除</button>
+                            className="px-2 py-1 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded-md text-xs transition-colors">删除</button>
                         </div>
                       </div>
                     </div>
@@ -662,7 +666,7 @@ export default function ProjectWorkspacePage() {
                           )}
                           <div className="mt-auto pt-1">
                             <button onClick={() => handleDeleteAsset(a)}
-                              className="w-full py-1.5 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded-lg text-xs transition-colors">
+                              className="w-full py-1.5 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded-md text-xs transition-colors">
                               删除
                             </button>
                           </div>
@@ -728,7 +732,7 @@ export default function ProjectWorkspacePage() {
                       <td className="px-5 py-3 text-sm">
                         {m.role !== 'owner' && (isAdmin || currentUser?.id === m.user_id) && (
                           <button onClick={() => handleRemoveMember(m)}
-                            className="px-3 py-1.5 bg-red-600/10 text-red-500 hover:bg-red-600/20 rounded text-xs transition-colors">移除</button>
+                            className="px-2 py-1 bg-red-600/10 text-red-500 hover:bg-red-600/20 rounded-md text-xs transition-colors">移除</button>
                         )}
                       </td>
                     </tr>

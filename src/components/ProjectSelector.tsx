@@ -81,7 +81,7 @@ export default function ProjectSelector() {
     <div ref={ref} className="relative px-3 py-2">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors text-sm"
+        className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 transition-colors text-sm"
       >
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-xs text-gray-400 shrink-0">工作组</span>
@@ -102,7 +102,7 @@ export default function ProjectSelector() {
       </button>
 
       {open && (
-        <div className="absolute left-3 right-3 top-full mt-1 z-50 bg-gray-800 border border-gray-700 rounded-lg shadow-xl overflow-hidden">
+        <div className="absolute left-3 right-3 top-full mt-1 z-50 bg-gray-800 border border-gray-700 rounded-xl shadow-xl overflow-hidden">
           {projects.length > 0 && (
             <ul className="max-h-48 overflow-y-auto">
               {projects.map((p) => (
@@ -147,21 +147,21 @@ export default function ProjectSelector() {
                   value={newDesc}
                   onChange={(e) => setNewDesc(e.target.value)}
                   placeholder="描述（可选）"
-                  className="w-full px-2 py-1.5 text-sm bg-gray-700 border border-gray-600 rounded text-white placeholder-gray-400 focus:outline-none focus:border-blue-500"
+                  className="w-full px-2 py-1.5 text-sm bg-gray-700 border border-gray-600 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:border-purple-500"
                 />
                 {error && <p className="text-xs text-red-400">{error}</p>}
                 <div className="flex gap-2">
                   <button
                     type="submit"
                     disabled={createLoading || !newName.trim()}
-                    className="flex-1 py-1.5 text-sm bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded text-white transition-colors"
+                    className="flex-1 py-1.5 text-sm bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:opacity-50 rounded-xl text-white font-medium transition-all"
                   >
                     {createLoading ? '创建中…' : '创建'}
                   </button>
                   <button
                     type="button"
                     onClick={() => { setCreating(false); setError(''); }}
-                    className="flex-1 py-1.5 text-sm bg-gray-600 hover:bg-gray-500 rounded text-white transition-colors"
+                    className="flex-1 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 rounded-xl text-white transition-colors"
                   >
                     取消
                   </button>
