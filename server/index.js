@@ -3412,6 +3412,11 @@ app.post('/api/video-enhancements', authenticate, async (req, res) => {
     if (task.status !== 'done' || !task.video_url) {
       return res.status(400).json({ error: '源视频未生成完成，无法增强' });
     }
+    // 防重：同一任务已有 pending/processing 记录时拒绝再次提交
+    const inProgress = db.prepare(
+      `SELECT id FROM video_enhancements WHERE task_id = ? AND status IN ('pending', 'processing') LIMIT 1`
+    ).get(taskId);
+    if (inProgress) return res.status(409).json({ error: '该视频已有增强任务正在进行中，请等待完成后再试' });
     sourceUrl = task.video_url;
     durationSec = Math.max(1, Math.round(Number(task.duration) || 5));
     sourceTaskId = task.id;
