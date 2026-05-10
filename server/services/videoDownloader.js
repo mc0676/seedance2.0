@@ -359,8 +359,7 @@ export function getDownloadTasks(options = {}) {
   `);
   const { count: total } = countStmt.get(...params);
 
-  const offset = (page - 1) * pageSize;
-  const query = `
+  const columnSelect = `
     SELECT
       t.id,
       t.prompt,
@@ -394,11 +393,66 @@ export function getDownloadTasks(options = {}) {
     FROM tasks t
     LEFT JOIN projects p ON t.project_id = p.id
     ${whereClause}
-    ORDER BY t.created_at DESC
-    LIMIT ? OFFSET ?
   `;
 
-  const stmt = db.prepare(query);
+  // type=all 时需要全量拉取，不能先分页再合并
+  if (type === 'all') {
+    const allVideos = db.prepare(`${columnSelect} ORDER BY t.created_at DESC`).all(...params);
+    const videoTasks = allVideos.map((task) => ({
+      ...task,
+      hasHistory: !!task.history_id,
+      model_type: 'video',
+      assets: [],
+      enhancements: [],
+    }));
+    // 批量拉取素材
+    const allTaskIds = allVideos.map((t) => t.id);
+    if (allTaskIds.length > 0) {
+      const placeholders = allTaskIds.map(() => '?').join(',');
+      const assets = db.prepare(
+        `SELECT task_id, asset_type, image_uri, original_name, sort_order FROM task_assets WHERE task_id IN (${placeholders}) AND image_uri IS NOT NULL AND image_uri != '' ORDER BY sort_order ASC`
+      ).all(...allTaskIds);
+      const assetsByTask = {};
+      for (const a of assets) {
+        if (!assetsByTask[a.task_id]) assetsByTask[a.task_id] = [];
+        assetsByTask[a.task_id].push({ assetType: a.asset_type, uri: a.image_uri, originalName: a.original_name || null });
+      }
+      const enhancements = db.prepare(
+        `SELECT id, task_id, status, tool_version, scene, target_resolution,
+                enhanced_video_url, error_message, credits_used, duration_seconds,
+                created_at, finished_at
+         FROM video_enhancements WHERE task_id IN (${placeholders})
+         ORDER BY created_at DESC`
+      ).all(...allTaskIds);
+      const enhancementsByTask = {};
+      for (const e of enhancements) {
+        if (!enhancementsByTask[e.task_id]) enhancementsByTask[e.task_id] = [];
+        enhancementsByTask[e.task_id].push(e);
+      }
+      for (const t of videoTasks) {
+        t.assets = assetsByTask[t.id] || [];
+        t.enhancements = enhancementsByTask[t.id] || [];
+      }
+    }
+    // 合并图片
+    const imgWhere = [];
+    const imgParams = [];
+    if (projectId) { imgWhere.push('project_id = ?'); imgParams.push(projectId); }
+    if (!isAdmin && userId !== null) { imgWhere.push('user_id = ?'); imgParams.push(userId); }
+    const imgWhereClause = imgWhere.length ? `WHERE ${imgWhere.join(' AND ')}` : '';
+    const imgRows = db.prepare(`SELECT * FROM image_records ${imgWhereClause} ORDER BY created_at DESC`).all(...imgParams);
+    const imgTasks = imgRows.map((r) => imageRecordToTask(r));
+    const merged = [...videoTasks, ...imgTasks].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    return {
+      tasks: merged.slice((page - 1) * pageSize, page * pageSize),
+      total: merged.length,
+      page,
+      pageSize,
+    };
+  }
+
+  const offset = (page - 1) * pageSize;
+  const stmt = db.prepare(`${columnSelect} ORDER BY t.created_at DESC LIMIT ? OFFSET ?`);
   const tasks = stmt.all(...params, pageSize, offset);
 
   // 批量拉取素材（image_uri 有内容的才有意义）
@@ -435,24 +489,7 @@ export function getDownloadTasks(options = {}) {
     enhancements: enhancementsByTask[task.id] || [],
   }));
 
-  // type=all 时合并图片记录
-  if (type === 'all') {
-    const imgWhere = [];
-    const imgParams = [];
-    if (projectId) { imgWhere.push('project_id = ?'); imgParams.push(projectId); }
-    if (!isAdmin && userId !== null) { imgWhere.push('user_id = ?'); imgParams.push(userId); }
-    const imgWhereClause = imgWhere.length ? `WHERE ${imgWhere.join(' AND ')}` : '';
-    const imgRows = db.prepare(`SELECT * FROM image_records ${imgWhereClause} ORDER BY created_at DESC`).all(...imgParams);
-    const imgTasks = imgRows.map((r) => imageRecordToTask(r));
-    const merged = [...videoTasks, ...imgTasks].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-    const imgTotal = db.prepare(`SELECT COUNT(*) as n FROM image_records ${imgWhereClause}`).get(...imgParams).n;
-    return {
-      tasks: merged.slice((page - 1) * pageSize, page * pageSize),
-      total: total + imgTotal,
-      page,
-      pageSize,
-    };
-  }
+
 
   return {
     tasks: videoTasks,
