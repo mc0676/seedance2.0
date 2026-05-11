@@ -1346,13 +1346,29 @@ export default function SingleTaskPage() {
 
     // 提交前用最新 projectAssets 刷新 assetSelections 的 assetUri（修复C：快照过期问题）
     const assetMap = new Map(projectAssets.map((a) => [a.volc_asset_id, a]));
-    const freshSelections = assetSelections.map((sel) => {
+    const stateSelections = assetSelections.map((sel) => {
       if (!sel.volcAssetId) return sel;
       const live = assetMap.get(sel.volcAssetId);
       if (!live) return sel;
       const freshUri = live.volc_asset_id ? `asset://${live.volc_asset_id}` : (live.file_url || sel.assetUri);
       return freshUri !== sel.assetUri ? { ...sel, assetUri: freshUri } : sel;
     });
+    // 修复D：直接从 prompt + projectAssets 派生缺失的 selection
+    // 避免「粘贴后立即提交」时 useEffect 尚未跑、assetSelections 仍为空导致漏图
+    const derivedFromPrompt = projectAssets
+      .filter((a) => a.project_id === currentProjectId && a.volc_asset_id)
+      .filter((a) => promptHasChip(prompt, `@${a.volc_asset_id}`))
+      .filter((a) => !stateSelections.some((s) => s.chipTag === `@${a.volc_asset_id}`))
+      .map((a) => ({
+        id: `asset-${a.volc_asset_id || a.id}`,
+        volcAssetId: a.volc_asset_id || '',
+        fileType: a.file_type as 'image' | 'video' | 'audio',
+        name: a.name,
+        thumbnailUrl: a.thumbnail_url || a.file_url || undefined,
+        assetUri: `asset://${a.volc_asset_id}`,
+        chipTag: `@${a.volc_asset_id}`,
+      }));
+    const freshSelections = [...stateSelections, ...derivedFromPrompt];
 
     let uploadedImageUrls: string[];
     let resolvedVideoUrl: string | undefined;
