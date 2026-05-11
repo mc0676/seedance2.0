@@ -3,6 +3,7 @@ import * as downloadService from '../services/downloadService';
 import type { DownloadTask } from '../types/index';
 import { useApp } from '../context/AppContext';
 import { formatDateTime, elapsedSeconds, useUserTimezone } from '../utils/datetime';
+import { videoUrlToMp3Blob, downloadBlob } from '../utils/audioExtractor';
 
 async function downloadImageUrl(url: string, filename?: string) {
   try {
@@ -48,7 +49,7 @@ interface DownloadState {
   pageSize: number;
   statusFilter: string;
   typeFilter: string;
-  selectedTaskIds: number[];
+  selectedRowKeys: string[];
   isLoading: boolean;
   downloadingIds: Set<number>;
   previewTask: DownloadTask | null;
@@ -73,13 +74,19 @@ export default function DownloadManagementPage() {
     pageSize: 20,
     statusFilter: 'all',
     typeFilter: 'all',
-    selectedTaskIds: [],
+    selectedRowKeys: [],
     isLoading: false,
     downloadingIds: new Set(),
     previewTask: null,
   });
 
-  const { tasks, total, page, pageSize, statusFilter, typeFilter, selectedTaskIds, isLoading, downloadingIds, previewTask } = state;
+  const { tasks, total, page, pageSize, statusFilter, typeFilter, selectedRowKeys, isLoading, downloadingIds, previewTask } = state;
+
+  // 各源表（tasks / image_records / audio_generations）的 id 各自自增,易冲突。
+  // 用 model_type + id 作为行唯一键 + 显示 ID 类型前缀,避免歧义。
+  const rowKey = (t: DownloadTask) => `${t.model_type}:${t.id}`;
+  const TYPE_PREFIX: Record<string, string> = { video: 'V', image: 'I', audio: 'A' };
+  const displayId = (t: DownloadTask) => `${TYPE_PREFIX[t.model_type] || 'T'}-${t.id.toString().padStart(6, '0')}`;
 
   // 轮询引用
   const pollIntervalRef = useRef<number | null>(null);
@@ -258,6 +265,33 @@ export default function DownloadManagementPage() {
     }
   };
 
+  // 音频 mp3 下载（浏览器端转码缓存，避免重复转码）
+  const audioMp3CacheRef = useRef<Map<number, Blob>>(new Map());
+  const audioConvertingRef = useRef<Set<number>>(new Set());
+  const [audioConverting, setAudioConverting] = useState<Record<number, boolean>>({});
+
+  const handleAudioMp3Download = async (task: DownloadTask) => {
+    if (!task.video_url) { alert('音频源视频地址不可用'); return; }
+    const cached = audioMp3CacheRef.current.get(task.id);
+    if (cached) {
+      downloadBlob(cached, `audio_${task.id}.mp3`);
+      return;
+    }
+    if (audioConvertingRef.current.has(task.id)) return;
+    audioConvertingRef.current.add(task.id);
+    setAudioConverting((m) => ({ ...m, [task.id]: true }));
+    try {
+      const blob = await videoUrlToMp3Blob(task.video_url);
+      audioMp3CacheRef.current.set(task.id, blob);
+      downloadBlob(blob, `audio_${task.id}.mp3`);
+    } catch (e) {
+      alert('转码失败：' + ((e as Error)?.message || ''));
+    } finally {
+      audioConvertingRef.current.delete(task.id);
+      setAudioConverting((m) => { const x = { ...m }; delete x[task.id]; return x; });
+    }
+  };
+
   const handleBrowserDownload = async (task: DownloadTask) => {
     const filename = `task_${task.id}_${(task.prompt || 'video').substring(0, 20).replace(/[^\w\u4e00-\u9fa5]/g, '_')}.mp4`;
     // 有远程 URL 直接走代理下载，无需先保存到服务器
@@ -279,17 +313,21 @@ export default function DownloadManagementPage() {
 
   // 批量下载（浏览器逐个触发）
   const handleBatchDownload = () => {
-    if (selectedTaskIds.length === 0) return;
-    const selected = tasks.filter((t) => selectedTaskIds.includes(t.id) && t.video_url);
-    if (selected.length === 0) { alert('所选任务中没有可下载的视频'); return; }
+    if (selectedRowKeys.length === 0) return;
+    const selected = tasks.filter((t) => selectedRowKeys.includes(rowKey(t)) && t.video_url && t.model_type !== 'audio');
+    const audios = tasks.filter((t) => selectedRowKeys.includes(rowKey(t)) && t.model_type === 'audio' && t.video_url);
+    if (selected.length === 0 && audios.length === 0) { alert('所选任务中没有可下载的视频或音频'); return; }
     selected.forEach((task) => handleBrowserDownload(task));
+    audios.forEach((task) => void handleAudioMp3Download(task));
   };
 
   // 下载全部待下载
   const handleDownloadAllPending = () => {
-    const pending = tasks.filter((t) => t.effective_download_status === 'pending' && t.video_url);
-    if (pending.length === 0) { alert('没有待下载的任务'); return; }
+    const pending = tasks.filter((t) => t.effective_download_status === 'pending' && t.video_url && t.model_type !== 'audio');
+    const pendingAudio = tasks.filter((t) => t.effective_download_status === 'pending' && t.model_type === 'audio' && t.video_url);
+    if (pending.length === 0 && pendingAudio.length === 0) { alert('没有待下载的任务'); return; }
     pending.forEach((task) => handleBrowserDownload(task));
+    pendingAudio.forEach((task) => void handleAudioMp3Download(task));
   };
 
   // 删除任务
@@ -306,25 +344,25 @@ export default function DownloadManagementPage() {
 
   // 全选/取消全选
   const toggleSelectAll = () => {
-    if (selectedTaskIds.length === tasks.length) {
-      setState((prev) => ({ ...prev, selectedTaskIds: [] }));
+    if (selectedRowKeys.length === tasks.length) {
+      setState((prev) => ({ ...prev, selectedRowKeys: [] }));
     } else {
       setState((prev) => ({
         ...prev,
-        selectedTaskIds: tasks.map((t) => t.id),
+        selectedRowKeys: tasks.map((t) => rowKey(t)),
       }));
     }
   };
 
   // 拖选逻辑
-  const handleRowMouseDown = (index: number, taskId: number) => {
+  const handleRowMouseDown = (index: number, key: string) => {
     dragStartIndexRef.current = index;
-    dragSelectingRef.current = !selectedTaskIds.includes(taskId);
+    dragSelectingRef.current = !selectedRowKeys.includes(key);
     setState((prev) => ({
       ...prev,
-      selectedTaskIds: dragSelectingRef.current
-        ? [...new Set([...prev.selectedTaskIds, taskId])]
-        : prev.selectedTaskIds.filter((id) => id !== taskId),
+      selectedRowKeys: dragSelectingRef.current
+        ? [...new Set([...prev.selectedRowKeys, key])]
+        : prev.selectedRowKeys.filter((k) => k !== key),
     }));
   };
 
@@ -332,12 +370,12 @@ export default function DownloadManagementPage() {
     if (dragStartIndexRef.current === null) return;
     const start = Math.min(dragStartIndexRef.current, index);
     const end = Math.max(dragStartIndexRef.current, index);
-    const rangeIds = tasks.slice(start, end + 1).map((t) => t.id);
+    const rangeKeys = tasks.slice(start, end + 1).map((t) => rowKey(t));
     setState((prev) => ({
       ...prev,
-      selectedTaskIds: dragSelectingRef.current
-        ? [...new Set([...prev.selectedTaskIds, ...rangeIds])]
-        : prev.selectedTaskIds.filter((id) => !rangeIds.includes(id)),
+      selectedRowKeys: dragSelectingRef.current
+        ? [...new Set([...prev.selectedRowKeys, ...rangeKeys])]
+        : prev.selectedRowKeys.filter((k) => !rangeKeys.includes(k)),
     }));
   };
 
@@ -435,6 +473,7 @@ export default function DownloadManagementPage() {
             <option value="all">全部类型</option>
             <option value="video">视频</option>
             <option value="image">图片</option>
+            <option value="audio">音频</option>
           </select>
         </div>
 
@@ -463,13 +502,13 @@ export default function DownloadManagementPage() {
 
           <button
             onClick={handleBatchDownload}
-            disabled={selectedTaskIds.length === 0 || isLoading}
+            disabled={selectedRowKeys.length === 0 || isLoading}
             className="px-4 py-1.5 bg-indigo-600 text-white rounded-md text-sm hover:bg-indigo-500 disabled:opacity-50 flex items-center gap-1 transition-colors"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
             </svg>
-            批量下载 ({selectedTaskIds.length})
+            批量下载 ({selectedRowKeys.length})
           </button>
         </div>
       </div>
@@ -489,7 +528,7 @@ export default function DownloadManagementPage() {
                     className="flex items-center justify-center h-full py-3 px-3 cursor-pointer"
                     onClick={toggleSelectAll}
                   >
-                    <CheckIcon checked={selectedTaskIds.length === tasks.length && tasks.length > 0} indeterminate={selectedTaskIds.length > 0 && selectedTaskIds.length < tasks.length} />
+                    <CheckIcon checked={selectedRowKeys.length === tasks.length && tasks.length > 0} indeterminate={selectedRowKeys.length > 0 && selectedRowKeys.length < tasks.length} />
                   </div>
                 </th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase">任务 ID</th>
@@ -502,20 +541,22 @@ export default function DownloadManagementPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-800">
-              {tasks.map((task, index) => (
+              {tasks.map((task, index) => {
+                const k = rowKey(task);
+                return (
                 <tr
-                  key={task.id}
-                  className={`transition-colors select-none cursor-pointer ${selectedTaskIds.includes(task.id) ? 'bg-purple-500/5' : 'hover:bg-[#0f111a]/50'}`}
-                  onMouseDown={(e) => { e.preventDefault(); handleRowMouseDown(index, task.id); }}
+                  key={k}
+                  className={`transition-colors select-none cursor-pointer ${selectedRowKeys.includes(k) ? 'bg-purple-500/5' : 'hover:bg-[#0f111a]/50'}`}
+                  onMouseDown={(e) => { e.preventDefault(); handleRowMouseDown(index, k); }}
                   onMouseEnter={() => handleRowMouseEnter(index)}
                 >
                   <td className="w-12 p-0">
                     <div className="flex items-center justify-center h-full min-h-[52px] px-3">
-                      <CheckIcon checked={selectedTaskIds.includes(task.id)} />
+                      <CheckIcon checked={selectedRowKeys.includes(k)} />
                     </div>
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-300 font-mono">
-                    {task.id.toString().padStart(6, '0')}
+                    {displayId(task)}
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-300">
                     {task.project_name || '-'}
@@ -525,9 +566,13 @@ export default function DownloadManagementPage() {
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-300">
                     <span className={`px-2 py-0.5 rounded text-xs ${
-                      task.model_type === 'video' ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30' : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                      task.model_type === 'video'
+                        ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30'
+                        : task.model_type === 'audio'
+                        ? 'bg-pink-500/20 text-pink-400 border border-pink-500/30'
+                        : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
                     }`}>
-                      {task.model_type === 'video' ? '视频' : '图片'}
+                      {task.model_type === 'video' ? '视频' : task.model_type === 'audio' ? '音频' : '图片'}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-sm">
@@ -580,8 +625,8 @@ export default function DownloadManagementPage() {
                           ))}
                         </>
                       )}
-                      {/* 有视频 URL：预览 + 下载 */}
-                      {task.video_url && (
+                      {/* 有视频 URL 且非音频：预览 + 下载 */}
+                      {task.video_url && task.model_type !== 'audio' && (
                         <>
                           <button
                             onClick={() => handlePreview(task)}
@@ -604,6 +649,26 @@ export default function DownloadManagementPage() {
                           </button>
                         </>
                       )}
+                      {/* 音频条目：浏览器端转码下载 mp3 */}
+                      {task.model_type === 'audio' && task.video_url && (
+                        <button
+                          onClick={() => void handleAudioMp3Download(task)}
+                          disabled={!!audioConverting[task.id]}
+                          className="p-1 text-pink-400 hover:bg-pink-500/10 rounded transition-colors disabled:opacity-50"
+                          title={audioConverting[task.id] ? '转码中...' : '下载 MP3'}
+                        >
+                          {audioConverting[task.id] ? (
+                            <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                            </svg>
+                          ) : (
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                            </svg>
+                          )}
+                        </button>
+                      )}
                       {/* 生成中：继续监听 */}
                       {task.effective_download_status === 'generating' && task.history_id && (
                         <button
@@ -617,7 +682,7 @@ export default function DownloadManagementPage() {
                           </svg>
                         </button>
                       )}
-                      {task.model_type !== 'image' && (
+                      {task.model_type !== 'image' && task.model_type !== 'audio' && (
                       <button
                         onClick={() => handleDeleteTask(task.id)}
                         className="p-1 text-red-400 hover:bg-red-500/10 rounded transition-colors"
@@ -631,7 +696,8 @@ export default function DownloadManagementPage() {
                     </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         )}
@@ -674,7 +740,7 @@ export default function DownloadManagementPage() {
           >
             <div className="flex items-center justify-between mb-3">
               <div className="text-sm text-gray-300 truncate flex-1 mr-4">
-                {previewTask.prompt || `任务 #${previewTask.id}`}
+                {previewTask.prompt || `任务 ${displayId(previewTask)}`}
               </div>
               <button
                 onClick={handleClosePreview}

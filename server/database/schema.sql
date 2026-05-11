@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   completed_at DATETIME,
   error_message TEXT,
   retry_count INTEGER DEFAULT 0,
+  task_kind TEXT NOT NULL DEFAULT 'video' CHECK (task_kind IN ('video', 'audio_intermediate')),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -384,6 +385,27 @@ CREATE TABLE IF NOT EXISTS video_enhancements (
 CREATE INDEX IF NOT EXISTS idx_video_enhancements_task ON video_enhancements(task_id);
 CREATE INDEX IF NOT EXISTS idx_video_enhancements_status ON video_enhancements(status);
 CREATE INDEX IF NOT EXISTS idx_video_enhancements_user ON video_enhancements(user_id);
+
+-- 音频生成记录（参考图 + 语气提示词 → 4s seedance 视频 → 浏览器端转 mp3）
+CREATE TABLE IF NOT EXISTS audio_generations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER UNIQUE,
+  user_id INTEGER NOT NULL,
+  project_id INTEGER,
+  reference_image_url TEXT NOT NULL,
+  voice_prompt TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','generating','done','error')),
+  intermediate_video_url TEXT,
+  credits_used INTEGER DEFAULT 0,
+  error_message TEXT,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  finished_at DATETIME,
+  FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_audio_generations_user ON audio_generations(user_id);
+CREATE INDEX IF NOT EXISTS idx_audio_generations_status ON audio_generations(status);
+CREATE INDEX IF NOT EXISTS idx_audio_generations_task ON audio_generations(task_id);
 
 -- 画质增强计费配置
 CREATE TABLE IF NOT EXISTS enhancement_pricing (

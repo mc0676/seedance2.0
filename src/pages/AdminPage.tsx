@@ -30,6 +30,9 @@ import {
   listEnhancementPricing,
   updateEnhancementPricing,
   type AdminEnhancementPricing,
+  getAudioGenConfig,
+  updateAudioGenConfig,
+  type AudioGenConfig,
 } from '../services/authService';
 import { getAuthHeaders } from '../services/authService';
 import type { User, FeatureKey, ModelPricing } from '../types';
@@ -160,6 +163,13 @@ export default function AdminPage() {
   const [mediaKitKeyEditing, setMediaKitKeyEditing] = useState(false);
   const [mediaKitKeyDraft, setMediaKitKeyDraft] = useState('');
   const [enhancementPricing, setEnhancementPricing] = useState<AdminEnhancementPricing[]>([]);
+
+  // 音频生成中转配置
+  const [audioCfg, setAudioCfg] = useState<AudioGenConfig | null>(null);
+  const [audioCfgDraft, setAudioCfgDraft] = useState<AudioGenConfig | null>(null);
+  const [audioCfgEditing, setAudioCfgEditing] = useState(false);
+  const [audioCfgOptions, setAudioCfgOptions] = useState<{ ratios: string[]; resolutions: string[]; durations: number[] } | null>(null);
+  const [audioCfgSaving, setAudioCfgSaving] = useState(false);
 
   // 火山原生资产库
   interface VolcAssetGroup { Id: string; Name: string; Description?: string; GroupType?: string; ProjectName?: string; CreateTime?: string; UpdateTime?: string; coverUrl?: string; }
@@ -507,6 +517,7 @@ export default function AdminPage() {
       getWuyinKey().then((d) => setWuyinKey(d.key)).catch(() => {});
       getMediaKitKey().then((d) => setMediaKitKey(d.key)).catch(() => {});
       listEnhancementPricing().then(setEnhancementPricing).catch(() => {});
+      getAudioGenConfig().then((d) => { setAudioCfg(d.config); setAudioCfgOptions(d.options); }).catch(() => {});
       loadVolcAkSk();
     }
   }, []);
@@ -615,6 +626,17 @@ export default function AdminPage() {
       setMediaKitKey(mediaKitKeyDraft);
       setMediaKitKeyEditing(false);
     } catch (e) { alert(e instanceof Error ? e.message : '保存失败'); }
+  };
+
+  const handleSaveAudioCfg = async () => {
+    if (!audioCfgDraft) return;
+    setAudioCfgSaving(true);
+    try {
+      const res = await updateAudioGenConfig(audioCfgDraft);
+      setAudioCfg(res.config);
+      setAudioCfgEditing(false);
+    } catch (e) { alert(e instanceof Error ? e.message : '保存失败'); }
+    finally { setAudioCfgSaving(false); }
   };
 
   const handleUpdateEnhancementPricing = async (
@@ -1108,6 +1130,85 @@ export default function AdminPage() {
           })}
         </div>
 
+            {/* 音频生成中转视频配置 */}
+            <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
+                <h2 className="text-xl font-semibold text-white mb-2">音频生成中转配置</h2>
+                <p className="text-xs text-gray-500 mb-4">音频生成会先生成一段中转视频再提取音轨,这里配置中转视频的参数,降低消耗。默认:Seedance
+                    2.0 Fast / 1:1 / 480p / 4 秒</p>
+                {audioCfg && audioCfgOptions ? (
+                    audioCfgEditing && audioCfgDraft ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <label className="block">
+                                <span className="text-xs text-gray-400 block mb-1">模型</span>
+                                <select
+                                    className="w-full px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-white text-sm focus:outline-none focus:border-purple-500"
+                                    value={audioCfgDraft.model}
+                                    onChange={(e) => setAudioCfgDraft({...audioCfgDraft, model: e.target.value})}
+                                >
+                                    {Array.from(new Set([audioCfgDraft.model, ...modelPricings.map((m) => m.model_key), 'seedance-2.0-fast', 'seedance-2.0'])).map((k) => (
+                                        <option key={k} value={k}>{k}</option>
+                                    ))}
+                                </select>
+                            </label>
+                            <label className="block">
+                                <span className="text-xs text-gray-400 block mb-1">画面比例</span>
+                                <select
+                                    className="w-full px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-white text-sm focus:outline-none focus:border-purple-500"
+                                    value={audioCfgDraft.ratio}
+                                    onChange={(e) => setAudioCfgDraft({...audioCfgDraft, ratio: e.target.value})}
+                                >
+                                    {audioCfgOptions.ratios.map((r) => <option key={r} value={r}>{r}</option>)}
+                                </select>
+                            </label>
+                            <label className="block">
+                                <span className="text-xs text-gray-400 block mb-1">分辨率</span>
+                                <select
+                                    className="w-full px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-white text-sm focus:outline-none focus:border-purple-500"
+                                    value={audioCfgDraft.resolution}
+                                    onChange={(e) => setAudioCfgDraft({...audioCfgDraft, resolution: e.target.value})}
+                                >
+                                    {audioCfgOptions.resolutions.map((r) => <option key={r} value={r}>{r}</option>)}
+                                </select>
+                            </label>
+                            <label className="block">
+                                <span className="text-xs text-gray-400 block mb-1">时长(秒)</span>
+                                <select
+                                    className="w-full px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-white text-sm focus:outline-none focus:border-purple-500"
+                                    value={audioCfgDraft.duration}
+                                    onChange={(e) => setAudioCfgDraft({
+                                        ...audioCfgDraft,
+                                        duration: Number(e.target.value)
+                                    })}
+                                >
+                                    {audioCfgOptions.durations.map((d) => <option key={d} value={d}>{d}s</option>)}
+                                </select>
+                            </label>
+                            <div className="sm:col-span-2 flex gap-2 mt-1">
+                                <button onClick={handleSaveAudioCfg} disabled={audioCfgSaving}
+                                        className="btn-save">{audioCfgSaving ? '保存中...' : '保存'}</button>
+                                <button onClick={() => setAudioCfgEditing(false)}
+                                        className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-xl text-white text-sm">取消
+                                </button>
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="flex items-center gap-3 flex-wrap">
+                            <code
+                                className="flex-1 min-w-0 px-3 py-2 bg-[#0f111a] rounded text-gray-300 text-sm font-mono">
+                                {audioCfg.model} · {audioCfg.ratio} · {audioCfg.resolution} · {audioCfg.duration}s
+                            </code>
+                            <button onClick={() => {
+                                setAudioCfgDraft(audioCfg);
+                                setAudioCfgEditing(true);
+                            }} className="btn-edit">修改
+                            </button>
+                        </div>
+                    )
+                ) : (
+                    <div className="text-xs text-gray-500">加载中...</div>
+                )}
+            </div>
+
         {/* 火山原生资产库 */}
         <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
           {/* 头部 */}
@@ -1354,7 +1455,6 @@ export default function AdminPage() {
             </div>
           )}
         </div>
-
 
         {/* 火山Key组管理 */}
         <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">

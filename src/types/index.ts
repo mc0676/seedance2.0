@@ -344,11 +344,13 @@ export interface DownloadTask {
   project_id?: number;
   project_name?: string;
   hasHistory: boolean;
-  model_type: 'image' | 'video';
+  model_type: 'image' | 'video' | 'audio';
   effective_download_status: DownloadStatus;
   assets?: Array<{ assetType: string; uri: string; originalName?: string | null }>;
   credits_used?: number;
   enhancements?: VideoEnhancement[];
+  // 音频行专用：参考图缩略图，浏览器端 mp4→mp3 转码使用 video_url
+  reference_image_url?: string;
 }
 
 /**
@@ -379,6 +381,28 @@ export interface EnhancementPricing {
   credits_per_second: number;
   enabled?: number;
   description?: string;
+}
+
+/**
+ * 音频生成记录（参考图 + 语气提示词 → 4s seedance 视频 → 浏览器端转 mp3）
+ */
+export interface AudioGeneration {
+  id: number;
+  task_id: number | null;
+  user_id: number;
+  project_id: number | null;
+  reference_image_url: string;
+  voice_prompt: string;
+  status: 'pending' | 'generating' | 'done' | 'error';
+  intermediate_video_url: string | null;
+  credits_used: number;
+  error_message: string | null;
+  created_at: string;
+  finished_at: string | null;
+  // JOIN 自 tasks 表的辅助字段（仅 list 接口返回）
+  task_status?: string | null;
+  task_video_url?: string | null;
+  task_progress?: string | null;
 }
 
 /**

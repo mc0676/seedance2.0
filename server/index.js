@@ -25,6 +25,7 @@ import * as creditLockService from './services/creditLockService.js';
 import * as volcArkService from './services/volcArkService.js';
 import * as mediaKitService from './services/mediaKitService.js';
 import * as enhancementWorker from './services/enhancementWorker.js';
+import * as audioGenerationService from './services/audioGenerationService.js';
 import { readFileSync } from 'fs';
 
 // 初始化数据库
@@ -1080,13 +1081,21 @@ app.get('/api/image-records', authenticate, (req, res) => {
     const { page = 1, pageSize = 20, projectId } = req.query;
     const limit = Math.min(parseInt(pageSize) || 20, 100);
     const offset = (parseInt(page) - 1) * limit;
-    const conditions = ['user_id = ?'];
-    const params = [req.user.id];
+    const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
+    const conditions = [];
+    const params = [];
+    // 工作组共享：管理员看全部；普通用户看自己创建的 + 所在工作组其他成员创建的
+    if (!isAdmin) {
+      conditions.push(`(user_id = ? OR EXISTS (
+        SELECT 1 FROM project_members pm WHERE pm.project_id = image_records.project_id AND pm.user_id = ?
+      ))`);
+      params.push(req.user.id, req.user.id);
+    }
     if (projectId && projectId !== 'all') {
       conditions.push('project_id = ?');
       params.push(parseInt(projectId));
     }
-    const where = conditions.join(' AND ');
+    const where = conditions.length ? conditions.join(' AND ') : '1=1';
     const total = db.prepare(`SELECT COUNT(*) as n FROM image_records WHERE ${where} AND status='done'`).get(...params).n;
     const rows = db.prepare(`SELECT * FROM image_records WHERE ${where} AND status='done' ORDER BY created_at DESC LIMIT ? OFFSET ?`).all(...params, limit, offset);
     const records = rows.map((r) => ({
@@ -3304,6 +3313,55 @@ app.put('/api/admin/mediakit-key', authenticate, requireAdmin, (req, res) => {
   }
 });
 
+// ============================================================
+// 音频生成中转视频配置
+// ============================================================
+
+const ALLOWED_AUDIO_RATIOS = ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'];
+const ALLOWED_AUDIO_RESOLUTIONS = ['480p', '720p', '1080p'];
+const ALLOWED_AUDIO_DURATIONS = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+
+app.get('/api/admin/audio-gen-config', authenticate, requireAdmin, (req, res) => {
+  try {
+    const cfg = getAudioGenConfig();
+    res.json({
+      success: true,
+      data: {
+        config: cfg,
+        defaults: AUDIO_GEN_DEFAULTS,
+        options: {
+          ratios: ALLOWED_AUDIO_RATIOS,
+          resolutions: ALLOWED_AUDIO_RESOLUTIONS,
+          durations: ALLOWED_AUDIO_DURATIONS,
+        },
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/api/admin/audio-gen-config', authenticate, requireAdmin, (req, res) => {
+  try {
+    const { model, ratio, resolution, duration } = req.body || {};
+    if (!model || typeof model !== 'string') return res.status(400).json({ error: 'model 不能为空' });
+    if (!ALLOWED_AUDIO_RATIOS.includes(ratio)) return res.status(400).json({ error: `ratio 非法，允许：${ALLOWED_AUDIO_RATIOS.join(',')}` });
+    if (!ALLOWED_AUDIO_RESOLUTIONS.includes(resolution)) return res.status(400).json({ error: `resolution 非法，允许：${ALLOWED_AUDIO_RESOLUTIONS.join(',')}` });
+    const durNum = parseInt(duration, 10);
+    if (!ALLOWED_AUDIO_DURATIONS.includes(durNum)) return res.status(400).json({ error: `duration 非法，允许：${ALLOWED_AUDIO_DURATIONS.join(',')}` });
+
+    const db = getDatabase();
+    const upsert = db.prepare("INSERT OR REPLACE INTO system_config (key, value, description) VALUES (?, ?, ?)");
+    upsert.run('audio_gen_model', model, '音频生成中转视频：模型');
+    upsert.run('audio_gen_ratio', ratio, '音频生成中转视频：画面比例');
+    upsert.run('audio_gen_resolution', resolution, '音频生成中转视频：分辨率');
+    upsert.run('audio_gen_duration', String(durNum), '音频生成中转视频：时长（秒）');
+    res.json({ success: true, data: getAudioGenConfig() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 画质增强计费配置
 app.get('/api/admin/enhancement-pricing', authenticate, requireAdmin, (req, res) => {
   try {
@@ -3540,29 +3598,298 @@ app.post('/api/video-enhancements', authenticate, async (req, res) => {
   res.json({ success: true, data: row, estimatedCredits });
 });
 
-// GET /api/video-enhancements/list - 列出当前用户的所有增强记录（含外部视频，分页）
+// GET /api/video-enhancements/list - 列出当前工作组可见的所有增强记录（管理员看全部；普通用户看自己创建的 + 所在工作组其他成员创建的）
 app.get('/api/video-enhancements/list', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const pageSize = Math.max(1, Math.min(100, parseInt(req.query.pageSize) || 20));
     const offset = (page - 1) * pageSize;
+    const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
 
-    const total = db.prepare(
-      `SELECT COUNT(*) AS n FROM video_enhancements WHERE user_id = ?`
-    ).get(req.user.id).n;
+    // 工作组共享：与视频生成历史一致——同一 project_members 的所有记录互相可见
+    const where = isAdmin ? '1=1' : `(
+      user_id = ? OR EXISTS (
+        SELECT 1 FROM project_members pm WHERE pm.project_id = video_enhancements.project_id AND pm.user_id = ?
+      )
+    )`;
+    const params = isAdmin ? [] : [req.user.id, req.user.id];
+
+    const total = db.prepare(`SELECT COUNT(*) AS n FROM video_enhancements WHERE ${where}`).get(...params).n;
 
     const items = db.prepare(
       `SELECT id, task_id, user_id, project_id, source_video_url, mediakit_task_id,
               tool_version, scene, target_resolution, duration_seconds, status,
               enhanced_video_url, credits_used, error_message, created_at, finished_at
        FROM video_enhancements
-       WHERE user_id = ?
+       WHERE ${where}
        ORDER BY created_at DESC
        LIMIT ? OFFSET ?`
-    ).all(req.user.id, pageSize, offset);
+    ).all(...params, pageSize, offset);
 
     res.json({ success: true, data: { items, total, page, pageSize } });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================
+// 音频生成（参考图 + 语气提示词 → seedance 视频，前端转 mp3）
+// 默认值经过优化以最小化中转资源消耗，可通过 system_config 覆盖（管理后台 → 音频生成中转配置）
+// ============================================================
+
+const AUDIO_GEN_DEFAULTS = {
+  model: 'seedance-2.0-fast',
+  duration: 4,
+  ratio: '1:1',
+  resolution: '480p',
+};
+
+function getAudioGenConfig() {
+  const db = getDatabase();
+  const rows = db.prepare(
+    "SELECT key, value FROM system_config WHERE key IN ('audio_gen_model','audio_gen_ratio','audio_gen_resolution','audio_gen_duration')"
+  ).all();
+  const map = {};
+  for (const r of rows) map[r.key] = r.value;
+  const durationNum = parseInt(map.audio_gen_duration, 10);
+  return {
+    model: map.audio_gen_model || AUDIO_GEN_DEFAULTS.model,
+    ratio: map.audio_gen_ratio || AUDIO_GEN_DEFAULTS.ratio,
+    resolution: map.audio_gen_resolution || AUDIO_GEN_DEFAULTS.resolution,
+    duration: Number.isFinite(durationNum) && durationNum > 0 ? durationNum : AUDIO_GEN_DEFAULTS.duration,
+  };
+}
+
+// POST /api/audio-generations - 提交音频生成（即视频生成 + 音频提取标记）
+app.post('/api/audio-generations', authenticate, async (req, res) => {
+  let dbTaskId = null;
+  let audioGenId = null;
+  try {
+    const { projectId: reqProjectId, referenceImageUrl, referenceAssetUri, voicePrompt } = req.body || {};
+
+    if (!reqProjectId) return res.status(400).json({ error: '必须指定所属工作组（projectId）' });
+    if (!referenceImageUrl || typeof referenceImageUrl !== 'string') {
+      return res.status(400).json({ error: '请上传参考图（referenceImageUrl 必填）' });
+    }
+    if (!voicePrompt || !String(voicePrompt).trim()) {
+      return res.status(400).json({ error: '请输入语气提示词（voicePrompt 必填）' });
+    }
+    // referenceAssetUri 可选，格式 asset://asset-xxx-xxx；若提供则推理时优先用它（已入库素材，规避真人检测拦截）
+    if (referenceAssetUri && typeof referenceAssetUri === 'string' && !/^asset:\/\/asset-/.test(referenceAssetUri)) {
+      return res.status(400).json({ error: 'referenceAssetUri 必须为 asset://asset-xxx 形式' });
+    }
+
+    const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
+    const targetProject = projectService.getProjectById(Number(reqProjectId), req.user.id, isAdmin);
+    if (!targetProject) {
+      return res.status(403).json({ error: '工作组不存在或您不是该工作组成员' });
+    }
+
+    if (!permissionService.hasPermission(req.user.id, 'generate_video_seedance')) {
+      return res.status(403).json({ error: '当前账号未开通视频生成权限，请联系管理员' });
+    }
+
+    const audioCfg = getAudioGenConfig();
+
+    const estimateParams = {
+      inputDurationSec: 0,
+      outputDurationSec: audioCfg.duration,
+      resolution: audioCfg.resolution,
+      ratio: audioCfg.ratio,
+      hasVideoInput: false,
+      hasAudio: false,
+      isDraft: false,
+    };
+    const estimateResult = pricingService.estimate(audioCfg.model, estimateParams);
+    const lockedCredits = estimateResult.lockedCredits;
+
+    const quota = usageService.checkUserQuota(req.user.id);
+    if (!quota.allowed) {
+      return res.status(402).json({ error: `积分不足（当前 ${quota.credits}），请联系管理员充值` });
+    }
+    if (!quota.unlimited) {
+      const lockedSum = creditLockService.getLockedTotal(req.user.id);
+      const available = quota.credits - lockedSum;
+      if (lockedCredits > 0 && available < lockedCredits) {
+        return res.status(402).json({
+          error: `可用积分不足（可用 ${available}，本次预计需要 ${lockedCredits}）`,
+          estimate: estimateResult,
+        });
+      }
+    }
+
+    const apiKey = resolveApiKey();
+    if (!apiKey) {
+      return res.status(401).json({ error: getMissingSessionErrorMessage() });
+    }
+
+    // 1) 创建中间视频 task（标记 task_kind='audio_intermediate'，下载管理不显示）
+    const createdTask = taskService.createTask({
+      projectId: targetProject.id,
+      userId: req.user.id,
+      prompt: voicePrompt,
+      model: audioCfg.model,
+      ratio: audioCfg.ratio,
+      duration: String(audioCfg.duration),
+      resolution: audioCfg.resolution,
+      status: 'generating',
+      downloadStatus: 'pending',
+      progress: '正在准备...',
+      startedAt: new Date().toISOString(),
+      taskKind: 'audio_intermediate',
+    });
+    dbTaskId = createdTask.id;
+
+    // 2) 写参考图到 task_assets
+    {
+      const db = getDatabase();
+      const originalName = referenceImageUrl.split('/').pop()?.split('?')[0] || 'reference.png';
+      db.prepare(`INSERT INTO task_assets (task_id, asset_type, file_path, image_uri, original_name, sort_order) VALUES (?, 'image', '', ?, ?, 0)`)
+        .run(dbTaskId, referenceImageUrl, originalName);
+    }
+
+    // 3) 锁定积分
+    if (lockedCredits > 0) {
+      try {
+        creditLockService.lock({
+          userId: req.user.id,
+          taskId: dbTaskId,
+          estimatedCredits: estimateResult.credits,
+          lockedCredits,
+          meta: { ...estimateParams, model: audioCfg.model, source: 'audio_generation' },
+        });
+      } catch (lockErr) {
+        try { taskService.updateTaskStatus(dbTaskId, 'error', { error_message: '积分锁定失败：' + lockErr.message }); } catch {}
+        return res.status(402).json({ error: '积分锁定失败：' + lockErr.message });
+      }
+    }
+
+    // 4) 创建 audio_generations 元数据行
+    const audioGen = audioGenerationService.createAudioGeneration({
+      taskId: dbTaskId,
+      userId: req.user.id,
+      projectId: targetProject.id,
+      referenceImageUrl,
+      voicePrompt,
+    });
+    audioGenId = audioGen.id;
+    audioGenerationService.markGenerating(audioGenId);
+
+    // 5) 立即响应
+    res.json({ success: true, data: { audioGenerationId: audioGenId, taskId: dbTaskId } });
+
+    // 6) 异步生成
+    console.log(`[音频生成] audio_gen=${audioGenId} task=${dbTaskId} 启动 seedance 调用`);
+    generateSeedanceVideoCore({
+      prompt: voicePrompt,
+      ratio: audioCfg.ratio,
+      duration: audioCfg.duration,
+      resolution: audioCfg.resolution,
+      files: [],
+      imageUrls: [referenceAssetUri || referenceImageUrl], // 已入库素材优先用 asset:// URI 引用，避开 Ark 真人检测
+      videoUrl: null,
+      audioUrl: null,
+      sessionId: apiKey,
+      model: audioCfg.model,
+      referenceMode: 'reference',
+      firstFrameProvided: false,
+      lastFrameProvided: false,
+      onProgress: async (progress) => {
+        try { taskService.updateTask(dbTaskId, { progress }); } catch {}
+      },
+      onSubmitId: async (submitId) => {
+        try { taskService.updateTask(dbTaskId, { submit_id: submitId, submitted_at: new Date().toISOString() }); } catch {}
+      },
+      onHistoryId: async (historyId) => {
+        try { taskService.updateTask(dbTaskId, { history_id: historyId, status: 'generating' }); } catch {}
+      },
+      onItemId: async (itemId) => {
+        try { taskService.updateTask(dbTaskId, { item_id: itemId }); } catch {}
+      },
+      onVideoReady: async (videoUrl) => {
+        try { taskService.updateTask(dbTaskId, { video_url: videoUrl }); } catch {}
+      },
+    })
+      .then((result) => {
+        let actualCredits = 0;
+        try {
+          const tokens = Number(result?.usage?.total_tokens) || Number(result?.usage?.completion_tokens) || 0;
+          if (tokens > 0) {
+            actualCredits = pricingService.actualCredits(audioCfg.model, tokens, estimateParams);
+            creditLockService.settle({ taskId: dbTaskId, actualCredits });
+          } else {
+            creditLockService.release({ taskId: dbTaskId, reason: 'usage 缺失或 token=0' });
+          }
+        } catch (e) { console.error('[音频生成][settle] 失败:', e.message); }
+
+        try {
+          taskService.updateTaskStatus(dbTaskId, 'done', {
+            submit_id: result.submitId || null,
+            history_id: result.historyId || null,
+            item_id: result.itemId || null,
+            video_url: result.videoUrl,
+            progress: '',
+            error_message: null,
+          });
+        } catch (e) { console.error('[音频生成][task] 更新失败:', e.message); }
+
+        try {
+          audioGenerationService.markDone(audioGenId, result.videoUrl, actualCredits);
+          console.log(`[音频生成] audio_gen=${audioGenId} 完成，video_url 已保存`);
+        } catch (e) { console.error('[音频生成][markDone] 失败:', e.message); }
+      })
+      .catch((err) => {
+        const errMsg = err?.message || '音频生成失败';
+        try { creditLockService.release({ taskId: dbTaskId, reason: errMsg }); } catch {}
+        try { usageService.logFailure({ userId: req.user.id, taskId: dbTaskId, model: audioCfg.model, errorMessage: errMsg }); } catch {}
+        try { taskService.updateTaskStatus(dbTaskId, 'error', { progress: '', error_message: errMsg }); } catch {}
+        try { audioGenerationService.markError(audioGenId, errMsg); } catch {}
+        console.error(`[音频生成] audio_gen=${audioGenId} 失败:`, errMsg);
+      });
+  } catch (error) {
+    console.error('[音频生成] 请求处理错误:', error.message);
+    if (audioGenId) { try { audioGenerationService.markError(audioGenId, error.message); } catch {} }
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message || '服务器内部错误' });
+    }
+  }
+});
+
+// GET /api/audio-generations/config - 当前音频生成中转视频的运行配置（普通用户可读）
+app.get('/api/audio-generations/config', authenticate, (req, res) => {
+  try {
+    res.json({ success: true, data: getAudioGenConfig() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/audio-generations/list - 列出当前用户音频生成记录（分页）
+app.get('/api/audio-generations/list', authenticate, (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const pageSize = Math.max(1, Math.min(100, parseInt(req.query.pageSize) || 20));
+    const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
+    const result = audioGenerationService.listByUser({ userId: req.user.id, isAdmin, page, pageSize });
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/audio-generations/:id - 单条详情（用于轮询状态）
+app.get('/api/audio-generations/:id', authenticate, (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+    const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
+    const row = audioGenerationService.getByIdForUser(id, req.user.id, isAdmin);
+    if (!row) return res.status(404).json({ error: '记录不存在' });
+    // 同步附加最新 task 状态/视频 URL（done 之前 a.intermediate_video_url 可能为空）
+    const db = getDatabase();
+    const t = row.task_id ? db.prepare(`SELECT status, video_url, progress FROM tasks WHERE id = ?`).get(row.task_id) : null;
+    res.json({ success: true, data: { ...row, task_status: t?.status || null, task_video_url: t?.video_url || null, task_progress: t?.progress || null } });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

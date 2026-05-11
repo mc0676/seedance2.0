@@ -646,6 +646,31 @@ export const getMediaKitKey = () =>
 export const updateMediaKitKey = (key: string) =>
   adminFetch<unknown>('/admin/mediakit-key', { method: 'PUT', body: JSON.stringify({ key }) });
 
+// ==================== 音频生成中转配置 ====================
+
+export interface AudioGenConfig {
+  model: string;
+  ratio: string;
+  resolution: string;
+  duration: number;
+}
+
+export interface AudioGenConfigResponse {
+  config: AudioGenConfig;
+  defaults: AudioGenConfig;
+  options: {
+    ratios: string[];
+    resolutions: string[];
+    durations: number[];
+  };
+}
+
+export const getAudioGenConfig = () =>
+  adminFetch<AudioGenConfigResponse>('/admin/audio-gen-config');
+
+export const updateAudioGenConfig = (cfg: AudioGenConfig) =>
+  adminFetch<AudioGenConfigResponse>('/admin/audio-gen-config', { method: 'PUT', body: JSON.stringify(cfg) });
+
 // ==================== 画质增强计费 ====================
 
 export interface AdminEnhancementPricing {

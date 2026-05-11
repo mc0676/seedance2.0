@@ -11,6 +11,7 @@ import {
   LogoutIcon,
   SparkleIcon,
   ImageIcon,
+  MicIcon,
 } from '../components/Icons';
 import type { User } from '../types';
 import { logout } from '../services/authService';
@@ -55,6 +56,12 @@ export default function Sidebar({ currentUser, onLogout }: SidebarProps) {
       label: '图片生成',
       path: '/image-gen',
       icon: ImageIcon,
+    },
+    {
+      id: 'AUDIO_GEN',
+      label: '音频生成',
+      path: '/audio-gen',
+      icon: MicIcon,
     },
     {
       id: 'ENHANCEMENT',

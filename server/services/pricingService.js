@@ -13,19 +13,28 @@ const RESOLUTION_BASE = {
 const LOCK_BUFFER_RATIO = 1.2; // 锁定时多锁 20%，避免实扣超出穿透余额
 
 /**
- * 由分辨率档位 + 宽高比推断 (W, H)，按短边对齐再按 ratio 还原。
+ * 由分辨率档位 + 宽高比推断 (W, H)。
+ *
+ * 实测火山方舟在同一分辨率档位下，不同宽高比的输出帧像素数大致相等
+ * （480p 档约 411k 像素，720p 档约 922k，1080p 档约 2073k）。
+ * 因此估算时按"基准面积守恒"分配宽高，而不是按短边对齐——后者会在
+ * 1:1 / 4:3 等非 16:9 比例下严重低估 token，导致估算与实扣偏差很大。
+ *
+ * 例如 480p 1:1：基准面积 858×480 ≈ 411840，则 W=H=√411840 ≈ 642。
  */
 export function resolveDimensions(resolution = '720p', ratio = '16:9') {
   const base = RESOLUTION_BASE[resolution] || RESOLUTION_BASE['720p'];
   const [w, h] = String(ratio || '16:9').split(':').map(Number);
   if (!w || !h) return base;
-  // 以 base.height 作为短边参考；若 ratio 高>宽，则把 base.height 当宽
+  const baseArea = base.width * base.height;
+  const longRatio = Math.max(w, h);
+  const shortRatio = Math.min(w, h);
+  const shortSide = Math.sqrt((baseArea * shortRatio) / longRatio);
+  const longSide = baseArea / shortSide;
   const isPortrait = h > w;
-  const shortSide = Math.min(base.width, base.height);
-  if (isPortrait) {
-    return { width: shortSide, height: Math.round((shortSide * h) / w) };
-  }
-  return { width: Math.round((shortSide * w) / h), height: shortSide };
+  return isPortrait
+    ? { width: Math.round(shortSide), height: Math.round(longSide) }
+    : { width: Math.round(longSide),  height: Math.round(shortSide) };
 }
 
 /**

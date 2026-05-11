@@ -73,6 +73,37 @@ export function initDatabase() {
     console.log('[database] 迁移完成：image_records.status 已添加');
   }
 
+  // 增量迁移：tasks 添加 task_kind 字段（用于区分音频生成中间产物）
+  const tasksColumns = db.prepare("PRAGMA table_info(tasks)").all().map(c => c.name);
+  if (!tasksColumns.includes('task_kind')) {
+    console.log('[database] 迁移：tasks 添加 task_kind 列...');
+    db.exec(`ALTER TABLE tasks ADD COLUMN task_kind TEXT NOT NULL DEFAULT 'video'`);
+    console.log('[database] 迁移完成：tasks.task_kind 已添加');
+  }
+
+  // 增量迁移：audio_generations 表（音频生成记录）
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS audio_generations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER UNIQUE,
+      user_id INTEGER NOT NULL,
+      project_id INTEGER,
+      reference_image_url TEXT NOT NULL,
+      voice_prompt TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','generating','done','error')),
+      intermediate_video_url TEXT,
+      credits_used INTEGER DEFAULT 0,
+      error_message TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      finished_at DATETIME,
+      FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_audio_generations_user ON audio_generations(user_id);
+    CREATE INDEX IF NOT EXISTS idx_audio_generations_status ON audio_generations(status);
+    CREATE INDEX IF NOT EXISTS idx_audio_generations_task ON audio_generations(task_id);
+  `);
+
   console.log(`[database] 数据库初始化成功：${DB_PATH}`);
   return db;
 }

@@ -39,6 +39,88 @@ function imageRecordToTask(r) {
 }
 
 /**
+ * 将 audio_generations 行（已 JOIN tasks/projects）转为 DownloadTask 格式
+ * 前端按 model_type='audio' 走浏览器端 mp4→mp3 转码下载
+ */
+function audioGenerationToTask(r) {
+  const videoUrl = r.intermediate_video_url || r.task_video_url || null;
+  let effective = 'generating';
+  if (r.status === 'done' && videoUrl) effective = 'pending';
+  else if (r.status === 'error') effective = 'failed';
+  return {
+    id: r.id,
+    prompt: r.voice_prompt,
+    model: 'audio',
+    ratio: null,
+    duration: null,
+    resolution: null,
+    status: r.status === 'done' ? 'done' : (r.status === 'error' ? 'error' : 'generating'),
+    download_status: 'pending',
+    video_url: videoUrl,
+    reference_image_url: r.reference_image_url,
+    video_path: null,
+    download_path: null,
+    downloaded_at: null,
+    account_info: null,
+    submit_id: null,
+    history_id: null,
+    created_at: r.created_at,
+    completed_at: r.finished_at,
+    error_message: r.error_message,
+    project_id: r.project_id,
+    project_name: r.project_name || null,
+    hasHistory: false,
+    model_type: 'audio',
+    effective_download_status: effective,
+    assets: [],
+    credits_used: r.credits_used,
+  };
+}
+
+/**
+ * 查询 audio_generations 列表（带 task/project JOIN）
+ * status 过滤复用下载管理的语义：
+ *   generating → audio_generations.status IN ('pending','generating')
+ *   pending    → status='done' 且有视频 URL
+ *   done       → 仅服务器侧已完成转码时使用，本表不存储 mp3，直接归并到 pending
+ *   failed     → status='error'
+ */
+function queryAudioRows({ db, projectId, isAdmin, userId, status }) {
+  const where = [];
+  const params = [];
+  if (projectId) { where.push('a.project_id = ?'); params.push(projectId); }
+  // 工作组共享：与视频任务一致——同 project_members 互相可见
+  if (!isAdmin && userId !== null) {
+    where.push(`(a.user_id = ? OR EXISTS (
+      SELECT 1 FROM project_members pm WHERE pm.project_id = a.project_id AND pm.user_id = ?
+    ))`);
+    params.push(userId, userId);
+  }
+  if (status === 'generating') {
+    where.push("a.status IN ('pending','generating')");
+  } else if (status === 'pending') {
+    where.push("a.status = 'done' AND COALESCE(a.intermediate_video_url, t.video_url) IS NOT NULL");
+  } else if (status === 'failed') {
+    where.push("a.status = 'error'");
+  } else if (status === 'done' || status === 'downloading') {
+    where.push('1 = 0'); // 音频无服务端"已下载/下载中"状态
+  }
+  const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  return db.prepare(`
+    SELECT a.id, a.task_id, a.project_id, a.reference_image_url, a.voice_prompt,
+           a.status, a.intermediate_video_url, a.credits_used, a.error_message,
+           a.created_at, a.finished_at,
+           t.video_url AS task_video_url,
+           p.name AS project_name
+    FROM audio_generations a
+    LEFT JOIN tasks t ON t.id = a.task_id
+    LEFT JOIN projects p ON p.id = a.project_id
+    ${whereClause}
+    ORDER BY a.created_at DESC
+  `).all(...params);
+}
+
+/**
  * 视频下载服务
  * 负责将生成的视频保存到本地
  */
@@ -307,6 +389,9 @@ export function getDownloadTasks(options = {}) {
   const whereClauses = [];
   const params = [];
 
+  // 默认只显示 task_kind='video'，过滤掉音频生成的中间产物（audio_intermediate）
+  whereClauses.push("(t.task_kind IS NULL OR t.task_kind = 'video')");
+
   // 项目过滤（前端按当前工作组限定）
   if (projectId) {
     whereClauses.push('t.project_id = ?');
@@ -338,7 +423,12 @@ export function getDownloadTasks(options = {}) {
     const imgWhere = [];
     const imgParams = [];
     if (projectId) { imgWhere.push('project_id = ?'); imgParams.push(projectId); }
-    if (!isAdmin && userId !== null) { imgWhere.push('user_id = ?'); imgParams.push(userId); }
+    if (!isAdmin && userId !== null) {
+      imgWhere.push(`(user_id = ? OR EXISTS (
+        SELECT 1 FROM project_members pm WHERE pm.project_id = image_records.project_id AND pm.user_id = ?
+      ))`);
+      imgParams.push(userId, userId);
+    }
     const imgWhereClause = imgWhere.length ? `WHERE ${imgWhere.join(' AND ')}` : '';
     const imgTotal = db.prepare(`SELECT COUNT(*) as n FROM image_records ${imgWhereClause}`).get(...imgParams).n;
     const imgOffset = (page - 1) * pageSize;
@@ -346,6 +436,19 @@ export function getDownloadTasks(options = {}) {
     return {
       tasks: imgRows.map((r) => imageRecordToTask(r)),
       total: imgTotal,
+      page,
+      pageSize,
+    };
+  }
+
+  // 音频类型：直接从 audio_generations 返回
+  if (type === 'audio') {
+    const audioRows = queryAudioRows({ db, projectId, isAdmin, userId, status });
+    const audioTasks = audioRows.map((r) => audioGenerationToTask(r));
+    const audioOffset = (page - 1) * pageSize;
+    return {
+      tasks: audioTasks.slice(audioOffset, audioOffset + pageSize),
+      total: audioTasks.length,
       page,
       pageSize,
     };
@@ -438,11 +541,19 @@ export function getDownloadTasks(options = {}) {
     const imgWhere = [];
     const imgParams = [];
     if (projectId) { imgWhere.push('project_id = ?'); imgParams.push(projectId); }
-    if (!isAdmin && userId !== null) { imgWhere.push('user_id = ?'); imgParams.push(userId); }
+    if (!isAdmin && userId !== null) {
+      imgWhere.push(`(user_id = ? OR EXISTS (
+        SELECT 1 FROM project_members pm WHERE pm.project_id = image_records.project_id AND pm.user_id = ?
+      ))`);
+      imgParams.push(userId, userId);
+    }
     const imgWhereClause = imgWhere.length ? `WHERE ${imgWhere.join(' AND ')}` : '';
     const imgRows = db.prepare(`SELECT * FROM image_records ${imgWhereClause} ORDER BY created_at DESC`).all(...imgParams);
     const imgTasks = imgRows.map((r) => imageRecordToTask(r));
-    const merged = [...videoTasks, ...imgTasks].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    // 合并音频
+    const audioRows = queryAudioRows({ db, projectId, isAdmin, userId, status });
+    const audioTasks = audioRows.map((r) => audioGenerationToTask(r));
+    const merged = [...videoTasks, ...imgTasks, ...audioTasks].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
     return {
       tasks: merged.slice((page - 1) * pageSize, page * pageSize),
       total: merged.length,

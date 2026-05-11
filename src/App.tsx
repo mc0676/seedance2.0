@@ -9,6 +9,7 @@ import RegisterPage from './pages/RegisterPage';
 import AdminPage from './pages/AdminPage';
 import SingleTaskPage from './pages/SingleTaskPage';
 import ImageGenPage from './pages/ImageGenPage';
+import AudioGenPage from './pages/AudioGenPage';
 import EnhancementPage from './pages/EnhancementPage';
 import SettingsPage from './pages/Settings';
 import DownloadManagementPage from './pages/DownloadManagement';
@@ -229,6 +230,16 @@ function AppContent() {
           }
         />
 
+        <Route
+          path="/audio-gen"
+          element={
+            <ProtectedRoute currentUser={currentUser}>
+              <MainLayout currentUser={currentUser} onLogout={handleLogout}>
+                <AudioGenPage />
+              </MainLayout>
+            </ProtectedRoute>
+          }
+        />
         <Route
           path="/enhancement"
           element={
