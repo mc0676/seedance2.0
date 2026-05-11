@@ -1012,6 +1012,31 @@ export default function SingleTaskPage() {
     const newText = currentText.slice(0, cursor) + converted + currentText.slice(cursor);
     setEditorHtml(buildHtml(newText));
     setPrompt(newText);
+    // Restore assetSelections for any @asset chips present in the pasted text
+    const pastedAssets = availableAssets.filter(
+      (a) => a.volc_asset_id && promptHasChip(newText, `@${a.volc_asset_id}`)
+    );
+    if (pastedAssets.length > 0) {
+      setAssetSelections((prev) => {
+        const next = [...prev];
+        for (const asset of pastedAssets) {
+          const chipTag = getAssetChipTag(asset);
+          if (!next.some((s) => s.chipTag === chipTag)) {
+            const assetUri = asset.volc_asset_id ? `asset://${asset.volc_asset_id}` : (asset.file_url || '');
+            next.push({
+              id: `asset-${asset.volc_asset_id || asset.id}`,
+              volcAssetId: asset.volc_asset_id || '',
+              fileType: asset.file_type as 'image' | 'video' | 'audio',
+              name: asset.name,
+              thumbnailUrl: asset.thumbnail_url || asset.file_url || undefined,
+              assetUri,
+              chipTag,
+            });
+          }
+        }
+        return next;
+      });
+    }
     const pos = cursor + converted.length;
     setTimeout(() => {
       if (editorRef.current) setCursorOffset(editorRef.current, pos);
