@@ -312,6 +312,40 @@ export default function SingleTaskPage() {
     [projectAssets, currentProjectId]
   );
 
+  // 自愈：prompt 或 availableAssets 变化时，确保 prompt 中所有 @<volcId> chip 都在 assetSelections 中
+  // 覆盖所有路径：粘贴、手动输入、加载历史、素材延迟加载等
+  useEffect(() => {
+    if (!availableAssets.length || !prompt) return;
+    const missing = availableAssets.filter((a) => {
+      if (!a.volc_asset_id) return false;
+      const tag = `@${a.volc_asset_id}`;
+      const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const inPrompt = new RegExp(escaped + '(?![\\w-])').test(prompt);
+      return inPrompt;
+    });
+    if (missing.length === 0) return;
+    setAssetSelections((prev) => {
+      const next = [...prev];
+      let changed = false;
+      for (const a of missing) {
+        const chipTag = `@${a.volc_asset_id}`;
+        if (next.some((s) => s.chipTag === chipTag)) continue;
+        const assetUri = a.volc_asset_id ? `asset://${a.volc_asset_id}` : (a.file_url || '');
+        next.push({
+          id: `asset-${a.volc_asset_id || a.id}`,
+          volcAssetId: a.volc_asset_id || '',
+          fileType: a.file_type as 'image' | 'video' | 'audio',
+          name: a.name,
+          thumbnailUrl: a.thumbnail_url || a.file_url || undefined,
+          assetUri,
+          chipTag,
+        });
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [prompt, availableAssets]);
+
   // 资产按 volc_group_id 分组；按第一个资产的 created_at 排序
   const assetGroups = useMemo(() => {
     const map = new Map<string, ProjectAsset[]>();
