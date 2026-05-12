@@ -72,6 +72,11 @@ export function initDatabase() {
     db.exec(`ALTER TABLE image_records ADD COLUMN status TEXT NOT NULL DEFAULT 'done'`);
     console.log('[database] 迁移完成：image_records.status 已添加');
   }
+  if (!irColumns.includes('downloaded_at')) {
+    console.log('[database] 迁移：image_records 添加 downloaded_at 列...');
+    db.exec(`ALTER TABLE image_records ADD COLUMN downloaded_at DATETIME`);
+    console.log('[database] 迁移完成：image_records.downloaded_at 已添加');
+  }
 
   // 增量迁移：tasks 添加 task_kind 字段（用于区分音频生成中间产物）
   const tasksColumns = db.prepare("PRAGMA table_info(tasks)").all().map(c => c.name);
@@ -103,6 +108,14 @@ export function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_audio_generations_status ON audio_generations(status);
     CREATE INDEX IF NOT EXISTS idx_audio_generations_task ON audio_generations(task_id);
   `);
+
+  // 增量迁移：audio_generations 添加 downloaded_at（与 image_records 一致，统一持久化下载状态）
+  const agColumns = db.prepare("PRAGMA table_info(audio_generations)").all().map(c => c.name);
+  if (!agColumns.includes('downloaded_at')) {
+    console.log('[database] 迁移：audio_generations 添加 downloaded_at 列...');
+    db.exec(`ALTER TABLE audio_generations ADD COLUMN downloaded_at DATETIME`);
+    console.log('[database] 迁移完成：audio_generations.downloaded_at 已添加');
+  }
 
   console.log(`[database] 数据库初始化成功：${DB_PATH}`);
   return db;

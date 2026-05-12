@@ -495,6 +495,26 @@ export default function SingleTaskPage() {
     }
   }
 
+  // 返回当前选区在 extractText 坐标下的 [start, end]。无选区时 start === end === caret。
+  function getSelectionRange(root: HTMLDivElement): { start: number; end: number } {
+    const sel = window.getSelection();
+    if (!sel?.rangeCount) return { start: 0, end: 0 };
+    const range = sel.getRangeAt(0);
+    const offsetAt = (container: Node, off: number): number => {
+      try {
+        const pre = document.createRange();
+        pre.setStart(root, 0);
+        pre.setEnd(container, off);
+        const tmp = document.createElement('div');
+        tmp.appendChild(pre.cloneContents());
+        return extractText(tmp).length;
+      } catch { return 0; }
+    };
+    const a = offsetAt(range.startContainer, range.startOffset);
+    const b = offsetAt(range.endContainer, range.endOffset);
+    return a <= b ? { start: a, end: b } : { start: b, end: a };
+  }
+
   function setCursorOffset(root: HTMLDivElement, offset: number) {
     const sel = window.getSelection();
     if (!sel) return;
@@ -1040,10 +1060,11 @@ export default function SingleTaskPage() {
     if (!editorRef.current) return;
     const raw = e.clipboardData.getData('text/plain');
     const converted = raw.replace(/<ref>(@[^<\n]+)<\/ref>/g, '$1');
-    const cursor = getCursorOffset(editorRef.current);
+    const { start, end } = getSelectionRange(editorRef.current);
     const currentText = extractText(editorRef.current);
-    flushUndo(currentText, cursor);
-    const newText = currentText.slice(0, cursor) + converted + currentText.slice(cursor);
+    flushUndo(currentText, start);
+    // 关键修复：粘贴前必须删除选区内的字符，否则 Ctrl+A → Ctrl+V 会变成"在选区前面插入"
+    const newText = currentText.slice(0, start) + converted + currentText.slice(end);
     setEditorHtml(buildHtml(newText));
     setPrompt(newText);
     // Restore assetSelections for any @asset chips present in the pasted text
@@ -1071,7 +1092,7 @@ export default function SingleTaskPage() {
         return next;
       });
     }
-    const pos = cursor + converted.length;
+    const pos = start + converted.length;
     setTimeout(() => {
       if (editorRef.current) setCursorOffset(editorRef.current, pos);
     }, 0);
@@ -1487,6 +1508,13 @@ export default function SingleTaskPage() {
     setAudios([]);
     setAssetSelections([]);
     setPrompt('');
+    setEditorHtml(''); // 关键：清空 contenteditable，仅 setPrompt('') 不会清掉编辑器 DOM
+    // 表单选项回到用户默认设置（无设置时回退硬编码默认值），与组件首次挂载的初值一致
+    setModel((settings.model as ModelId) || 'seedance-2.0-fast');
+    setRatio((settings.ratio as AspectRatio) || '9:16');
+    setDuration((Number(settings.duration) as Duration) || 4);
+    setResolution((settings.resolution as '480p' | '720p' | '1080p') || '720p');
+    setReferenceMode((settings.reference_mode as 'reference' | 'first_last_frame') || 'reference');
     setGeneration({ status: 'idle' });
   };
 

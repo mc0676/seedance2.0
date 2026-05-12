@@ -400,6 +400,7 @@ CREATE TABLE IF NOT EXISTS audio_generations (
   error_message TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   finished_at DATETIME,
+  downloaded_at DATETIME,
   FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -461,7 +462,8 @@ CREATE TABLE IF NOT EXISTS image_records (
   result_urls TEXT NOT NULL DEFAULT '[]',
   credits_used INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'done',
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  downloaded_at DATETIME
 );
 CREATE INDEX IF NOT EXISTS idx_image_records_user ON image_records(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_image_records_project ON image_records(project_id, created_at DESC);

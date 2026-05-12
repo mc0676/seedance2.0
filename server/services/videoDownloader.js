@@ -8,6 +8,9 @@ import { getDatabase } from '../database/index.js';
 function imageRecordToTask(r) {
   let resultUrls = [];
   try { resultUrls = JSON.parse(r.result_urls || '[]'); } catch {}
+  const downloaded = !!r.downloaded_at;
+  const hasUrls = Array.isArray(resultUrls) && resultUrls.length > 0;
+  const effective = hasUrls ? (downloaded ? 'done' : 'pending') : 'failed';
   return {
     id: r.id,
     prompt: r.prompt,
@@ -15,13 +18,13 @@ function imageRecordToTask(r) {
     ratio: r.size_label,
     duration: null,
     resolution: null,
-    status: 'done',
-    download_status: 'pending',
+    status: hasUrls ? 'done' : 'error',
+    download_status: downloaded ? 'done' : 'pending',
     video_url: null,
     image_urls: resultUrls,
     video_path: null,
     download_path: null,
-    downloaded_at: null,
+    downloaded_at: r.downloaded_at || null,
     account_info: null,
     submit_id: null,
     history_id: null,
@@ -32,7 +35,7 @@ function imageRecordToTask(r) {
     project_name: null,
     hasHistory: false,
     model_type: 'image',
-    effective_download_status: 'pending',
+    effective_download_status: effective,
     assets: [],
     credits_used: r.credits_used,
   };
@@ -44,9 +47,12 @@ function imageRecordToTask(r) {
  */
 function audioGenerationToTask(r) {
   const videoUrl = r.intermediate_video_url || r.task_video_url || null;
+  const downloaded = !!r.downloaded_at;
   let effective = 'generating';
-  if (r.status === 'done' && videoUrl) effective = 'pending';
-  else if (r.status === 'error') effective = 'failed';
+  if (r.status === 'error') effective = 'failed';
+  else if (r.status === 'done') effective = videoUrl ? (downloaded ? 'done' : 'pending') : 'failed';
+  else if (r.status === 'pending' || r.status === 'generating') effective = 'generating';
+  else effective = 'failed';
   return {
     id: r.id,
     prompt: r.voice_prompt,
@@ -55,12 +61,12 @@ function audioGenerationToTask(r) {
     duration: null,
     resolution: null,
     status: r.status === 'done' ? 'done' : (r.status === 'error' ? 'error' : 'generating'),
-    download_status: 'pending',
+    download_status: downloaded ? 'done' : 'pending',
     video_url: videoUrl,
     reference_image_url: r.reference_image_url,
     video_path: null,
     download_path: null,
-    downloaded_at: null,
+    downloaded_at: r.downloaded_at || null,
     account_info: null,
     submit_id: null,
     history_id: null,
@@ -109,7 +115,7 @@ function queryAudioRows({ db, projectId, isAdmin, userId, status }) {
   return db.prepare(`
     SELECT a.id, a.task_id, a.project_id, a.reference_image_url, a.voice_prompt,
            a.status, a.intermediate_video_url, a.credits_used, a.error_message,
-           a.created_at, a.finished_at,
+           a.created_at, a.finished_at, a.downloaded_at,
            t.video_url AS task_video_url,
            p.name AS project_name
     FROM audio_generations a
@@ -409,9 +415,11 @@ export function getDownloadTasks(options = {}) {
 
   if (status !== 'all') {
     if (status === 'generating') {
-      whereClauses.push("(t.status = 'generating' OR (t.history_id IS NOT NULL AND t.video_url IS NULL AND t.status != 'cancelled'))");
+      whereClauses.push("(t.status = 'generating' OR (t.history_id IS NOT NULL AND (t.video_url IS NULL OR t.video_url = '') AND t.status NOT IN ('error', 'cancelled', 'done')))");
     } else if (status === 'pending') {
-      whereClauses.push("(t.video_url IS NOT NULL AND (t.download_status IS NULL OR t.download_status = 'pending'))");
+      whereClauses.push("(t.video_url IS NOT NULL AND t.video_url != '' AND t.status = 'done' AND (t.download_status IS NULL OR t.download_status = 'pending'))");
+    } else if (status === 'failed') {
+      whereClauses.push("(t.status = 'error' OR t.status = 'cancelled' OR t.download_status = 'failed' OR (t.status = 'done' AND (t.video_url IS NULL OR t.video_url = '')))");
     } else {
       whereClauses.push('t.download_status = ?');
       params.push(status);
@@ -486,10 +494,10 @@ export function getDownloadTasks(options = {}) {
       t.project_id,
       p.name as project_name,
       CASE
-        WHEN t.status IN ('generating', 'processing') OR (t.history_id IS NOT NULL AND t.video_url IS NULL AND t.status NOT IN ('error', 'cancelled', 'done')) THEN 'generating'
-        WHEN t.status = 'done' AND t.video_url IS NOT NULL AND t.download_status = 'done' THEN 'done'
-        WHEN t.status = 'done' AND t.video_url IS NOT NULL THEN 'pending'
         WHEN t.status = 'error' OR t.status = 'cancelled' THEN 'failed'
+        WHEN t.status IN ('generating', 'processing') OR (t.history_id IS NOT NULL AND (t.video_url IS NULL OR t.video_url = '') AND t.status NOT IN ('error', 'cancelled', 'done')) THEN 'generating'
+        WHEN t.status = 'done' AND t.video_url IS NOT NULL AND t.video_url != '' AND t.download_status = 'done' THEN 'done'
+        WHEN t.status = 'done' AND t.video_url IS NOT NULL AND t.video_url != '' THEN 'pending'
         WHEN t.download_status = 'failed' THEN 'failed'
         ELSE 'failed'
       END as effective_download_status

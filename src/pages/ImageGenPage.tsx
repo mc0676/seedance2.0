@@ -3,6 +3,7 @@ import { getAuthHeaders } from '../services/authService';
 import { SparkleIcon } from '../components/Icons';
 import { useApp } from '../context/AppContext';
 import { formatShortDateTime, useUserTimezone } from '../utils/datetime';
+import { getCreditBalance, type CreditBalance } from '../services/pricingService';
 
 async function downloadImageUrl(url: string, filename?: string) {
   try {
@@ -44,6 +45,7 @@ interface ImageRecord {
   result_urls: string[];
   credits_used: number;
   created_at: string;
+  status?: 'pending' | 'done' | 'error';
 }
 
 export default function ImageGenPage() {
@@ -63,6 +65,13 @@ export default function ImageGenPage() {
   const [error, setError] = useState('');
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // 积分余额（与音频生成 / 视频生成页保持一致）
+  const [balance, setBalance] = useState<CreditBalance | null>(null);
+  const refreshBalance = useCallback(async () => {
+    try { setBalance(await getCreditBalance()); } catch (e) { console.error('[image-gen] 余额拉取失败', e); }
+  }, []);
+  useEffect(() => { void refreshBalance(); }, [refreshBalance]);
 
   // 历史记录
   const [records, setRecords] = useState<ImageRecord[]>([]);
@@ -115,6 +124,18 @@ export default function ImageGenPage() {
     void loadHistory(1, false, currentProjectId);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectsLoaded, currentProjectId]);
+
+  // 任意 pending 记录存在时，5 秒一轮拉历史第一页 + 余额，直到所有 pending 完结。
+  // pending 由后端 image_records.status='pending' 持久化承载，所以切换菜单/刷新都能恢复"生成中"状态。
+  const hasPending = useMemo(() => records.some((r) => r.status === 'pending'), [records]);
+  useEffect(() => {
+    if (!hasPending) return;
+    const t = setInterval(() => {
+      void loadHistory(1, false, currentProjectId);
+      void refreshBalance();
+    }, 5000);
+    return () => clearInterval(t);
+  }, [hasPending, currentProjectId, loadHistory, refreshBalance]);
 
   // 无限滚动
   useEffect(() => {
@@ -186,12 +207,13 @@ export default function ImageGenPage() {
       if (!res.ok || !data.success) throw new Error(data.error || '生成失败');
       // 刷新历史
       void loadHistory(1, false, currentProjectId);
+      void refreshBalance();
     } catch (e) {
       setError(e instanceof Error ? e.message : '生成失败');
     } finally {
       setLoading(false);
     }
-  }, [prompt, model, gptAspect, nanoSize, nanoAspect, sizeLabel, refUrls, currentProjectId, loadHistory]);
+  }, [prompt, model, gptAspect, nanoSize, nanoAspect, sizeLabel, refUrls, currentProjectId, loadHistory, refreshBalance]);
 
   const handleReuse = (item: ImageRecord) => {
     setPrompt(item.prompt);
@@ -325,7 +347,17 @@ export default function ImageGenPage() {
                 <><SparkleIcon className="w-4 h-4" />生成图片</>
               )}
             </button>
-            <p className="text-xs text-gray-600 text-center mt-2">每次消耗 10 积分</p>
+            <p className="text-xs text-gray-600 text-center mt-2">
+              每次消耗 10 积分
+              {balance && (
+                <span className="ml-2 text-gray-500">
+                  · 余额 {balance.unlimited ? <span className="text-amber-400">无限</span> : <span className={balance.available < 10 ? 'text-red-400 font-semibold' : 'text-gray-300 font-semibold'}>{balance.available}</span>} 积分
+                  {!balance.unlimited && balance.locked > 0 && (
+                    <span className="ml-1 text-amber-400/80">(锁定 {balance.locked})</span>
+                  )}
+                </span>
+              )}
+            </p>
           </div>
         </div>
       </div>
@@ -363,7 +395,17 @@ export default function ImageGenPage() {
                   className="w-[25vh] h-[25vh] min-w-[120px] min-h-[120px] flex-shrink-0 rounded-xl overflow-hidden bg-[#0f111a] cursor-pointer relative group"
                   onClick={() => item.result_urls[0] && setPreviewUrl(item.result_urls[0])}
                 >
-                  {item.result_urls.length > 0 ? (
+                  {item.status === 'pending' ? (
+                    <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-purple-300 text-xs">
+                      <span className="animate-spin h-6 w-6 border-2 border-purple-400 border-t-transparent rounded-full" />
+                      生成中...
+                    </div>
+                  ) : item.status === 'error' ? (
+                    <div className="w-full h-full flex flex-col items-center justify-center gap-1 text-red-400 text-xs px-2 text-center">
+                      <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                      生成失败
+                    </div>
+                  ) : item.result_urls.length > 0 ? (
                     <>
                       <img src={item.result_urls[0]} alt="预览" className="w-full h-full object-cover" />
                       <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">

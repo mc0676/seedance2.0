@@ -1096,14 +1096,106 @@ app.get('/api/image-records', authenticate, (req, res) => {
       params.push(parseInt(projectId));
     }
     const where = conditions.length ? conditions.join(' AND ') : '1=1';
-    const total = db.prepare(`SELECT COUNT(*) as n FROM image_records WHERE ${where} AND status='done'`).get(...params).n;
-    const rows = db.prepare(`SELECT * FROM image_records WHERE ${where} AND status='done' ORDER BY created_at DESC LIMIT ? OFFSET ?`).all(...params, limit, offset);
+    // 历史保留 done/error/pending：pending 是"生成中"持久化状态，切换页面/刷新后还能看到进度条
+    const statusFilter = "status IN ('done','error','pending')";
+    const total = db.prepare(`SELECT COUNT(*) as n FROM image_records WHERE ${where} AND ${statusFilter}`).get(...params).n;
+    const rows = db.prepare(`SELECT * FROM image_records WHERE ${where} AND ${statusFilter} ORDER BY created_at DESC LIMIT ? OFFSET ?`).all(...params, limit, offset);
     const records = rows.map((r) => ({
       ...r,
       ref_urls: JSON.parse(r.ref_urls || '[]'),
       result_urls: JSON.parse(r.result_urls || '[]'),
     }));
     res.json({ success: true, data: { records, total, page: parseInt(page), pageSize: limit } });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/image-records/:id/mark-downloaded - 标记图片记录已下载（持久化）
+// 与视频 /api/download/tasks/:id/mark-downloaded 行为对齐：仅写时间戳，不校验下载手段
+app.post('/api/image-records/:id/mark-downloaded', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const id = parseInt(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+    const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
+    // 工作组共享权限：自己创建的 或 同 project_members 任一行的记录都可标记
+    const row = isAdmin
+      ? db.prepare('SELECT id FROM image_records WHERE id = ?').get(id)
+      : db.prepare(`SELECT id FROM image_records WHERE id = ? AND (
+          user_id = ? OR EXISTS (
+            SELECT 1 FROM project_members pm WHERE pm.project_id = image_records.project_id AND pm.user_id = ?
+          )
+        )`).get(id, req.user.id, req.user.id);
+    if (!row) return res.status(404).json({ error: '记录不存在或无权限' });
+    db.prepare(`UPDATE image_records SET downloaded_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/audio-generations/:id/mark-downloaded - 标记音频记录已下载（持久化）
+app.post('/api/audio-generations/:id/mark-downloaded', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const id = parseInt(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+    const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
+    const row = isAdmin
+      ? db.prepare('SELECT id FROM audio_generations WHERE id = ?').get(id)
+      : db.prepare(`SELECT id FROM audio_generations WHERE id = ? AND (
+          user_id = ? OR EXISTS (
+            SELECT 1 FROM project_members pm WHERE pm.project_id = audio_generations.project_id AND pm.user_id = ?
+          )
+        )`).get(id, req.user.id, req.user.id);
+    if (!row) return res.status(404).json({ error: '记录不存在或无权限' });
+    db.prepare(`UPDATE audio_generations SET downloaded_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// DELETE /api/image-records/:id - 删除图片记录（同 project_members 可删；管理员任意）
+app.delete('/api/image-records/:id', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const id = parseInt(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+    const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
+    const row = isAdmin
+      ? db.prepare('SELECT id FROM image_records WHERE id = ?').get(id)
+      : db.prepare(`SELECT id FROM image_records WHERE id = ? AND (
+          user_id = ? OR EXISTS (
+            SELECT 1 FROM project_members pm WHERE pm.project_id = image_records.project_id AND pm.user_id = ?
+          )
+        )`).get(id, req.user.id, req.user.id);
+    if (!row) return res.status(404).json({ error: '记录不存在或无权限' });
+    db.prepare('DELETE FROM image_records WHERE id = ?').run(id);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// DELETE /api/audio-generations/:id - 删除音频记录
+app.delete('/api/audio-generations/:id', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const id = parseInt(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+    const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
+    const row = isAdmin
+      ? db.prepare('SELECT id FROM audio_generations WHERE id = ?').get(id)
+      : db.prepare(`SELECT id FROM audio_generations WHERE id = ? AND (
+          user_id = ? OR EXISTS (
+            SELECT 1 FROM project_members pm WHERE pm.project_id = audio_generations.project_id AND pm.user_id = ?
+          )
+        )`).get(id, req.user.id, req.user.id);
+    if (!row) return res.status(404).json({ error: '记录不存在或无权限' });
+    db.prepare('DELETE FROM audio_generations WHERE id = ?').run(id);
+    res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -3635,13 +3727,20 @@ app.get('/api/video-enhancements/list', authenticate, (req, res) => {
     const offset = (page - 1) * pageSize;
     const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
 
-    // 工作组共享：与视频生成历史一致——同一 project_members 的所有记录互相可见
+    // 工作组共享：与视频生成历史一致——同一 project_members 的所有记录互相可见。
+    // 外部增强(project_id IS NULL)：与创建者共享任一工作组的成员均可见，避免外部记录变成"创作者私有黑洞"
     const where = isAdmin ? '1=1' : `(
       user_id = ? OR EXISTS (
         SELECT 1 FROM project_members pm WHERE pm.project_id = video_enhancements.project_id AND pm.user_id = ?
+      ) OR (
+        video_enhancements.project_id IS NULL AND EXISTS (
+          SELECT 1 FROM project_members pm1
+          JOIN project_members pm2 ON pm2.project_id = pm1.project_id
+          WHERE pm1.user_id = video_enhancements.user_id AND pm2.user_id = ?
+        )
       )
     )`;
-    const params = isAdmin ? [] : [req.user.id, req.user.id];
+    const params = isAdmin ? [] : [req.user.id, req.user.id, req.user.id];
 
     const total = db.prepare(`SELECT COUNT(*) AS n FROM video_enhancements WHERE ${where}`).get(...params).n;
 

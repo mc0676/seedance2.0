@@ -134,6 +134,22 @@ export async function markDownloaded(taskId: number): Promise<void> {
   });
 }
 
+/** 标记图片记录已下载（持久化到 image_records.downloaded_at） */
+export async function markImageRecordDownloaded(id: number): Promise<void> {
+  await fetch(`${API_BASE}/image-records/${id}/mark-downloaded`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+  });
+}
+
+/** 标记音频记录已下载（持久化到 audio_generations.downloaded_at） */
+export async function markAudioGenerationDownloaded(id: number): Promise<void> {
+  await fetch(`${API_BASE}/audio-generations/${id}/mark-downloaded`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+  });
+}
+
 /**
  * 通过代理直接从远程 URL 下载视频到浏览器（无需先保存到服务器）
  */
@@ -179,6 +195,30 @@ export async function deleteTask(taskId: number): Promise<void> {
   const result: ApiResponse<null> = await response.json();
   if (!result.success) {
     throw new Error(result.error || '删除任务失败');
+  }
+}
+
+/** 删除图片记录 */
+export async function deleteImageRecord(id: number): Promise<void> {
+  const response = await fetch(`${API_BASE}/image-records/${id}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  });
+  const result: ApiResponse<null> = await response.json();
+  if (!result.success) {
+    throw new Error(result.error || '删除图片记录失败');
+  }
+}
+
+/** 删除音频记录 */
+export async function deleteAudioGeneration(id: number): Promise<void> {
+  const response = await fetch(`${API_BASE}/audio-generations/${id}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  });
+  const result: ApiResponse<null> = await response.json();
+  if (!result.success) {
+    throw new Error(result.error || '删除音频记录失败');
   }
 }
 

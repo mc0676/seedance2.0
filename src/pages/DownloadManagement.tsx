@@ -270,11 +270,33 @@ export default function DownloadManagementPage() {
   const audioConvertingRef = useRef<Set<number>>(new Set());
   const [audioConverting, setAudioConverting] = useState<Record<number, boolean>>({});
 
+  // 客户端"已下载"乐观更新：调后端 mark-downloaded 前先把 rowKey 加进 Set，
+  // 让用户的点击立刻反映在状态徽章上；后端调用失败时回滚，调用成功后 loadTasks 让 effective_download_status 真值生效。
+  const [optimisticDownloaded, setOptimisticDownloaded] = useState<Set<string>>(new Set());
+  const markPersistDownloaded = (task: DownloadTask) => {
+    const key = rowKey(task);
+    setOptimisticDownloaded((prev) => {
+      if (prev.has(key)) return prev;
+      const next = new Set(prev); next.add(key); return next;
+    });
+    const rollback = () => setOptimisticDownloaded((prev) => {
+      if (!prev.has(key)) return prev;
+      const next = new Set(prev); next.delete(key); return next;
+    });
+    if (task.model_type === 'image') {
+      downloadService.markImageRecordDownloaded(task.id).then(() => loadTasks()).catch(rollback);
+    } else if (task.model_type === 'audio') {
+      downloadService.markAudioGenerationDownloaded(task.id).then(() => loadTasks()).catch(rollback);
+    }
+    // video 由 handleBrowserDownload 内部已调 markDownloaded + loadTasks，这里不重复
+  };
+
   const handleAudioMp3Download = async (task: DownloadTask) => {
     if (!task.video_url) { alert('音频源视频地址不可用'); return; }
     const cached = audioMp3CacheRef.current.get(task.id);
     if (cached) {
       downloadBlob(cached, `audio_${task.id}.mp3`);
+      markPersistDownloaded(task);
       return;
     }
     if (audioConvertingRef.current.has(task.id)) return;
@@ -284,12 +306,23 @@ export default function DownloadManagementPage() {
       const blob = await videoUrlToMp3Blob(task.video_url);
       audioMp3CacheRef.current.set(task.id, blob);
       downloadBlob(blob, `audio_${task.id}.mp3`);
+      markPersistDownloaded(task);
     } catch (e) {
       alert('转码失败：' + ((e as Error)?.message || ''));
     } finally {
       audioConvertingRef.current.delete(task.id);
       setAudioConverting((m) => { const x = { ...m }; delete x[task.id]; return x; });
     }
+  };
+
+  // 图片任务的整组下载（一行可能含多张），同步标记已下载（持久化）
+  const handleImageRowDownload = (task: DownloadTask) => {
+    if (!task.image_urls || task.image_urls.length === 0) return;
+    task.image_urls.forEach((url, i) => {
+      const filename = `image_${task.id}_${i + 1}.png`;
+      void downloadImageUrl(url, filename);
+    });
+    markPersistDownloaded(task);
   };
 
   const handleBrowserDownload = async (task: DownloadTask) => {
@@ -311,31 +344,63 @@ export default function DownloadManagementPage() {
     });
   };
 
-  // 批量下载（浏览器逐个触发）
+  // 按 task 类型分发到对应的下载流程；视频走 OSS 直链 + 后端标记，图片/音频走客户端标记
+  const dispatchDownload = (task: DownloadTask) => {
+    if (task.model_type === 'audio' && task.video_url) {
+      void handleAudioMp3Download(task);
+    } else if (task.model_type === 'image' && task.image_urls && task.image_urls.length > 0) {
+      handleImageRowDownload(task);
+    } else if (task.video_url) {
+      void handleBrowserDownload(task);
+    }
+  };
+
+  // 批量下载（浏览器逐个触发）—— 三种类型一视同仁
   const handleBatchDownload = () => {
     if (selectedRowKeys.length === 0) return;
-    const selected = tasks.filter((t) => selectedRowKeys.includes(rowKey(t)) && t.video_url && t.model_type !== 'audio');
-    const audios = tasks.filter((t) => selectedRowKeys.includes(rowKey(t)) && t.model_type === 'audio' && t.video_url);
-    if (selected.length === 0 && audios.length === 0) { alert('所选任务中没有可下载的视频或音频'); return; }
-    selected.forEach((task) => handleBrowserDownload(task));
-    audios.forEach((task) => void handleAudioMp3Download(task));
+    const selected = tasks.filter((t) => {
+      if (!selectedRowKeys.includes(rowKey(t))) return false;
+      if (t.model_type === 'audio') return !!t.video_url;
+      if (t.model_type === 'image') return (t.image_urls?.length ?? 0) > 0;
+      return !!t.video_url; // video
+    });
+    if (selected.length === 0) { alert('所选任务中没有可下载的内容'); return; }
+    selected.forEach(dispatchDownload);
   };
 
-  // 下载全部待下载
+  // 下载全部待下载（含视频/图片/音频）
   const handleDownloadAllPending = () => {
-    const pending = tasks.filter((t) => t.effective_download_status === 'pending' && t.video_url && t.model_type !== 'audio');
-    const pendingAudio = tasks.filter((t) => t.effective_download_status === 'pending' && t.model_type === 'audio' && t.video_url);
-    if (pending.length === 0 && pendingAudio.length === 0) { alert('没有待下载的任务'); return; }
-    pending.forEach((task) => handleBrowserDownload(task));
-    pendingAudio.forEach((task) => void handleAudioMp3Download(task));
+    const pending = tasks.filter((t) => {
+      if (t.effective_download_status !== 'pending') return false;
+      if (t.model_type === 'audio') return !!t.video_url;
+      if (t.model_type === 'image') return (t.image_urls?.length ?? 0) > 0;
+      return !!t.video_url;
+    });
+    if (pending.length === 0) { alert('没有待下载的任务'); return; }
+    pending.forEach(dispatchDownload);
   };
 
-  // 删除任务
-  const handleDeleteTask = async (taskId: number) => {
-    if (!confirm('确定要删除此任务吗？')) return;
+  // 删除任务（视频/图片/音频通用）：未下载的二次确认
+  const handleDeleteTask = async (task: DownloadTask) => {
+    const k = rowKey(task);
+    const isDownloaded = task.model_type === 'video'
+      ? task.effective_download_status === 'done'
+      : (!!task.downloaded_at || optimisticDownloaded.has(k));
+
+    if (isDownloaded) {
+      if (!confirm('确定要删除此任务吗？')) return;
+    } else {
+      if (!confirm('该文件并未下载，是否确认删除？')) return;
+    }
 
     try {
-      await downloadService.deleteTask(taskId);
+      if (task.model_type === 'image') {
+        await downloadService.deleteImageRecord(task.id);
+      } else if (task.model_type === 'audio') {
+        await downloadService.deleteAudioGeneration(task.id);
+      } else {
+        await downloadService.deleteTask(task.id);
+      }
       loadTasks();
     } catch (error) {
       alert(`删除任务失败：${error instanceof Error ? error.message : error}`);
@@ -576,23 +641,32 @@ export default function DownloadManagementPage() {
                     </span>
                   </td>
                   <td className="px-4 py-3 text-sm">
-                    <span className={`px-2 py-0.5 rounded text-xs border ${
-                      task.effective_download_status === 'generating'
-                        ? 'bg-gray-500/20 text-gray-300 border-gray-500/30'
-                        : task.effective_download_status === 'pending'
-                        ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
-                        : task.effective_download_status === 'downloading'
-                        ? 'bg-blue-500/20 text-blue-400 border-blue-500/30'
-                        : task.effective_download_status === 'done'
-                        ? 'bg-green-500/20 text-green-400 border-green-500/30'
-                        : 'bg-red-500/20 text-red-400 border-red-500/30'
-                    }`}>
-                      {task.effective_download_status === 'generating' && '生成中'}
-                      {task.effective_download_status === 'pending' && '待下载'}
-                      {task.effective_download_status === 'downloading' && '下载中'}
-                      {task.effective_download_status === 'done' && '已下载'}
-                      {task.effective_download_status === 'failed' && '失败'}
-                    </span>
+                    {(() => {
+                      // 视频走后端 download_status；图片/音频已持久化到 downloaded_at，但乐观集合 optimisticDownloaded
+                      // 在 loadTasks 完成前先把"已下载"立刻反映到 UI 上，刷新一下后真值生效，刷新后乐观值也无害。
+                      const overridden = task.model_type !== 'video' && optimisticDownloaded.has(k)
+                        ? 'done'
+                        : task.effective_download_status;
+                      return (
+                        <span className={`px-2 py-0.5 rounded text-xs border ${
+                          overridden === 'generating'
+                            ? 'bg-gray-500/20 text-gray-300 border-gray-500/30'
+                            : overridden === 'pending'
+                            ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
+                            : overridden === 'downloading'
+                            ? 'bg-blue-500/20 text-blue-400 border-blue-500/30'
+                            : overridden === 'done'
+                            ? 'bg-green-500/20 text-green-400 border-green-500/30'
+                            : 'bg-red-500/20 text-red-400 border-red-500/30'
+                        }`}>
+                          {overridden === 'generating' && '生成中'}
+                          {overridden === 'pending' && '待下载'}
+                          {overridden === 'downloading' && '下载中'}
+                          {overridden === 'done' && '已下载'}
+                          {overridden === 'failed' && '失败'}
+                        </span>
+                      );
+                    })()}
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-400">
                     {formatDateTime(task.created_at)}
@@ -614,7 +688,7 @@ export default function DownloadManagementPage() {
                           </button>
                           {task.image_urls.map((url, i) => (
                             <button key={i}
-                              onClick={() => downloadImageUrl(url, `image_${task.id}_${i + 1}.png`)}
+                              onClick={() => { void downloadImageUrl(url, `image_${task.id}_${i + 1}.png`); markPersistDownloaded(task); }}
                               className="p-1 text-blue-400 hover:bg-blue-500/10 rounded transition-colors"
                               title={task.image_urls!.length > 1 ? `下载图片 ${i + 1}` : '下载图片'}>
                               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -682,9 +756,8 @@ export default function DownloadManagementPage() {
                           </svg>
                         </button>
                       )}
-                      {task.model_type !== 'image' && task.model_type !== 'audio' && (
                       <button
-                        onClick={() => handleDeleteTask(task.id)}
+                        onClick={() => handleDeleteTask(task)}
                         className="p-1 text-red-400 hover:bg-red-500/10 rounded transition-colors"
                         title="删除"
                       >
@@ -692,7 +765,6 @@ export default function DownloadManagementPage() {
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                         </svg>
                       </button>
-                      )}
                     </div>
                   </td>
                 </tr>
@@ -777,7 +849,7 @@ export default function DownloadManagementPage() {
             <div className="flex justify-end mt-3 gap-2">
               {previewTask.model_type === 'image' && previewTask.image_urls?.map((url, i) => (
                 <button key={i}
-                  onClick={() => downloadImageUrl(url, `image_${previewTask.id}_${i + 1}.png`)}
+                  onClick={() => { void downloadImageUrl(url, `image_${previewTask.id}_${i + 1}.png`); markPersistDownloaded(previewTask); }}
                   className="px-4 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-500 transition-colors flex items-center gap-2"
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
