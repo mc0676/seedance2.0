@@ -46,6 +46,7 @@ interface ImageRecord {
   credits_used: number;
   created_at: string;
   status?: 'pending' | 'done' | 'error';
+  error_message?: string | null;
 }
 
 export default function ImageGenPage() {
@@ -210,6 +211,10 @@ export default function ImageGenPage() {
       void refreshBalance();
     } catch (e) {
       setError(e instanceof Error ? e.message : '生成失败');
+      // 失败时也刷新历史 —— 后端已经把 status='error' + error_message 写入 image_records,
+      // 立即拉一遍，新的失败记录会即时出现在历史列表里，无需用户手动刷新页面。
+      void loadHistory(1, false, currentProjectId);
+      void refreshBalance();
     } finally {
       setLoading(false);
     }
@@ -425,6 +430,13 @@ export default function ImageGenPage() {
                 {/* 信息区域 */}
                 <div className="flex-1 min-w-0 flex flex-col gap-1.5">
                   <p className="text-xs text-gray-300 line-clamp-2 leading-relaxed">{item.prompt || '（无提示词）'}</p>
+
+                  {/* 失败原因（来自 image_records.error_message，由后端写入上游 API 原始 msg） */}
+                  {item.status === 'error' && item.error_message && (
+                    <p className="text-[11px] text-red-400/90 bg-red-500/10 border border-red-500/20 rounded-md px-2 py-1 leading-snug break-words">
+                      失败原因：{item.error_message}
+                    </p>
+                  )}
 
                   {/* 参考图 */}
                   {item.ref_urls.length > 0 && (

@@ -935,6 +935,17 @@ app.post('/api/upload/oss', authenticate, ossUpload.single('file'), async (req, 
 
 // POST /api/generate-image - 使用速创异步API生成图片（Nano Banana 2 / GPT-Image-2）
 // 积分流程与视频一致：先 lockForImage → 生成 → settleForImage / releaseForImage
+//
+// 吴音上游错误映射：吴音后端在「上游模型暂时不可用 / 维护 / 通道异常」时会统一返回
+// 这条与终端用户余额无关的固定文案，直接透传会误导用户。仅命中此精确字符串才映射；
+// 其他错误（密钥/IP/内容违规等）保持原文返回，便于排查。
+function mapWuyinUpstreamError(msg) {
+  if (msg === '请求失败，账户余额不足或没有权限') {
+    return '图片生成服务暂时不可用（上游接口维护中或繁忙），请稍后再试。';
+  }
+  return msg;
+}
+
 app.post('/api/generate-image', authenticate, async (req, res) => {
   const db = getDatabase();
   const { prompt, model, size, aspectRatio, urls, projectId: reqProjectId, sizeLabel, refUrls: reqRefUrls } = req.body;
@@ -983,6 +994,18 @@ app.post('/api/generate-image', authenticate, async (req, res) => {
     return res.status(402).json({ error: e.message });
   }
 
+  // DEV 模拟上游「请求失败，账户余额不足或没有权限」错误：
+  // MOCK_WUYIN_ERROR=1 / true 时启用；0 / false / 空 / 未设置都视为关闭。
+  // 仅模拟这一种特定的上游错误，走真实失败链路（释放积分锁、status='error'、写 error_message、502）。
+  const mockFlag = (process.env.MOCK_WUYIN_ERROR || '').toLowerCase();
+  if (process.env.NODE_ENV !== 'production' && (mockFlag === '1' || mockFlag === 'true')) {
+    const upstreamMsg = '请求失败，账户余额不足或没有权限';
+    const friendly = mapWuyinUpstreamError(upstreamMsg);
+    creditLockService.releaseForImage({ imageRecordId, reason: friendly });
+    db.prepare(`UPDATE image_records SET status='error', error_message=? WHERE id=?`).run(friendly, imageRecordId);
+    return res.status(502).json({ error: friendly });
+  }
+
   // 3) 提交异步任务
   const endpoint = model === 'gpt-image-2' ? 'image_gpt' : 'image_nanoBanana2';
   const submitBody = { prompt };
@@ -1003,9 +1026,11 @@ app.post('/api/generate-image', authenticate, async (req, res) => {
     });
     const submitData = await submitResp.json();
     if (!submitResp.ok || submitData?.code !== 200 || !submitData?.data?.id) {
-      creditLockService.releaseForImage({ imageRecordId, reason: submitData?.msg || '任务提交失败' });
-      db.prepare(`UPDATE image_records SET status='error' WHERE id=?`).run(imageRecordId);
-      return res.status(502).json({ error: submitData?.msg || submitData?.message || '任务提交失败' });
+      const rawMsg = submitData?.msg || submitData?.message || '任务提交失败';
+      const friendly = mapWuyinUpstreamError(rawMsg) || rawMsg;
+      creditLockService.releaseForImage({ imageRecordId, reason: friendly });
+      db.prepare(`UPDATE image_records SET status='error', error_message=? WHERE id=?`).run(friendly, imageRecordId);
+      return res.status(502).json({ error: friendly });
     }
     wuyinTaskId = submitData.data.id;
   } catch (e) {
@@ -1028,9 +1053,11 @@ app.post('/api/generate-image', authenticate, async (req, res) => {
       );
       const detailData = await detailResp.json();
       if (!detailResp.ok || detailData?.code !== 200) {
-        creditLockService.releaseForImage({ imageRecordId, reason: detailData?.msg || '查询任务失败' });
-        db.prepare(`UPDATE image_records SET status='error' WHERE id=?`).run(imageRecordId);
-        return res.status(502).json({ error: detailData?.msg || '查询任务失败' });
+        const rawMsg = detailData?.msg || '查询任务失败';
+        const friendly = mapWuyinUpstreamError(rawMsg) || rawMsg;
+        creditLockService.releaseForImage({ imageRecordId, reason: friendly });
+        db.prepare(`UPDATE image_records SET status='error', error_message=? WHERE id=?`).run(friendly, imageRecordId);
+        return res.status(502).json({ error: friendly });
       }
       const status = detailData?.data?.status;
       if (status === 2) {
@@ -1038,10 +1065,11 @@ app.post('/api/generate-image', authenticate, async (req, res) => {
         break;
       }
       if (status === 3) {
-        const errMsg = detailData?.data?.message || '生成失败';
-        creditLockService.releaseForImage({ imageRecordId, reason: errMsg });
-        db.prepare(`UPDATE image_records SET status='error' WHERE id=?`).run(imageRecordId);
-        return res.status(502).json({ error: errMsg });
+        const rawMsg = detailData?.data?.message || '生成失败';
+        const friendly = mapWuyinUpstreamError(rawMsg) || rawMsg;
+        creditLockService.releaseForImage({ imageRecordId, reason: friendly });
+        db.prepare(`UPDATE image_records SET status='error', error_message=? WHERE id=?`).run(friendly, imageRecordId);
+        return res.status(502).json({ error: friendly });
       }
     }
   } catch (e) {

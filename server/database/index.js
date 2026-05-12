@@ -77,6 +77,11 @@ export function initDatabase() {
     db.exec(`ALTER TABLE image_records ADD COLUMN downloaded_at DATETIME`);
     console.log('[database] 迁移完成：image_records.downloaded_at 已添加');
   }
+  if (!irColumns.includes('error_message')) {
+    console.log('[database] 迁移：image_records 添加 error_message 列...');
+    db.exec(`ALTER TABLE image_records ADD COLUMN error_message TEXT`);
+    console.log('[database] 迁移完成：image_records.error_message 已添加');
+  }
 
   // 增量迁移：tasks 添加 task_kind 字段（用于区分音频生成中间产物）
   const tasksColumns = db.prepare("PRAGMA table_info(tasks)").all().map(c => c.name);

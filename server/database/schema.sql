@@ -463,7 +463,8 @@ CREATE TABLE IF NOT EXISTS image_records (
   credits_used INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'done',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  downloaded_at DATETIME
+  downloaded_at DATETIME,
+  error_message TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_image_records_user ON image_records(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_image_records_project ON image_records(project_id, created_at DESC);
