@@ -1299,8 +1299,36 @@ app.post('/api/generate-video', authenticate, upload.array('files', 5), async (r
 
     res.json({ taskId: dbTaskId || taskId, dbTaskId });
 
+    // 将 prompt 中的 @asset-xxx chip 标签转换为 Ark API 要求的"图片N/视频N/音频N"格式
+    // 官方文档要求 content.text 中用位置序号指代素材，不能用 asset ID
+    let finalPrompt = prompt || '';
+    {
+      let imgIdx = 0;
+      for (const url of (imageUrls || [])) {
+        imgIdx++;
+        if (url && url.startsWith('asset://')) {
+          const assetId = url.slice('asset://'.length);
+          finalPrompt = finalPrompt.replaceAll(`@${assetId}`, `图片${imgIdx}`);
+        }
+      }
+      if (videoUrl && videoUrl.startsWith('asset://')) {
+        const assetId = videoUrl.slice('asset://'.length);
+        finalPrompt = finalPrompt.replaceAll(`@${assetId}`, `视频1`);
+      }
+      if (audioUrl && audioUrl.startsWith('asset://')) {
+        const assetId = audioUrl.slice('asset://'.length);
+        finalPrompt = finalPrompt.replaceAll(`@${assetId}`, `音频1`);
+      }
+      // 去掉上传素材 chip 的 @ 前缀：@图片1 → 图片1, @视频1 → 视频1, @音频1 → 音频1
+      finalPrompt = finalPrompt.replace(/@(图片|视频|音频)(\d+)/g, '$1$2');
+      if (finalPrompt !== (prompt || '')) {
+        console.log(`[prompt转换] 原始: ${(prompt || '').substring(0, 100)}`);
+        console.log(`[prompt转换] 转换后: ${finalPrompt.substring(0, 100)}`);
+      }
+    }
+
     generateSeedanceVideoCore({
-      prompt,
+      prompt: finalPrompt,
       ratio: ratio || '4:3',
       duration: parseInt(duration) || 4,
       resolution,
