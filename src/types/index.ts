@@ -344,7 +344,7 @@ export interface DownloadTask {
   project_id?: number;
   project_name?: string;
   hasHistory: boolean;
-  model_type: 'image' | 'video' | 'audio';
+  model_type: 'image' | 'video' | 'audio' | 'enhancement';
   effective_download_status: DownloadStatus;
   assets?: Array<{ assetType: string; uri: string; originalName?: string | null }>;
   credits_used?: number;
@@ -355,16 +355,26 @@ export interface DownloadTask {
 
 /**
  * 视频画质增强记录（火山 AI MediaKit）
+ *
+ * 输出分辨率有两种二选一的表达方式：
+ *   - target_resolution：预设档（240p/360p/480p/540p/720p/1080p/2k/4k）
+ *   - resolution_limit：短边像素 [64, 2160]，等比缩放
  */
+export type EnhancementResolutionPreset = '240p' | '360p' | '480p' | '540p' | '720p' | '1080p' | '2k' | '4k';
+
 export interface VideoEnhancement {
   id: number;
   task_id: number | null;
   status: 'pending' | 'processing' | 'done' | 'error';
   tool_version: 'standard' | 'professional';
-  scene: 'aigc' | 'short_series' | 'ugc' | 'old_film';
-  target_resolution: '720p' | '1080p' | '4k';
+  scene: 'aigc' | 'short_series' | 'ugc' | 'old_film' | 'common';
+  target_resolution: EnhancementResolutionPreset | null;
+  resolution_limit?: number | null;
+  target_fps?: number;
   source_video_url?: string | null;
   enhanced_video_url?: string | null;
+  result_resolution?: string | null;
+  result_fps?: number | null;
   error_message?: string | null;
   credits_used?: number;
   duration_seconds?: number;
@@ -374,13 +384,21 @@ export interface VideoEnhancement {
 
 /**
  * 画质增强计费配置
+ *
+ * 与 MediaKit 官方计费规则一致：
+ *   credits = ceil(durationMinutes × coefficient × baseCreditsPerMinute)
+ * 系数表由 (tool_version, resolution_tier, fps_tier) 决定，基础单价 admin 可调。
  */
-export interface EnhancementPricing {
+export interface EnhancementCoefficient {
   tool_version: 'standard' | 'professional';
-  label: string;
-  credits_per_second: number;
-  enabled?: number;
-  description?: string;
+  resolution_tier: '720p' | '1080p' | '2k' | '4k';
+  fps_tier: 'le30' | 'gt30';
+  coefficient: number;
+}
+
+export interface EnhancementPricing {
+  baseCreditsPerMinute: number;
+  coefficients: EnhancementCoefficient[];
 }
 
 /**

@@ -22,19 +22,41 @@ async function _parse(res) {
 
 /**
  * 提交画质增强任务
+ * @param {object} args
+ * @param {string} args.apiKey
+ * @param {string} args.videoUrl
+ * @param {string} [args.scene='common']
+ * @param {string} [args.toolVersion='standard']
+ * @param {string} [args.resolution] - 预设分辨率：'240p'/'360p'/'480p'/'540p'/'720p'/'1080p'/'2k'/'4k'
+ * @param {number} [args.resolutionLimit] - 短边像素 [64, 2160]，等比缩放（与 resolution 互斥，不能同时传）
+ * @param {number} [args.fps] - 可选，目标输出帧率 (0, 120]。未传时输出保持源帧率；
+ *                              若高于源帧率会触发 AI 智能插帧（建议 ≤ 源帧率 × 4）
  * @returns 火山返回的 task_id
  */
-export async function submitEnhanceVideo({ apiKey, videoUrl, scene = 'aigc', toolVersion = 'standard', resolution = '1080p' }) {
+export async function submitEnhanceVideo({ apiKey, videoUrl, scene = 'common', toolVersion = 'standard', resolution, resolutionLimit, fps }) {
   if (!apiKey) throw new Error('MediaKit API Key 未配置');
   if (!videoUrl) throw new Error('videoUrl 必填');
+  if (resolution && resolutionLimit) {
+    throw new Error('resolution 与 resolutionLimit 不能同时设置');
+  }
+  if (!resolution && !resolutionLimit) {
+    throw new Error('必须设置 resolution 或 resolutionLimit');
+  }
 
   const payload = {
     video_url: videoUrl,
     scene,
     tool_version: toolVersion,
-    resolution,
     client_token: randomUUID(),  // 每次提交唯一 token，防止 MediaKit 静默复用旧任务
   };
+  if (resolution) {
+    payload.resolution = resolution;
+  } else {
+    payload.resolution_limit = Math.max(64, Math.min(2160, Math.round(resolutionLimit)));
+  }
+  if (Number.isFinite(fps) && fps > 0) {
+    payload.fps = Math.min(120, Math.round(fps));
+  }
 
   const res = await fetch(`${MEDIAKIT_BASE_URL}/tools/enhance-video`, {
     method: 'POST',

@@ -150,6 +150,14 @@ export async function markAudioGenerationDownloaded(id: number): Promise<void> {
   });
 }
 
+/** 标记画质增强结果已下载（持久化到 video_enhancements.downloaded_at） */
+export async function markEnhancementDownloaded(id: number): Promise<void> {
+  await fetch(`${API_BASE}/video-enhancements/${id}/mark-downloaded`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+  });
+}
+
 /**
  * 通过代理直接从远程 URL 下载视频到浏览器（无需先保存到服务器）
  */
@@ -219,6 +227,18 @@ export async function deleteAudioGeneration(id: number): Promise<void> {
   const result: ApiResponse<null> = await response.json();
   if (!result.success) {
     throw new Error(result.error || '删除音频记录失败');
+  }
+}
+
+/** 删除画质增强记录 */
+export async function deleteEnhancement(id: number): Promise<void> {
+  const response = await fetch(`${API_BASE}/video-enhancements/${id}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  });
+  const result: ApiResponse<null> = await response.json();
+  if (!result.success) {
+    throw new Error(result.error || '删除画质增强记录失败');
   }
 }
 

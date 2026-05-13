@@ -1,4 +1,4 @@
-import type { ApiResponse, VideoEnhancement, EnhancementPricing } from '../types/index';
+import type { ApiResponse, VideoEnhancement, EnhancementPricing, EnhancementResolutionPreset } from '../types/index';
 import { getAuthHeaders } from './authService';
 
 const API_BASE = '/api';
@@ -15,11 +15,11 @@ async function asJson<T>(res: Response, fallback: string): Promise<T> {
   return data.data as T;
 }
 
-export async function getEnhancementPricing(): Promise<EnhancementPricing[]> {
+export async function getEnhancementPricing(): Promise<EnhancementPricing> {
   const res = await fetch(`${API_BASE}/enhancement-pricing`, {
     headers: getAuthHeaders(),
   });
-  return asJson<EnhancementPricing[]>(res, '获取增强计费配置失败');
+  return asJson<EnhancementPricing>(res, '获取增强计费配置失败');
 }
 
 export async function getEnhancements(taskId: number): Promise<VideoEnhancement[]> {
@@ -49,7 +49,10 @@ export interface SubmitEnhancementParams {
   durationSeconds?: number;
   scene: VideoEnhancement['scene'];
   toolVersion: VideoEnhancement['tool_version'];
-  resolution: VideoEnhancement['target_resolution'];
+  /** 二选一：预设档或自定义短边 */
+  resolution?: EnhancementResolutionPreset;
+  resolutionLimit?: number;
+  targetFps: number;
 }
 
 export async function submitEnhancement(
@@ -71,12 +74,43 @@ export async function submitEnhancement(
   return { enhancement: body.data, estimatedCredits: body.estimatedCredits || 0 };
 }
 
+/** 由短边像素或预设档 → 计费档位（与后端 enhancementPricingService.resolutionTier 同步） */
+export function resolutionTier(value: EnhancementResolutionPreset | number): '720p' | '1080p' | '2k' | '4k' {
+  if (typeof value === 'string') {
+    if (value === '2k' || value === '4k') return value;
+    // 240p/360p/480p/540p/720p 都按 720p 档（按下取整，因为 ≤720）
+    if (value === '720p' || value === '540p' || value === '480p' || value === '360p' || value === '240p') return '720p';
+    if (value === '1080p') return '1080p';
+    return '1080p';
+  }
+  const n = Math.max(0, Math.round(value));
+  if (n <= 720) return '720p';
+  if (n <= 1080) return '1080p';
+  if (n <= 1440) return '2k';
+  return '4k';
+}
+
+/**
+ * 估算单次画质增强的积分。与后端 enhancementPricingService.estimate 同步。
+ *
+ *   credits = ceil(durationSec / 60 × coefficient × baseCreditsPerMinute)
+ *
+ * resolution 可以是预设字符串或短边像素整数。
+ */
 export function estimateCredits(
   durationSec: number,
   toolVersion: VideoEnhancement['tool_version'],
-  pricing: EnhancementPricing[]
+  resolution: EnhancementResolutionPreset | number,
+  fps: number,
+  pricing: EnhancementPricing | null,
 ): number {
-  const p = pricing.find((x) => x.tool_version === toolVersion);
-  if (!p) return 0;
-  return Math.max(1, Math.round(durationSec)) * p.credits_per_second;
+  if (!pricing) return 0;
+  const fpsTier = fps > 30 ? 'gt30' : 'le30';
+  const tier = resolutionTier(resolution);
+  const c = pricing.coefficients.find(
+    (x) => x.tool_version === toolVersion && x.resolution_tier === tier && x.fps_tier === fpsTier
+  );
+  if (!c) return 0;
+  const minutes = Math.max(0, durationSec) / 60;
+  return Math.max(0, Math.ceil(minutes * c.coefficient * pricing.baseCreditsPerMinute));
 }

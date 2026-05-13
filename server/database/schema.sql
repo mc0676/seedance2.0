@@ -370,15 +370,23 @@ CREATE TABLE IF NOT EXISTS video_enhancements (
   source_video_url TEXT NOT NULL,
   mediakit_task_id TEXT,
   tool_version TEXT NOT NULL DEFAULT 'standard' CHECK (tool_version IN ('standard', 'professional')),
-  scene TEXT NOT NULL DEFAULT 'aigc' CHECK (scene IN ('aigc', 'short_series', 'ugc', 'old_film')),
-  target_resolution TEXT NOT NULL CHECK (target_resolution IN ('720p', '1080p', '4k')),
+  scene TEXT NOT NULL DEFAULT 'common' CHECK (scene IN ('aigc', 'short_series', 'ugc', 'old_film', 'common')),
+  -- target_resolution / resolution_limit 二选一（MediaKit 互斥参数）
+  --   target_resolution：预设档位（240p/360p/480p/540p/720p/1080p/2k/4k）
+  --   resolution_limit：短边像素精确值 [64, 2160]，等比缩放
+  target_resolution TEXT,
+  resolution_limit INTEGER,
+  target_fps INTEGER NOT NULL DEFAULT 30,
   duration_seconds INTEGER,
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'done', 'error')),
   enhanced_video_url TEXT,
+  result_resolution TEXT,
+  result_fps INTEGER,
   credits_used INTEGER DEFAULT 0,
   error_message TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   finished_at DATETIME,
+  downloaded_at DATETIME,
   FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -408,18 +416,12 @@ CREATE INDEX IF NOT EXISTS idx_audio_generations_user ON audio_generations(user_
 CREATE INDEX IF NOT EXISTS idx_audio_generations_status ON audio_generations(status);
 CREATE INDEX IF NOT EXISTS idx_audio_generations_task ON audio_generations(task_id);
 
--- 画质增强计费配置
-CREATE TABLE IF NOT EXISTS enhancement_pricing (
-  tool_version       TEXT PRIMARY KEY CHECK (tool_version IN ('standard', 'professional')),
-  label              TEXT NOT NULL,
-  credits_per_second INTEGER NOT NULL,
-  enabled            INTEGER NOT NULL DEFAULT 1,
-  description        TEXT,
-  updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-INSERT OR IGNORE INTO enhancement_pricing (tool_version, label, credits_per_second, enabled, description) VALUES
-  ('standard',     '画质增强 标准版', 25,  1, '6~10x 实时；1分钟 1080p ≈ 1500 积分（≈1.5元）'),
-  ('professional', '画质增强 专业版', 250, 1, '30x+ 实时；1分钟 1080p ≈ 15000 积分（≈15元）');
+-- 画质增强基础单价
+-- 单一可调旋钮：积分/分钟。系数表（标准版/专业版 × 720p/1080p/2k/4k × ≤30/>30fps）
+-- 写在代码 enhancementPricingService.js，与 MediaKit 官方计费规则一致，不入库。
+-- 默认 75 = 0.75 元/分钟 × 100 积分/元；管理员可在「画质增强基础单价」卡片调整。
+INSERT OR IGNORE INTO system_config (key, value, description) VALUES
+  ('enhancement_base_credits_per_minute', '75', '画质增强基础单价（积分/分钟）');
 
 -- 激活码表
 CREATE TABLE IF NOT EXISTS activation_codes (

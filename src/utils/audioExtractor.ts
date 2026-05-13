@@ -23,6 +23,37 @@ function floatToInt16(samples: Float32Array): Int16Array {
   return out;
 }
 
+/** 带 isExpired 标记的错误，前端可据此走友好分支而非「转码失败」。 */
+export class ExpiredVideoUrlError extends Error {
+  readonly isExpired = true;
+  constructor(message: string) {
+    super(message);
+    this.name = 'ExpiredVideoUrlError';
+  }
+}
+
+function makeExpiredError(msg: string): Error { return new ExpiredVideoUrlError(msg); }
+
+/** 嗅探 TOS（X-Tos-Date + X-Tos-Expires）/ OSS（Expires=<秒级时间戳>）签名 URL 是否已过期 */
+export function isSignedUrlExpired(url: string): boolean {
+  try {
+    // 火山 TOS
+    const tosDate = url.match(/X-Tos-Date=(\d{8}T\d{6}Z)/)?.[1];
+    const tosExpires = parseInt(url.match(/X-Tos-Expires=(\d+)/)?.[1] || '0', 10);
+    if (tosDate && tosExpires) {
+      const signedAt = new Date(tosDate.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/, '$1-$2-$3T$4:$5:$6Z'));
+      const expireAt = signedAt.getTime() + tosExpires * 1000;
+      if (Date.now() > expireAt) return true;
+    }
+    // 阿里云 OSS（Expires 是秒级 epoch 时间戳）
+    const ossExpires = parseInt(new URL(url, window.location.href).searchParams.get('Expires') || '0', 10);
+    if (ossExpires > 0 && Date.now() / 1000 > ossExpires) return true;
+  } catch {
+    /* URL 解析失败时按未过期处理，让正常 fetch 流程暴露真实错误 */
+  }
+  return false;
+}
+
 function resample(samples: Float32Array, sourceRate: number, targetRate: number): Float32Array {
   if (sourceRate === targetRate) return samples;
   const ratio = sourceRate / targetRate;
@@ -56,12 +87,25 @@ export interface ConvertOptions {
 
 export async function videoUrlToMp3Blob(videoUrl: string, opts: ConvertOptions = {}): Promise<Blob> {
   opts.onStage?.('fetch');
+
+  // 提前检查 TOS / OSS 签名 URL 是否过期 —— 命中时直接抛带 isExpired 标记的错误，
+  // 调用方据此显示「源视频链接已过期」之类的友好提示，而不是误导性的「转码失败」
+  if (isSignedUrlExpired(videoUrl)) {
+    throw makeExpiredError('音频源视频链接已过期（火山引擎签名 URL 有效期 48 小时），请重新生成。');
+  }
+
   // 即梦 CDN 视频 URL 不支持浏览器跨域，统一走后端 /api/video-proxy
   const proxied = /^https?:\/\//i.test(videoUrl)
     ? `/api/video-proxy?url=${encodeURIComponent(videoUrl)}`
     : videoUrl;
   const res = await fetch(proxied);
-  if (!res.ok) throw new Error(`下载视频失败 HTTP ${res.status}`);
+  if (!res.ok) {
+    // 403/404 大多数是 TOS/OSS 签名已过期或链接已被回收
+    if (res.status === 403 || res.status === 404 || res.status === 410) {
+      throw makeExpiredError('音频源视频已过期或不可访问，请重新生成。');
+    }
+    throw new Error(`下载视频失败 HTTP ${res.status}`);
+  }
   const arr = await res.arrayBuffer();
 
   opts.onStage?.('decode');

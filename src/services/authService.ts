@@ -674,24 +674,23 @@ export const updateAudioGenConfig = (cfg: AudioGenConfig) =>
 // ==================== 画质增强计费 ====================
 
 export interface AdminEnhancementPricing {
-  tool_version: 'standard' | 'professional';
-  label: string;
-  credits_per_second: number;
-  enabled: number;
-  description: string | null;
-  updated_at?: string;
+  baseCreditsPerMinute: number;
+  defaultBaseCreditsPerMinute: number;
+  coefficients: Array<{
+    tool_version: 'standard' | 'professional';
+    resolution_tier: '720p' | '1080p' | '2k' | '4k';
+    fps_tier: 'le30' | 'gt30';
+    coefficient: number;
+  }>;
 }
 
-export const listEnhancementPricing = () =>
-  adminFetch<AdminEnhancementPricing[]>('/admin/enhancement-pricing');
+export const getEnhancementPricing = () =>
+  adminFetch<AdminEnhancementPricing>('/admin/enhancement-pricing');
 
-export const updateEnhancementPricing = (
-  toolVersion: 'standard' | 'professional',
-  patch: Partial<Pick<AdminEnhancementPricing, 'credits_per_second' | 'enabled' | 'label' | 'description'>>,
-) =>
-  adminFetch<unknown>(`/admin/enhancement-pricing/${toolVersion}`, {
+export const updateEnhancementBaseRate = (baseCreditsPerMinute: number) =>
+  adminFetch<{ baseCreditsPerMinute: number }>('/admin/enhancement-pricing', {
     method: 'PUT',
-    body: JSON.stringify(patch),
+    body: JSON.stringify({ baseCreditsPerMinute }),
   });
 
 // ==================== 模型计费管理 ====================

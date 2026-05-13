@@ -32,7 +32,7 @@ function imageRecordToTask(r) {
     completed_at: r.created_at,
     error_message: null,
     project_id: r.project_id,
-    project_name: null,
+    project_name: r.project_name || null,
     hasHistory: false,
     model_type: 'image',
     effective_download_status: effective,
@@ -123,6 +123,97 @@ function queryAudioRows({ db, projectId, isAdmin, userId, status }) {
     LEFT JOIN projects p ON p.id = a.project_id
     ${whereClause}
     ORDER BY a.created_at DESC
+  `).all(...params);
+}
+
+/**
+ * 将 video_enhancements 行（含 task/project JOIN）转为 DownloadTask 格式
+ *
+ * status 映射到下载管理语义：
+ *   pending/processing → 'generating'（任务在 MediaKit 处理中）
+ *   done + enhanced_video_url + 未下载 → 'pending'
+ *   done + enhanced_video_url + downloaded_at → 'done'
+ *   error 或 done 但无 URL → 'failed'
+ *
+ * 前端按 model_type='enhancement' 与视频走相同的下载链路（OSS URL → 浏览器代理下载）。
+ */
+function enhancementRowToTask(r) {
+  const videoUrl = r.enhanced_video_url || null;
+  const downloaded = !!r.downloaded_at;
+  let effective = 'generating';
+  if (r.status === 'error' || r.status === 'cancelled') effective = 'failed';
+  else if (r.status === 'done') effective = videoUrl ? (downloaded ? 'done' : 'pending') : 'failed';
+  else if (r.status === 'pending' || r.status === 'processing') effective = 'generating';
+  else effective = 'failed';
+  const resolutionLabel = r.result_resolution || r.target_resolution || (r.resolution_limit ? `${r.resolution_limit}px` : '-');
+  const versionLabel = r.tool_version === 'professional' ? '专业版' : '标准版';
+  const prompt = `画质增强（${versionLabel} · ${resolutionLabel}${r.target_fps ? ` · ${r.target_fps}fps` : ''}）`;
+  return {
+    id: r.id,
+    prompt,
+    model: 'enhancement',
+    ratio: null,
+    duration: r.duration_seconds || null,
+    resolution: resolutionLabel,
+    status: r.status,
+    download_status: downloaded ? 'done' : 'pending',
+    video_url: videoUrl,
+    image_urls: null,
+    video_path: null,
+    download_path: null,
+    downloaded_at: r.downloaded_at || null,
+    account_info: null,
+    submit_id: null,
+    history_id: null,
+    created_at: r.created_at,
+    completed_at: r.finished_at,
+    error_message: r.error_message,
+    project_id: r.project_id,
+    project_name: r.project_name || null,
+    hasHistory: false,
+    model_type: 'enhancement',
+    effective_download_status: effective,
+    assets: [],
+    credits_used: r.credits_used,
+    // 增强专有字段，前端如需展示可读
+    tool_version: r.tool_version,
+    scene: r.scene,
+    target_fps: r.target_fps,
+    result_fps: r.result_fps,
+  };
+}
+
+function queryEnhancementRows({ db, projectId, isAdmin, userId, status }) {
+  const where = [];
+  const params = [];
+  if (projectId) { where.push('e.project_id = ?'); params.push(projectId); }
+  if (!isAdmin && userId !== null) {
+    where.push(`(e.user_id = ? OR EXISTS (
+      SELECT 1 FROM project_members pm WHERE pm.project_id = e.project_id AND pm.user_id = ?
+    ))`);
+    params.push(userId, userId);
+  }
+  if (status === 'generating') {
+    where.push("e.status IN ('pending','processing')");
+  } else if (status === 'pending') {
+    where.push("e.status = 'done' AND e.enhanced_video_url IS NOT NULL AND e.enhanced_video_url != '' AND e.downloaded_at IS NULL");
+  } else if (status === 'done') {
+    where.push("e.status = 'done' AND e.downloaded_at IS NOT NULL");
+  } else if (status === 'failed') {
+    where.push("(e.status = 'error' OR (e.status = 'done' AND (e.enhanced_video_url IS NULL OR e.enhanced_video_url = '')))");
+  }
+  const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  return db.prepare(`
+    SELECT e.id, e.task_id, e.user_id, e.project_id, e.tool_version, e.scene,
+           e.target_resolution, e.resolution_limit, e.target_fps,
+           e.duration_seconds, e.status, e.enhanced_video_url,
+           e.result_resolution, e.result_fps,
+           e.credits_used, e.error_message, e.created_at, e.finished_at, e.downloaded_at,
+           p.name AS project_name
+    FROM video_enhancements e
+    LEFT JOIN projects p ON p.id = e.project_id
+    ${whereClause}
+    ORDER BY e.created_at DESC
   `).all(...params);
 }
 
@@ -430,17 +521,23 @@ export function getDownloadTasks(options = {}) {
   if (type === 'image') {
     const imgWhere = [];
     const imgParams = [];
-    if (projectId) { imgWhere.push('project_id = ?'); imgParams.push(projectId); }
+    if (projectId) { imgWhere.push('ir.project_id = ?'); imgParams.push(projectId); }
     if (!isAdmin && userId !== null) {
-      imgWhere.push(`(user_id = ? OR EXISTS (
-        SELECT 1 FROM project_members pm WHERE pm.project_id = image_records.project_id AND pm.user_id = ?
+      imgWhere.push(`(ir.user_id = ? OR EXISTS (
+        SELECT 1 FROM project_members pm WHERE pm.project_id = ir.project_id AND pm.user_id = ?
       ))`);
       imgParams.push(userId, userId);
     }
     const imgWhereClause = imgWhere.length ? `WHERE ${imgWhere.join(' AND ')}` : '';
-    const imgTotal = db.prepare(`SELECT COUNT(*) as n FROM image_records ${imgWhereClause}`).get(...imgParams).n;
+    const imgTotal = db.prepare(`SELECT COUNT(*) as n FROM image_records ir ${imgWhereClause}`).get(...imgParams).n;
     const imgOffset = (page - 1) * pageSize;
-    const imgRows = db.prepare(`SELECT * FROM image_records ${imgWhereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`).all(...imgParams, pageSize, imgOffset);
+    const imgRows = db.prepare(
+      `SELECT ir.*, p.name AS project_name
+         FROM image_records ir
+         LEFT JOIN projects p ON p.id = ir.project_id
+         ${imgWhereClause}
+         ORDER BY ir.created_at DESC LIMIT ? OFFSET ?`
+    ).all(...imgParams, pageSize, imgOffset);
     return {
       tasks: imgRows.map((r) => imageRecordToTask(r)),
       total: imgTotal,
@@ -457,6 +554,19 @@ export function getDownloadTasks(options = {}) {
     return {
       tasks: audioTasks.slice(audioOffset, audioOffset + pageSize),
       total: audioTasks.length,
+      page,
+      pageSize,
+    };
+  }
+
+  // 画质增强类型：直接从 video_enhancements 返回
+  if (type === 'enhancement') {
+    const enhRows = queryEnhancementRows({ db, projectId, isAdmin, userId, status });
+    const enhTasks = enhRows.map((r) => enhancementRowToTask(r));
+    const enhOffset = (page - 1) * pageSize;
+    return {
+      tasks: enhTasks.slice(enhOffset, enhOffset + pageSize),
+      total: enhTasks.length,
       page,
       pageSize,
     };
@@ -548,20 +658,29 @@ export function getDownloadTasks(options = {}) {
     // 合并图片
     const imgWhere = [];
     const imgParams = [];
-    if (projectId) { imgWhere.push('project_id = ?'); imgParams.push(projectId); }
+    if (projectId) { imgWhere.push('ir.project_id = ?'); imgParams.push(projectId); }
     if (!isAdmin && userId !== null) {
-      imgWhere.push(`(user_id = ? OR EXISTS (
-        SELECT 1 FROM project_members pm WHERE pm.project_id = image_records.project_id AND pm.user_id = ?
+      imgWhere.push(`(ir.user_id = ? OR EXISTS (
+        SELECT 1 FROM project_members pm WHERE pm.project_id = ir.project_id AND pm.user_id = ?
       ))`);
       imgParams.push(userId, userId);
     }
     const imgWhereClause = imgWhere.length ? `WHERE ${imgWhere.join(' AND ')}` : '';
-    const imgRows = db.prepare(`SELECT * FROM image_records ${imgWhereClause} ORDER BY created_at DESC`).all(...imgParams);
+    const imgRows = db.prepare(
+      `SELECT ir.*, p.name AS project_name
+         FROM image_records ir
+         LEFT JOIN projects p ON p.id = ir.project_id
+         ${imgWhereClause}
+         ORDER BY ir.created_at DESC`
+    ).all(...imgParams);
     const imgTasks = imgRows.map((r) => imageRecordToTask(r));
     // 合并音频
     const audioRows = queryAudioRows({ db, projectId, isAdmin, userId, status });
     const audioTasks = audioRows.map((r) => audioGenerationToTask(r));
-    const merged = [...videoTasks, ...imgTasks, ...audioTasks].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    // 合并画质增强
+    const enhRows = queryEnhancementRows({ db, projectId, isAdmin, userId, status });
+    const enhTasks = enhRows.map((r) => enhancementRowToTask(r));
+    const merged = [...videoTasks, ...imgTasks, ...audioTasks, ...enhTasks].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
     return {
       tasks: merged.slice((page - 1) * pageSize, page * pageSize),
       total: merged.length,

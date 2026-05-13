@@ -3,7 +3,7 @@ import * as downloadService from '../services/downloadService';
 import type { DownloadTask } from '../types/index';
 import { useApp } from '../context/AppContext';
 import { formatDateTime, elapsedSeconds, useUserTimezone } from '../utils/datetime';
-import { videoUrlToMp3Blob, downloadBlob } from '../utils/audioExtractor';
+import { videoUrlToMp3Blob, downloadBlob, ExpiredVideoUrlError } from '../utils/audioExtractor';
 
 async function downloadImageUrl(url: string, filename?: string) {
   try {
@@ -85,7 +85,7 @@ export default function DownloadManagementPage() {
   // 各源表（tasks / image_records / audio_generations）的 id 各自自增,易冲突。
   // 用 model_type + id 作为行唯一键 + 显示 ID 类型前缀,避免歧义。
   const rowKey = (t: DownloadTask) => `${t.model_type}:${t.id}`;
-  const TYPE_PREFIX: Record<string, string> = { video: 'V', image: 'I', audio: 'A' };
+  const TYPE_PREFIX: Record<string, string> = { video: 'V', image: 'I', audio: 'A', enhancement: 'E' };
   const displayId = (t: DownloadTask) => `${TYPE_PREFIX[t.model_type] || 'T'}-${t.id.toString().padStart(6, '0')}`;
 
   // 轮询引用
@@ -287,6 +287,8 @@ export default function DownloadManagementPage() {
       downloadService.markImageRecordDownloaded(task.id).then(() => loadTasks()).catch(rollback);
     } else if (task.model_type === 'audio') {
       downloadService.markAudioGenerationDownloaded(task.id).then(() => loadTasks()).catch(rollback);
+    } else if (task.model_type === 'enhancement') {
+      downloadService.markEnhancementDownloaded(task.id).then(() => loadTasks()).catch(rollback);
     }
     // video 由 handleBrowserDownload 内部已调 markDownloaded + loadTasks，这里不重复
   };
@@ -308,7 +310,11 @@ export default function DownloadManagementPage() {
       downloadBlob(blob, `audio_${task.id}.mp3`);
       markPersistDownloaded(task);
     } catch (e) {
-      alert('转码失败：' + ((e as Error)?.message || ''));
+      if (e instanceof ExpiredVideoUrlError) {
+        alert(e.message);
+      } else {
+        alert('转码失败：' + ((e as Error)?.message || ''));
+      }
     } finally {
       audioConvertingRef.current.delete(task.id);
       setAudioConverting((m) => { const x = { ...m }; delete x[task.id]; return x; });
@@ -326,15 +332,24 @@ export default function DownloadManagementPage() {
   };
 
   const handleBrowserDownload = async (task: DownloadTask) => {
-    const filename = `task_${task.id}_${(task.prompt || 'video').substring(0, 20).replace(/[^\w\u4e00-\u9fa5]/g, '_')}.mp4`;
+    const baseName = task.model_type === 'enhancement' ? 'enhanced' : 'task';
+    const filename = `${baseName}_${task.id}_${(task.prompt || 'video').substring(0, 20).replace(/[^\w\u4e00-\u9fa5]/g, '_')}.mp4`;
     // 有远程 URL 直接走代理下载，无需先保存到服务器
     if (task.video_url) {
       downloadService.downloadVideoFromRemoteUrl(task.video_url, filename);
       // markDownloaded after triggering download (fire-and-forget refresh)
-      downloadService.markDownloaded(task.id).then(() => loadTasks()).catch(() => {});
+      if (task.model_type === 'enhancement') {
+        downloadService.markEnhancementDownloaded(task.id).then(() => loadTasks()).catch(() => {});
+      } else {
+        downloadService.markDownloaded(task.id).then(() => loadTasks()).catch(() => {});
+      }
       return;
     }
-    // 兜底：已下载到服务器的走 token 下载
+    // 兜底：已下载到服务器的走 token 下载（仅视频任务支持）
+    if (task.model_type !== 'video') {
+      alert('该任务没有可下载的远程 URL');
+      return;
+    }
     await withDownloadingState(task.id, async () => {
       try {
         await downloadService.downloadLocalVideoFile(task.id, filename);
@@ -398,6 +413,8 @@ export default function DownloadManagementPage() {
         await downloadService.deleteImageRecord(task.id);
       } else if (task.model_type === 'audio') {
         await downloadService.deleteAudioGeneration(task.id);
+      } else if (task.model_type === 'enhancement') {
+        await downloadService.deleteEnhancement(task.id);
       } else {
         await downloadService.deleteTask(task.id);
       }
@@ -539,6 +556,7 @@ export default function DownloadManagementPage() {
             <option value="video">视频</option>
             <option value="image">图片</option>
             <option value="audio">音频</option>
+            <option value="enhancement">画质增强</option>
           </select>
         </div>
 
@@ -635,9 +653,14 @@ export default function DownloadManagementPage() {
                         ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30'
                         : task.model_type === 'audio'
                         ? 'bg-pink-500/20 text-pink-400 border border-pink-500/30'
+                        : task.model_type === 'enhancement'
+                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
                         : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
                     }`}>
-                      {task.model_type === 'video' ? '视频' : task.model_type === 'audio' ? '音频' : '图片'}
+                      {task.model_type === 'video' ? '视频'
+                        : task.model_type === 'audio' ? '音频'
+                        : task.model_type === 'enhancement' ? '画质增强'
+                        : '图片'}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-sm">

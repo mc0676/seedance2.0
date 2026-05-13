@@ -122,6 +122,129 @@ export function initDatabase() {
     console.log('[database] 迁移完成：audio_generations.downloaded_at 已添加');
   }
 
+  // 增量迁移：video_enhancements 升级到新计费模型
+  // 1) 删除旧 enhancement_pricing 表（按秒积分模型已废弃，新规则改为系数表 + 系统配置）
+  // 2) target_resolution CHECK 加入 '2k'，新增 target_fps / result_resolution / result_fps 列
+  // 3) 写入默认 system_config 'enhancement_base_credits_per_minute'
+  const oldPricingExists = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='enhancement_pricing'")
+    .get();
+  if (oldPricingExists) {
+    console.log('[database] 迁移：删除旧 enhancement_pricing 表（按秒积分模型已废弃）...');
+    db.exec(`DROP TABLE enhancement_pricing`);
+    console.log('[database] 迁移完成：enhancement_pricing 已删除');
+  }
+  db.prepare(
+    `INSERT OR IGNORE INTO system_config (key, value, description)
+     VALUES ('enhancement_base_credits_per_minute', '75', '画质增强基础单价（积分/分钟）')`
+  ).run();
+
+  const veSqlRow = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='video_enhancements'"
+  ).get();
+  const veSql = veSqlRow?.sql || '';
+  const veColumns = db.prepare("PRAGMA table_info(video_enhancements)").all().map((c) => c.name);
+  // 重建条件：
+  //  - CHECK 不含 '2k'（仍是 '720p','1080p','4k'）
+  //  - 或缺少 resolution_limit 列（新加的精确短边像素，与 target_resolution 互斥）
+  //  - 或 target_resolution 仍为 NOT NULL（精确模式需把它置 NULL）
+  //  - 缺 downloaded_at 时用 ALTER 单独补，不重建（见下方 else 分支）
+  const needsRebuild =
+    (veSql && !veSql.includes("'2k'")) ||
+    !veColumns.includes('resolution_limit') ||
+    /target_resolution\s+TEXT\s+NOT\s+NULL/i.test(veSql);
+  if (needsRebuild) {
+    console.log('[database] 迁移：video_enhancements 重建以支持自定义短边/全部预设档位...');
+    db.exec(`
+      ALTER TABLE video_enhancements RENAME TO video_enhancements_old;
+      CREATE TABLE video_enhancements (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id INTEGER,
+        user_id INTEGER NOT NULL,
+        project_id INTEGER,
+        source_video_url TEXT NOT NULL,
+        mediakit_task_id TEXT,
+        tool_version TEXT NOT NULL DEFAULT 'standard' CHECK (tool_version IN ('standard', 'professional')),
+        scene TEXT NOT NULL DEFAULT 'common' CHECK (scene IN ('aigc', 'short_series', 'ugc', 'old_film', 'common')),
+        target_resolution TEXT,
+        resolution_limit INTEGER,
+        target_fps INTEGER NOT NULL DEFAULT 30,
+        duration_seconds INTEGER,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'done', 'error')),
+        enhanced_video_url TEXT,
+        result_resolution TEXT,
+        result_fps INTEGER,
+        credits_used INTEGER DEFAULT 0,
+        error_message TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        finished_at DATETIME,
+        downloaded_at DATETIME,
+        FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+      INSERT INTO video_enhancements (
+        id, task_id, user_id, project_id, source_video_url, mediakit_task_id,
+        tool_version, scene, target_resolution,
+        target_fps, duration_seconds, status,
+        enhanced_video_url, result_resolution, result_fps,
+        credits_used, error_message, created_at, finished_at
+      )
+      SELECT
+        id, task_id, user_id, project_id, source_video_url, mediakit_task_id,
+        tool_version, scene, target_resolution,
+        COALESCE(target_fps, 30), duration_seconds, status,
+        enhanced_video_url,
+        ${veColumns.includes('result_resolution') ? 'result_resolution' : 'NULL'},
+        ${veColumns.includes('result_fps') ? 'result_fps' : 'NULL'},
+        credits_used, error_message, created_at, finished_at
+      FROM video_enhancements_old;
+      DROP TABLE video_enhancements_old;
+      CREATE INDEX IF NOT EXISTS idx_video_enhancements_task ON video_enhancements(task_id);
+      CREATE INDEX IF NOT EXISTS idx_video_enhancements_status ON video_enhancements(status);
+      CREATE INDEX IF NOT EXISTS idx_video_enhancements_user ON video_enhancements(user_id);
+    `);
+    console.log('[database] 迁移完成：video_enhancements 已重建');
+  } else {
+    // 极少情况下表结构已大致正确，仅按需补列
+    if (!veColumns.includes('target_fps')) {
+      db.exec(`ALTER TABLE video_enhancements ADD COLUMN target_fps INTEGER NOT NULL DEFAULT 30`);
+    }
+    if (!veColumns.includes('result_resolution')) {
+      db.exec(`ALTER TABLE video_enhancements ADD COLUMN result_resolution TEXT`);
+    }
+    if (!veColumns.includes('result_fps')) {
+      db.exec(`ALTER TABLE video_enhancements ADD COLUMN result_fps INTEGER`);
+    }
+    if (!veColumns.includes('resolution_limit')) {
+      db.exec(`ALTER TABLE video_enhancements ADD COLUMN resolution_limit INTEGER`);
+    }
+    if (!veColumns.includes('downloaded_at')) {
+      db.exec(`ALTER TABLE video_enhancements ADD COLUMN downloaded_at DATETIME`);
+    }
+  }
+
+  // 启动清理：删除「孤儿中转视频任务」——曾经删除 audio_generations 时未级联清掉 tasks 行,
+  // 在 tasks 表里残留为 task_kind='audio_intermediate' 但已无 audio_generations 引用。
+  // 现在 DELETE /api/audio-generations/:id 会同步删，所以这里只清扫历史残留即可。
+  try {
+    const orphanInfo = db.prepare(
+      `SELECT COUNT(*) AS n FROM tasks
+       WHERE task_kind = 'audio_intermediate'
+         AND NOT EXISTS (SELECT 1 FROM audio_generations ag WHERE ag.task_id = tasks.id)`
+    ).get();
+    if (orphanInfo?.n > 0) {
+      console.log(`[database] 清理孤儿中转视频任务 ${orphanInfo.n} 条（task_kind='audio_intermediate' 但 audio_generations 无引用）...`);
+      const result = db.prepare(
+        `DELETE FROM tasks
+         WHERE task_kind = 'audio_intermediate'
+           AND NOT EXISTS (SELECT 1 FROM audio_generations ag WHERE ag.task_id = tasks.id)`
+      ).run();
+      console.log(`[database] 已清理 ${result.changes} 条孤儿任务`);
+    }
+  } catch (e) {
+    console.warn('[database] 孤儿中转视频任务清理失败（不阻塞启动）：', e.message);
+  }
+
   console.log(`[database] 数据库初始化成功：${DB_PATH}`);
   return db;
 }

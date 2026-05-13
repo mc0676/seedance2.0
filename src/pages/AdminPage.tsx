@@ -27,8 +27,8 @@ import {
   updateWuyinKey,
   getMediaKitKey,
   updateMediaKitKey,
-  listEnhancementPricing,
-  updateEnhancementPricing,
+  getEnhancementPricing as fetchEnhancementPricing,
+  updateEnhancementBaseRate,
   type AdminEnhancementPricing,
   getAudioGenConfig,
   updateAudioGenConfig,
@@ -162,7 +162,7 @@ export default function AdminPage() {
   const [mediaKitKey, setMediaKitKey] = useState('');
   const [mediaKitKeyEditing, setMediaKitKeyEditing] = useState(false);
   const [mediaKitKeyDraft, setMediaKitKeyDraft] = useState('');
-  const [enhancementPricing, setEnhancementPricing] = useState<AdminEnhancementPricing[]>([]);
+  const [enhancementPricing, setEnhancementPricing] = useState<AdminEnhancementPricing | null>(null);
 
   // 音频生成中转配置
   const [audioCfg, setAudioCfg] = useState<AudioGenConfig | null>(null);
@@ -516,7 +516,7 @@ export default function AdminPage() {
       loadVolcKeyGroups();
       getWuyinKey().then((d) => setWuyinKey(d.key)).catch(() => {});
       getMediaKitKey().then((d) => setMediaKitKey(d.key)).catch(() => {});
-      listEnhancementPricing().then(setEnhancementPricing).catch(() => {});
+      fetchEnhancementPricing().then(setEnhancementPricing).catch(() => {});
       getAudioGenConfig().then((d) => { setAudioCfg(d.config); setAudioCfgOptions(d.options); }).catch(() => {});
       loadVolcAkSk();
     }
@@ -639,13 +639,10 @@ export default function AdminPage() {
     finally { setAudioCfgSaving(false); }
   };
 
-  const handleUpdateEnhancementPricing = async (
-    toolVersion: 'standard' | 'professional',
-    patch: Partial<Pick<AdminEnhancementPricing, 'credits_per_second' | 'enabled' | 'label' | 'description'>>,
-  ) => {
+  const handleUpdateEnhancementBaseRate = async (baseCreditsPerMinute: number) => {
     try {
-      await updateEnhancementPricing(toolVersion, patch);
-      const fresh = await listEnhancementPricing();
+      await updateEnhancementBaseRate(baseCreditsPerMinute);
+      const fresh = await fetchEnhancementPricing();
       setEnhancementPricing(fresh);
     } catch (e) { alert(e instanceof Error ? e.message : '保存失败'); }
   };
@@ -1557,44 +1554,58 @@ export default function AdminPage() {
 
           {/* 计费配置 */}
           <div className="mt-6">
-            <h3 className="text-sm font-semibold text-white mb-2">画质增强计费</h3>
-            <p className="text-xs text-gray-500 mb-3">每秒视频积分 × 视频时长 = 单次扣费</p>
-            <div className="space-y-2">
-              {enhancementPricing.map((p) => (
-                <div key={p.tool_version} className="flex items-center gap-3 bg-[#0f111a] rounded-xl px-3 py-2">
-                  <div className="flex-shrink-0 w-24">
-                    <div className="text-sm text-white">{p.label}</div>
-                    <div className="text-[10px] text-gray-500">{p.tool_version}</div>
+            <h3 className="text-sm font-semibold text-white mb-2">画质增强基础单价</h3>
+            <p className="text-xs text-gray-500 mb-3">
+              新规则与 MediaKit 官方计费表对齐：单次扣费 = 输出分钟数 × 系数 × 基础单价。
+              系数表（标准/专业 × 720p/1080p/2k/4k × ≤30/&gt;30fps 共 16 项）固定不可调；
+              如需整体加成或打折，请调整下方基础单价。默认 75 = 0.75 元/分钟 × 100 积分/元。
+            </p>
+            {enhancementPricing && (
+              <div className="space-y-3">
+                <div className="flex items-center gap-3 bg-[#0f111a] rounded-xl px-3 py-2">
+                  <div className="flex-shrink-0 w-32">
+                    <div className="text-sm text-white">基础单价</div>
+                    <div className="text-[10px] text-gray-500">enhancement_base_credits_per_minute</div>
                   </div>
                   <div className="flex items-center gap-1 text-xs text-gray-400">
                     <input
                       type="number"
                       min={0}
-                      defaultValue={p.credits_per_second}
+                      step="0.01"
+                      defaultValue={enhancementPricing.baseCreditsPerMinute}
                       onBlur={(e) => {
                         const v = Number(e.target.value);
-                        if (v !== p.credits_per_second) {
-                          void handleUpdateEnhancementPricing(p.tool_version, { credits_per_second: v });
+                        if (Number.isFinite(v) && v !== enhancementPricing.baseCreditsPerMinute) {
+                          void handleUpdateEnhancementBaseRate(v);
                         }
                       }}
-                      className="w-20 px-2 py-1 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm"
+                      className="w-24 px-2 py-1 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm"
                     />
-                    <span>积分/秒</span>
+                    <span>积分/分钟</span>
                   </div>
-                  <label className="flex items-center gap-1.5 text-xs text-gray-400 ml-auto cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={!!p.enabled}
-                      onChange={(e) => void handleUpdateEnhancementPricing(p.tool_version, { enabled: e.target.checked ? 1 : 0 })}
-                    />
-                    启用
-                  </label>
+                  <button
+                    onClick={() => void handleUpdateEnhancementBaseRate(enhancementPricing.defaultBaseCreditsPerMinute)}
+                    className="ml-auto text-[11px] px-2 py-1 rounded border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition-all"
+                  >
+                    恢复默认 ({enhancementPricing.defaultBaseCreditsPerMinute})
+                  </button>
                 </div>
-              ))}
-              {enhancementPricing.length === 0 && (
-                <div className="text-xs text-gray-600">暂无配置（数据库初始化后会自动写入两条默认行）</div>
-              )}
-            </div>
+                <details className="bg-[#0f111a] rounded-xl px-3 py-2 text-xs text-gray-400">
+                  <summary className="cursor-pointer text-gray-300">查看完整 16 项系数表</summary>
+                  <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-0.5 font-mono">
+                    {enhancementPricing.coefficients.map((c) => (
+                      <div key={`${c.tool_version}-${c.resolution_tier}-${c.fps_tier}`} className="flex justify-between">
+                        <span>{c.tool_version === 'standard' ? '标准' : '专业'} · {c.resolution_tier} · {c.fps_tier === 'le30' ? '≤30fps' : '>30fps'}</span>
+                        <span className="text-gray-300">×{c.coefficient}</span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              </div>
+            )}
+            {!enhancementPricing && (
+              <div className="text-xs text-gray-600">加载中...</div>
+            )}
           </div>
         </div>
 

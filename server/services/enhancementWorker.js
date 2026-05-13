@@ -13,6 +13,7 @@
 import { getDatabase } from '../database/index.js';
 import { getEnhanceTask } from './mediaKitService.js';
 import { settleForEnhancement, releaseForEnhancement } from './creditLockService.js';
+import { estimate as estimateEnhancement } from './enhancementPricingService.js';
 
 const POLL_INTERVAL_MS = 30_000;
 const MAX_RUNNING_HOURS = 48;
@@ -24,12 +25,6 @@ const seenStatuses = new Set();
 function getApiKey() {
   const row = getDatabase().prepare("SELECT value FROM system_config WHERE key = 'mediakit_api_key'").get();
   return row?.value || '';
-}
-
-function getPricing(toolVersion) {
-  return getDatabase().prepare(
-    `SELECT credits_per_second FROM enhancement_pricing WHERE tool_version = ? AND enabled = 1`
-  ).get(toolVersion);
 }
 
 async function syncOne(row) {
@@ -61,23 +56,42 @@ async function syncOne(row) {
   if (isDone) {
     const result = payload;
     const videoUrl = result.video_url;
-    const duration = Math.max(1, Math.round(Number(result.duration) || row.duration_seconds || 0));
-    const pricing = getPricing(row.tool_version);
-    const cps = pricing?.credits_per_second || 0;
+    // 优先用 MediaKit 返回的真实 duration / resolution / fps，缺失时回退用户提交时的预设
+    const realDurationSec = Math.max(0, Number(result.duration) || row.duration_seconds || 0);
+    const realResolution = result.resolution || row.target_resolution || row.resolution_limit || null;
+    const realFps = Number(result.fps) || row.target_fps || 30;
+
     const user = db.prepare('SELECT unlimited_credits FROM users WHERE id = ?').get(row.user_id);
-    const actualCredits = user?.unlimited_credits ? 0 : duration * cps;
+    let actualCredits = 0;
+    if (!user?.unlimited_credits) {
+      const est = estimateEnhancement({
+        toolVersion: row.tool_version,
+        resolution: realResolution,
+        fps: realFps,
+        durationSec: realDurationSec,
+      });
+      actualCredits = est.credits;
+    }
 
     db.prepare(
       `UPDATE video_enhancements
-       SET status='done', enhanced_video_url=?, duration_seconds=?, credits_used=?, finished_at=CURRENT_TIMESTAMP
+       SET status='done', enhanced_video_url=?, duration_seconds=?, result_resolution=?, result_fps=?,
+           credits_used=?, finished_at=CURRENT_TIMESTAMP
        WHERE id=?`
-    ).run(videoUrl || null, duration, actualCredits, row.id);
+    ).run(
+      videoUrl || null,
+      Math.round(realDurationSec),
+      String(realResolution || ''),
+      Math.round(realFps),
+      actualCredits,
+      row.id,
+    );
     try {
       settleForEnhancement({ enhancementId: row.id, actualCredits });
     } catch (e) {
       console.error(`[增强 worker] settle 失败 enhancement=${row.id}:`, e.message);
     }
-    console.log(`[增强 worker] enhancement=${row.id} 完成，duration=${duration}s 积分=${actualCredits}`);
+    console.log(`[增强 worker] enhancement=${row.id} 完成 dur=${realDurationSec}s res=${realResolution} fps=${realFps} 实扣=${actualCredits}`);
   } else if (isFailed) {
     const errMsg = resp?.error?.message || resp?.message || '画质增强失败';
     db.prepare(

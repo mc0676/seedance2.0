@@ -11,6 +11,7 @@ import { formatDateTime, useUserTimezone } from '../utils/datetime';
 type Tab = 'history' | 'external';
 
 const SCENE_LABEL: Record<VideoEnhancement['scene'], string> = {
+  common: '通用',
   aigc: 'AIGC',
   short_series: '短剧',
   ugc: 'UGC',
@@ -447,18 +448,25 @@ function RecordRow({ r }: { r: VideoEnhancement }) {
               {badge.text}
             </span>
             <span className="text-xs text-gray-300">
-              {SCENE_LABEL[r.scene]} · {VERSION_LABEL[r.tool_version]} · {r.target_resolution}
+              {SCENE_LABEL[r.scene]} · {VERSION_LABEL[r.tool_version]} · {r.target_resolution ?? (r.resolution_limit ? `${r.resolution_limit}px` : '-')}
             </span>
             {r.task_id == null && (
               <span className="text-[10px] text-gray-500 border border-gray-700 rounded px-1.5 py-0.5">
                 外部视频
               </span>
             )}
+            {r.status === 'done' && r.credits_used != null && (
+              <span
+                className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 leading-none"
+                title="本次实际扣除积分"
+              >
+                {r.credits_used > 0 ? `${r.credits_used}积分` : '未计费'}
+              </span>
+            )}
           </div>
           <div className="text-[11px] text-gray-500 mt-1.5">
             提交于 {formatDateTime(r.created_at)}
             {r.duration_seconds ? ` · 时长 ${r.duration_seconds}s` : ''}
-            {r.credits_used ? ` · 积分 ${r.credits_used}` : ''}
           </div>
           {r.status === 'error' && r.error_message && (
             <div className="text-[11px] text-red-400 mt-1.5 break-all">{r.error_message}</div>

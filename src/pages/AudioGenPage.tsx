@@ -4,7 +4,7 @@ import { uploadToOss } from '../services/ossService';
 import { submitAudioGeneration, listAudioGenerations, getAudioGeneration, getAudioGenPublicConfig, estimateAudioGenCredits, type AudioGenPublicConfig, type AudioGenEstimate } from '../services/audioService';
 import { getProjectAssets } from '../services/projectService';
 import { getCreditBalance, type CreditBalance } from '../services/pricingService';
-import { videoUrlToMp3Blob, downloadBlob } from '../utils/audioExtractor';
+import { videoUrlToMp3Blob, downloadBlob, ExpiredVideoUrlError, isSignedUrlExpired } from '../utils/audioExtractor';
 import { formatDateTime, useUserTimezone } from '../utils/datetime';
 import type { AudioGeneration, ProjectAsset } from '../types';
 import { MicIcon, SpinnerIcon, DownloadIcon, CloseIcon } from '../components/Icons';
@@ -51,6 +51,10 @@ export default function AudioGenPage() {
     return init;
   });
   const [converting, setConverting] = useState<Record<number, string>>({}); // id → stage label
+  // 记录哪些条目的源视频已过期（签名 URL 失效）。在自动转码前先嗅探一遍，
+  // 命中的就直接打标，不再触发后台 fetch / decode，也不弹窗。
+  // 用户点下载按钮时再用此 set 决定是否弹友好提示。
+  const [expiredIds, setExpiredIds] = useState<Set<number>>(new Set());
 
   // 中转视频运行配置（来自管理后台），用于显示与积分估算
   // 初始化为与后端 AUDIO_GEN_DEFAULTS 一致的兜底值，避免 fetch 失败时 UI 空白或显示陈旧文字
@@ -160,15 +164,25 @@ export default function AudioGenPage() {
   }, [items]);
 
   // 进入 done 后自动转码生成预览（不再自动下载）。模块级缓存 + inflight 锁保证每个 id 只转一次，
-  // 来回切换菜单不会重复转码或下载
+  // 来回切换菜单不会重复转码或下载。
+  // 已过期的源 URL 直接打 expiredIds 标，不进自动转码流程，避免一次性弹一堆 alert。
   useEffect(() => {
+    let dirty = false;
+    const newExpired = new Set(expiredIds);
     for (const it of items) {
       if (it.status !== 'done') continue;
       const videoUrl = it.intermediate_video_url || it.task_video_url;
       if (!videoUrl) continue;
       if (mp3Cache.has(it.id) || inflightConversion.has(it.id)) continue;
+      if (newExpired.has(it.id)) continue;
+      if (isSignedUrlExpired(videoUrl)) {
+        newExpired.add(it.id);
+        dirty = true;
+        continue;
+      }
       void convertForPreview(it.id, videoUrl);
     }
+    if (dirty) setExpiredIds(newExpired);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items]);
 
@@ -187,6 +201,13 @@ export default function AudioGenPage() {
       setPreviews((m) => ({ ...m, [id]: url }));
     } catch (e) {
       console.error('[audio-gen] 转码失败', id, e);
+      // 自动转码阶段不弹窗 —— 把过期/不可达的条目标记到 expiredIds，渲染到卡片上
+      if (e instanceof ExpiredVideoUrlError) {
+        setExpiredIds((prev) => {
+          if (prev.has(id)) return prev;
+          const next = new Set(prev); next.add(id); return next;
+        });
+      }
     } finally {
       inflightConversion.delete(id);
       setConverting((m) => { const x = { ...m }; delete x[id]; return x; });
@@ -249,11 +270,21 @@ export default function AudioGenPage() {
     }
     const videoUrl = it.intermediate_video_url || it.task_video_url;
     if (!videoUrl) { alert('视频地址不可用'); return; }
+    // 自动转码阶段已嗅探过过期 URL，命中的不再尝试转码
+    if (expiredIds.has(it.id) || isSignedUrlExpired(videoUrl)) {
+      alert('音频源视频链接已过期（火山引擎签名 URL 有效期 48 小时），请重新生成。');
+      return;
+    }
     if (inflightConversion.has(it.id)) return; // 正在转码，按钮已显示进度，避免重入
     await convertForPreview(it.id, videoUrl);
     const after = mp3Cache.get(it.id);
-    if (after) downloadBlob(after.blob, `audio_${it.id}.mp3`);
-    else alert('转码失败');
+    if (after) {
+      downloadBlob(after.blob, `audio_${it.id}.mp3`);
+    } else if (expiredIds.has(it.id)) {
+      alert('音频源视频链接已过期（火山引擎签名 URL 有效期 48 小时），请重新生成。');
+    } else {
+      alert('转码失败，请稍后再试');
+    }
   }
 
   return (
@@ -394,6 +425,7 @@ export default function AudioGenPage() {
               const convStage = converting[it.id];
               const previewUrl = previews[it.id];
               const hasVideo = !!(it.intermediate_video_url || it.task_video_url);
+              const isExpired = expiredIds.has(it.id);
               return (
                 <div key={it.id} className="bg-[#0f111a] border border-gray-800 rounded-xl p-4 flex gap-3">
                   <img src={it.reference_image_url} alt="ref" className="w-16 h-16 rounded-lg object-cover flex-shrink-0 bg-black" />
@@ -402,8 +434,11 @@ export default function AudioGenPage() {
                       <span className={`px-2 py-0.5 text-xs rounded border ${badge.cls}`}>{badge.text}</span>
                       <span className="text-xs text-gray-500">#{it.id}</span>
                       {it.status === 'done' && (
-                        <span className="ml-auto text-xs text-amber-300/90" title="本次实际扣除积分">
-                          {it.credits_used > 0 ? `−${it.credits_used} 积分` : '未计费'}
+                        <span
+                          className="ml-auto text-[11px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 leading-none"
+                          title="本次实际扣除积分"
+                        >
+                          {it.credits_used > 0 ? `${it.credits_used}积分` : '未计费'}
                         </span>
                       )}
                     </div>
@@ -422,7 +457,11 @@ export default function AudioGenPage() {
                     )}
                     {it.status === 'done' && hasVideo && (
                       <div className="space-y-2 mt-1">
-                        {previewUrl ? (
+                        {isExpired ? (
+                          <div className="text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-md px-2 py-1.5 leading-snug">
+                            音频源视频链接已过期
+                          </div>
+                        ) : previewUrl ? (
                           <audio controls src={previewUrl} className="w-full h-9" />
                         ) : convStage ? (
                           <div className="text-xs text-gray-400 inline-flex items-center gap-1.5">
@@ -433,9 +472,10 @@ export default function AudioGenPage() {
                           <button
                             onClick={() => void handleDownload(it)}
                             disabled={!!convStage}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-purple-500/20 hover:bg-purple-500/30 border border-purple-500/40 text-purple-300 disabled:opacity-50"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-purple-500/20 hover:bg-purple-500/30 border border-purple-500/40 text-purple-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                            title={isExpired ? '源视频链接已过期，点击查看详情' : undefined}
                           >
-                            <DownloadIcon className="w-3.5 h-3.5" />下载 MP3
+                            <DownloadIcon className="w-3.5 h-3.5" />{isExpired ? '下载 MP3（已过期）' : '下载 MP3'}
                           </button>
                           <button
                             onClick={() => handleReuse(it)}
