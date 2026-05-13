@@ -60,12 +60,13 @@ export function markError(id, errorMessage) {
 export function listByUser({ userId, isAdmin = false, page = 1, pageSize = 20 }) {
   const db = getDatabase();
   const offset = (page - 1) * pageSize;
-  // 工作组共享，与视频生成历史一致
-  const where = isAdmin ? '1=1' : `(
+  // 工作组共享，与视频生成历史一致；过滤已软删
+  const ownership = isAdmin ? '1=1' : `(
     a.user_id = ? OR EXISTS (
       SELECT 1 FROM project_members pm WHERE pm.project_id = a.project_id AND pm.user_id = ?
     )
   )`;
+  const where = `a.deleted_at IS NULL AND ${ownership}`;
   const params = isAdmin ? [] : [userId, userId];
   const total = db.prepare(`SELECT COUNT(*) AS n FROM audio_generations a WHERE ${where}`).get(...params).n;
   const items = db.prepare(`

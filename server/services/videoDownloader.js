@@ -94,6 +94,7 @@ function audioGenerationToTask(r) {
 function queryAudioRows({ db, projectId, isAdmin, userId, status }) {
   const where = [];
   const params = [];
+  where.push('a.deleted_at IS NULL');
   if (projectId) { where.push('a.project_id = ?'); params.push(projectId); }
   // 工作组共享：与视频任务一致——同 project_members 互相可见
   if (!isAdmin && userId !== null) {
@@ -186,6 +187,7 @@ function enhancementRowToTask(r) {
 function queryEnhancementRows({ db, projectId, isAdmin, userId, status }) {
   const where = [];
   const params = [];
+  where.push('e.deleted_at IS NULL');
   if (projectId) { where.push('e.project_id = ?'); params.push(projectId); }
   if (!isAdmin && userId !== null) {
     where.push(`(e.user_id = ? OR EXISTS (
@@ -488,6 +490,8 @@ export function getDownloadTasks(options = {}) {
 
   // 默认只显示 task_kind='video'，过滤掉音频生成的中间产物（audio_intermediate）
   whereClauses.push("(t.task_kind IS NULL OR t.task_kind = 'video')");
+  // 软删过滤
+  whereClauses.push('t.deleted_at IS NULL');
 
   // 项目过滤（前端按当前工作组限定）
   if (projectId) {
@@ -519,7 +523,7 @@ export function getDownloadTasks(options = {}) {
 
   // 图片类型：直接从 image_records 返回
   if (type === 'image') {
-    const imgWhere = [];
+    const imgWhere = ['ir.deleted_at IS NULL'];
     const imgParams = [];
     if (projectId) { imgWhere.push('ir.project_id = ?'); imgParams.push(projectId); }
     if (!isAdmin && userId !== null) {
@@ -642,7 +646,7 @@ export function getDownloadTasks(options = {}) {
         `SELECT id, task_id, status, tool_version, scene, target_resolution,
                 enhanced_video_url, error_message, credits_used, duration_seconds,
                 created_at, finished_at
-         FROM video_enhancements WHERE task_id IN (${placeholders})
+         FROM video_enhancements WHERE task_id IN (${placeholders}) AND deleted_at IS NULL
          ORDER BY created_at DESC`
       ).all(...allTaskIds);
       const enhancementsByTask = {};
@@ -656,7 +660,7 @@ export function getDownloadTasks(options = {}) {
       }
     }
     // 合并图片
-    const imgWhere = [];
+    const imgWhere = ['ir.deleted_at IS NULL'];
     const imgParams = [];
     if (projectId) { imgWhere.push('ir.project_id = ?'); imgParams.push(projectId); }
     if (!isAdmin && userId !== null) {
@@ -710,7 +714,7 @@ export function getDownloadTasks(options = {}) {
       `SELECT id, task_id, status, tool_version, scene, target_resolution,
               enhanced_video_url, error_message, credits_used, duration_seconds,
               created_at, finished_at
-       FROM video_enhancements WHERE task_id IN (${placeholders})
+       FROM video_enhancements WHERE task_id IN (${placeholders}) AND deleted_at IS NULL
        ORDER BY created_at DESC`
     ).all(...taskIds);
     for (const e of enhancements) {

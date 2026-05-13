@@ -1111,7 +1111,7 @@ app.get('/api/image-records', authenticate, (req, res) => {
     const limit = Math.min(parseInt(pageSize) || 20, 100);
     const offset = (parseInt(page) - 1) * limit;
     const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
-    const conditions = [];
+    const conditions = ['deleted_at IS NULL'];
     const params = [];
     // 工作组共享：管理员看全部；普通用户看自己创建的 + 所在工作组其他成员创建的
     if (!isAdmin) {
@@ -1187,6 +1187,11 @@ app.post('/api/audio-generations/:id/mark-downloaded', authenticate, (req, res) 
 });
 
 // DELETE /api/image-records/:id - 删除图片记录（同 project_members 可删；管理员任意）
+// 不动 credit_locks：AUTOINCREMENT 保证未来 id 不会复用，孤儿 credit_locks 不会触发 UNIQUE 冲突；
+// 保留它们是有价值的操作账本（locked/actual/meta/release_reason）。
+// 真财务审计在 usage_logs（settle 时已写入）。
+// DELETE /api/image-records/:id - 软删图片记录
+// 仅 UPDATE deleted_at；保留 credit_locks 外键以备审计。
 app.delete('/api/image-records/:id', authenticate, (req, res) => {
   try {
     const db = getDatabase();
@@ -1194,24 +1199,25 @@ app.delete('/api/image-records/:id', authenticate, (req, res) => {
     if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
     const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
     const row = isAdmin
-      ? db.prepare('SELECT id FROM image_records WHERE id = ?').get(id)
-      : db.prepare(`SELECT id FROM image_records WHERE id = ? AND (
+      ? db.prepare('SELECT id, deleted_at FROM image_records WHERE id = ?').get(id)
+      : db.prepare(`SELECT id, deleted_at FROM image_records WHERE id = ? AND (
           user_id = ? OR EXISTS (
             SELECT 1 FROM project_members pm WHERE pm.project_id = image_records.project_id AND pm.user_id = ?
           )
         )`).get(id, req.user.id, req.user.id);
     if (!row) return res.status(404).json({ error: '记录不存在或无权限' });
-    db.prepare('DELETE FROM image_records WHERE id = ?').run(id);
+    if (row.deleted_at) return res.json({ success: true });
+    db.prepare('UPDATE image_records SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// DELETE /api/audio-generations/:id - 删除音频记录
-// 音频生成是「reference_image + 提示词 → 中转视频 → 浏览器端转 mp3」三段式，
+// DELETE /api/audio-generations/:id - 软删音频记录 + 同步软删中转视频任务
 // 中转视频是 tasks 表里 task_kind='audio_intermediate' 的隐藏视频任务，专属于这条 audio_generations。
-// 删除音频记录时必须级联删掉它，否则 tasks 表会累积无 owner 的孤儿行（虽然下载管理的视频筛选已经过滤掉它们，但仍浪费存储且与 audio_generations 对不齐）。
+// 软删两者后，下载管理 / 视频列表的 deleted_at IS NULL 过滤会同时把它们从用户视野里隐去；
+// credit_locks 中 task_id / 业务 id 的外键继续指向真实存在的行（未硬删），可正常审计。
 app.delete('/api/audio-generations/:id', authenticate, (req, res) => {
   try {
     const db = getDatabase();
@@ -1219,21 +1225,21 @@ app.delete('/api/audio-generations/:id', authenticate, (req, res) => {
     if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
     const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
     const row = isAdmin
-      ? db.prepare('SELECT id, task_id FROM audio_generations WHERE id = ?').get(id)
-      : db.prepare(`SELECT id, task_id FROM audio_generations WHERE id = ? AND (
+      ? db.prepare('SELECT id, task_id, deleted_at FROM audio_generations WHERE id = ?').get(id)
+      : db.prepare(`SELECT id, task_id, deleted_at FROM audio_generations WHERE id = ? AND (
           user_id = ? OR EXISTS (
             SELECT 1 FROM project_members pm WHERE pm.project_id = audio_generations.project_id AND pm.user_id = ?
           )
         )`).get(id, req.user.id, req.user.id);
     if (!row) return res.status(404).json({ error: '记录不存在或无权限' });
+    if (row.deleted_at) return res.json({ success: true });
 
     const tx = db.transaction(() => {
-      db.prepare('DELETE FROM audio_generations WHERE id = ?').run(id);
-      // 同步清理中转视频任务（task_kind='audio_intermediate'）
-      // 显式校验 task_kind，避免误删用户的普通视频任务（防御性，正常流程不会发生）
+      db.prepare('UPDATE audio_generations SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
+      // 同步软删中转视频任务；显式校验 task_kind 防御误删用户的普通视频任务
       if (row.task_id) {
         db.prepare(
-          "DELETE FROM tasks WHERE id = ? AND task_kind = 'audio_intermediate'"
+          "UPDATE tasks SET deleted_at = CURRENT_TIMESTAMP WHERE id = ? AND task_kind = 'audio_intermediate' AND deleted_at IS NULL"
         ).run(row.task_id);
       }
     });
@@ -1267,7 +1273,7 @@ app.post('/api/video-enhancements/:id/mark-downloaded', authenticate, (req, res)
   }
 });
 
-// DELETE /api/video-enhancements/:id - 删除画质增强记录
+// DELETE /api/video-enhancements/:id - 软删画质增强记录
 app.delete('/api/video-enhancements/:id', authenticate, (req, res) => {
   try {
     const db = getDatabase();
@@ -1275,14 +1281,15 @@ app.delete('/api/video-enhancements/:id', authenticate, (req, res) => {
     if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
     const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
     const row = isAdmin
-      ? db.prepare('SELECT id FROM video_enhancements WHERE id = ?').get(id)
-      : db.prepare(`SELECT id FROM video_enhancements WHERE id = ? AND (
+      ? db.prepare('SELECT id, deleted_at FROM video_enhancements WHERE id = ?').get(id)
+      : db.prepare(`SELECT id, deleted_at FROM video_enhancements WHERE id = ? AND (
           user_id = ? OR EXISTS (
             SELECT 1 FROM project_members pm WHERE pm.project_id = video_enhancements.project_id AND pm.user_id = ?
           )
         )`).get(id, req.user.id, req.user.id);
     if (!row) return res.status(404).json({ error: '记录不存在或无权限' });
-    db.prepare('DELETE FROM video_enhancements WHERE id = ?').run(id);
+    if (row.deleted_at) return res.json({ success: true });
+    db.prepare('UPDATE video_enhancements SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -2404,6 +2411,7 @@ app.post('/api/download/refresh', authenticate, async (req, res) => {
       FROM tasks t
       WHERE t.status IN ('generating', 'processing')
         AND (t.submit_id IS NOT NULL OR t.history_id IS NOT NULL)
+        AND t.deleted_at IS NULL
         ${userWhereClause}
     `).all(...userParams);
 
@@ -2439,6 +2447,7 @@ app.post('/api/download/refresh', authenticate, async (req, res) => {
       SELECT t.id as taskId, t.history_id as historyId, COALESCE(t.submitted_at, t.created_at) as createdAt
       FROM tasks t
       WHERE t.status IN ('generating', 'processing')
+        AND t.deleted_at IS NULL
         ${userWhereClause}
     `).all(...userParams);
 
@@ -2485,7 +2494,7 @@ app.post('/api/download/tasks/:id', authenticate, async (req, res) => {
       SELECT t.*, p.name as project_name
       FROM tasks t
       LEFT JOIN projects p ON t.project_id = p.id
-      WHERE t.id = ?
+      WHERE t.id = ? AND t.deleted_at IS NULL
     `).get(taskId);
 
     if (!task) {
@@ -2585,16 +2594,19 @@ app.delete('/api/download/tasks/:id', authenticate, (req, res) => {
     const taskId = req.params.id;
     const db = getDatabase();
 
-    const task = db.prepare('SELECT project_id FROM tasks WHERE id = ?').get(taskId);
+    const task = db.prepare('SELECT project_id, deleted_at FROM tasks WHERE id = ?').get(taskId);
     if (!task) {
       return res.status(404).json({ error: '任务不存在' });
+    }
+    if (task.deleted_at) {
+      return res.json({ success: true }); // 已软删，幂等
     }
     if (req.user.role !== "admin" && req.user.role !== "super_admin" && !projectService.isProjectMember(task.project_id, req.user.id)) {
       return res.status(403).json({ error: '无权访问' });
     }
 
-    // 删除任务（外键会自动删除 task_assets 和 generation_history）
-    db.prepare('DELETE FROM tasks WHERE id = ?').run(taskId);
+    // 软删：仅置 deleted_at；保留 task_assets / generation_history / credit_locks 等关联以备审计
+    db.prepare('UPDATE tasks SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?').run(taskId);
 
     res.json({ success: true });
   } catch (error) {
@@ -2842,7 +2854,7 @@ app.get('/api/admin/projects', authenticate, requireAdmin, (req, res) => {
     const projects = db.prepare(`
       SELECT p.id, p.name, p.description, p.created_at, p.updated_at,
              u.email AS owner_email,
-             (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id) AS task_count,
+             (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.deleted_at IS NULL) AS task_count,
              (SELECT COUNT(*) FROM project_assets pa WHERE pa.project_id = p.id AND pa.status != 'deleted') AS asset_count
       FROM projects p
       LEFT JOIN users u ON p.user_id = u.id
@@ -3256,7 +3268,7 @@ app.get('/api/admin/tasks/by-account', authenticate, requireAdmin, (req, res) =>
 
     const db = getDatabase();
     // SQLite json_extract 路径：account_info 是 TEXT JSON
-    const where = `account_info IS NOT NULL AND json_extract(account_info, '$.accountId') = ?`;
+    const where = `account_info IS NOT NULL AND json_extract(account_info, '$.accountId') = ? AND deleted_at IS NULL`;
     const total = db.prepare(`SELECT COUNT(*) AS c FROM tasks WHERE ${where}`).get(accountId).c;
     const rows = db.prepare(`
       SELECT t.id, t.project_id, t.user_id, t.prompt, t.status, t.video_url, t.created_at,
@@ -3639,7 +3651,7 @@ app.get('/api/video-enhancements', authenticate, (req, res) => {
               enhanced_video_url, result_resolution, result_fps,
               error_message, credits_used, duration_seconds,
               created_at, finished_at
-       FROM video_enhancements WHERE task_id = ? ORDER BY created_at DESC`
+       FROM video_enhancements WHERE task_id = ? AND deleted_at IS NULL ORDER BY created_at DESC`
     ).all(taskId);
     res.json({ success: true, data: rows });
   } catch (error) {
@@ -3660,6 +3672,7 @@ app.post('/api/video-enhancements', authenticate, async (req, res) => {
     resolution,             // 预设档：'240p' | '360p' | '480p' | '540p' | '720p' | '1080p' | '2k' | '4k'
     resolutionLimit,        // 自定义短边像素 [64, 2160]（与 resolution 互斥）
     targetFps = 30,
+    projectId: reqProjectId, // 当前工作组（外部视频源时必须；taskId 源时以 task.project_id 为准）
   } = req.body;
 
   if (!['aigc', 'short_series', 'ugc', 'old_film', 'common'].includes(scene)) {
@@ -3708,9 +3721,9 @@ app.post('/api/video-enhancements', authenticate, async (req, res) => {
     if (task.status !== 'done' || !task.video_url) {
       return res.status(400).json({ error: '源视频未生成完成，无法增强' });
     }
-    // 防重：同一任务已有 pending/processing 记录时拒绝再次提交
+    // 防重：同一任务已有 pending/processing 记录时拒绝再次提交（软删的不算）
     const inProgress = db.prepare(
-      `SELECT id FROM video_enhancements WHERE task_id = ? AND status IN ('pending', 'processing') LIMIT 1`
+      `SELECT id FROM video_enhancements WHERE task_id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL LIMIT 1`
     ).get(taskId);
     if (inProgress) return res.status(409).json({ error: '该视频已有增强任务正在进行中，请等待完成后再试' });
     sourceUrl = task.video_url;
@@ -3747,6 +3760,17 @@ app.post('/api/video-enhancements', authenticate, async (req, res) => {
     }
     sourceUrl = videoUrl;
     durationSec = Math.max(1, Math.min(300, Math.round(d)));
+    // 外部视频分支：projectId 走前端传入（与图片/音频/视频生成一致）。
+    // 校验是否为当前用户可访问的工作组，避免把记录挂到别的工作组下。
+    const pidNum = parseInt(reqProjectId, 10);
+    if (Number.isFinite(pidNum) && pidNum > 0) {
+      const allowed = projectService.isProjectMember(pidNum, req.user.id)
+        || ['admin', 'super_admin'].includes(req.user.role);
+      if (!allowed) {
+        return res.status(403).json({ error: '无权访问该工作组' });
+      }
+      projectId = pidNum;
+    }
   } else {
     return res.status(400).json({ error: '请提供 taskId 或 videoUrl+durationSeconds' });
   }
@@ -3873,7 +3897,7 @@ app.get('/api/video-enhancements/list', authenticate, (req, res) => {
 
     // 工作组共享：与视频生成历史一致——同一 project_members 的所有记录互相可见。
     // 外部增强(project_id IS NULL)：与创建者共享任一工作组的成员均可见，避免外部记录变成"创作者私有黑洞"
-    const where = isAdmin ? '1=1' : `(
+    const ownership = isAdmin ? '1=1' : `(
       user_id = ? OR EXISTS (
         SELECT 1 FROM project_members pm WHERE pm.project_id = video_enhancements.project_id AND pm.user_id = ?
       ) OR (
@@ -3884,6 +3908,7 @@ app.get('/api/video-enhancements/list', authenticate, (req, res) => {
         )
       )
     )`;
+    const where = `deleted_at IS NULL AND ${ownership}`;
     const params = isAdmin ? [] : [req.user.id, req.user.id, req.user.id];
 
     const total = db.prepare(`SELECT COUNT(*) AS n FROM video_enhancements WHERE ${where}`).get(...params).n;

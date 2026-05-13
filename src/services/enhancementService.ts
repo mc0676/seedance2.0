@@ -47,6 +47,8 @@ export interface SubmitEnhancementParams {
   taskId?: number;
   videoUrl?: string;
   durationSeconds?: number;
+  /** 当前工作组 id；外部视频源时务必带上以便归属到工作组（taskId 源时后端从 task 反查覆盖） */
+  projectId?: number | null;
   scene: VideoEnhancement['scene'];
   toolVersion: VideoEnhancement['tool_version'];
   /** 二选一：预设档或自定义短边 */

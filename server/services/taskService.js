@@ -228,11 +228,13 @@ export function updateTaskStatus(id, status, extraUpdates = {}) {
 }
 
 /**
- * 删除任务
+ * 删除任务（软删）
+ * 仅设置 deleted_at 时间戳，业务行保留以供 credit_locks / usage_logs 审计追溯。
+ * 所有面向用户的列表查询必须 WHERE deleted_at IS NULL。
  */
 export function deleteTask(id) {
   const db = getDatabase();
-  return db.prepare(`DELETE FROM tasks WHERE id = ?`).run(id);
+  return db.prepare(`UPDATE tasks SET deleted_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL`).run(id);
 }
 
 /**
@@ -299,10 +301,11 @@ export function getTasksWithAssets(projectId, options = {}) {
 
 /**
  * 根据项目 ID 获取任务列表（所有成员可见）
+ * 默认过滤已软删的任务（deleted_at IS NULL）
  */
 export function getTasksByProjectId(projectId, options = {}) {
   const db = getDatabase();
-  const whereClauses = ['t.project_id = ?'];
+  const whereClauses = ['t.project_id = ?', 't.deleted_at IS NULL'];
   const values = [projectId];
 
   if (options.status) {
@@ -332,7 +335,7 @@ export function getPendingTasks() {
     SELECT t.*, p.name as project_name
     FROM tasks t
     LEFT JOIN projects p ON t.project_id = p.id
-    WHERE t.status = 'pending'
+    WHERE t.status = 'pending' AND t.deleted_at IS NULL
     ORDER BY t.created_at ASC
   `).all();
 }
@@ -343,7 +346,7 @@ export function getPendingTasks() {
 export function getTasksByStatus(projectId, status) {
   const db = getDatabase();
   return db.prepare(`
-    SELECT * FROM tasks WHERE project_id = ? AND status = ? ORDER BY created_at DESC
+    SELECT * FROM tasks WHERE project_id = ? AND status = ? AND deleted_at IS NULL ORDER BY created_at DESC
   `).all(projectId, status);
 }
 

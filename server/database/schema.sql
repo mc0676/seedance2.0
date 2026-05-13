@@ -124,6 +124,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   error_message TEXT,
   retry_count INTEGER DEFAULT 0,
   task_kind TEXT NOT NULL DEFAULT 'video' CHECK (task_kind IN ('video', 'audio_intermediate')),
+  deleted_at DATETIME, -- 软删时间戳；NULL = 未删除，所有用户可见查询应过滤 WHERE deleted_at IS NULL
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -387,6 +388,7 @@ CREATE TABLE IF NOT EXISTS video_enhancements (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   finished_at DATETIME,
   downloaded_at DATETIME,
+  deleted_at DATETIME, -- 软删时间戳；NULL = 未删除
   FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -409,6 +411,7 @@ CREATE TABLE IF NOT EXISTS audio_generations (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   finished_at DATETIME,
   downloaded_at DATETIME,
+  deleted_at DATETIME, -- 软删时间戳；NULL = 未删除
   FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -466,6 +469,7 @@ CREATE TABLE IF NOT EXISTS image_records (
   status TEXT NOT NULL DEFAULT 'done',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   downloaded_at DATETIME,
+  deleted_at DATETIME, -- 软删时间戳；NULL = 未删除
   error_message TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_image_records_user ON image_records(user_id, created_at DESC);

@@ -809,6 +809,20 @@ export default function SingleTaskPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [generation.status]);
 
+  // 历史列表轮询：只要还有任务在 generating，每 5s 重新拉一次列表。
+  // 这样即使 generateVideo 的内部 polling 闭包因导航/切菜单丢失，历史卡也会自动刷新到 done 状态。
+  useEffect(() => {
+    const hasGenerating = historyItems.some(
+      (t) => t.effective_download_status === 'generating' || t.status === 'generating'
+    );
+    if (!hasGenerating) return;
+    const timer = window.setInterval(() => {
+      void loadHistory(1, false);
+    }, 5000);
+    return () => window.clearInterval(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyItems]);
+
   // Infinite scroll sentinel
   useEffect(() => {
     const sentinel = historyBottomRef.current;

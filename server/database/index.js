@@ -144,17 +144,30 @@ export function initDatabase() {
   ).get();
   const veSql = veSqlRow?.sql || '';
   const veColumns = db.prepare("PRAGMA table_info(video_enhancements)").all().map((c) => c.name);
-  // 重建条件：
-  //  - CHECK 不含 '2k'（仍是 '720p','1080p','4k'）
-  //  - 或缺少 resolution_limit 列（新加的精确短边像素，与 target_resolution 互斥）
-  //  - 或 target_resolution 仍为 NOT NULL（精确模式需把它置 NULL）
-  //  - 缺 downloaded_at 时用 ALTER 单独补，不重建（见下方 else 分支）
+  // 重建条件（任一为真即重建）：
+  //  - 仍存在 target_resolution NOT NULL（老 schema 强制非空，与自定义短边模式冲突）
+  //  - 仍存在限制 IN ('720p','1080p','4k') 的旧 CHECK（不含 '2k'/'240p' 等新档位的扩展）
+  //  - 缺少 resolution_limit 列
+  // 不能用「veSql 不含 '2k'」作为单独条件——重建后新 schema 没有 CHECK，反复触发重建会无限循环。
+  const hasRestrictiveResolutionCheck =
+    /target_resolution\s+TEXT\s+NOT\s+NULL\s+CHECK/i.test(veSql) ||
+    /CHECK\s*\(\s*target_resolution\s+IN\s*\([^)]*\)\s*\)/i.test(veSql);
   const needsRebuild =
-    (veSql && !veSql.includes("'2k'")) ||
-    !veColumns.includes('resolution_limit') ||
-    /target_resolution\s+TEXT\s+NOT\s+NULL/i.test(veSql);
+    /target_resolution\s+TEXT\s+NOT\s+NULL/i.test(veSql) ||
+    hasRestrictiveResolutionCheck ||
+    !veColumns.includes('resolution_limit');
   if (needsRebuild) {
     console.log('[database] 迁移：video_enhancements 重建以支持自定义短边/全部预设档位...');
+    // 保留原 sqlite_sequence「最高水位线」——重建会丢失它（INSERT SELECT 只把 seq 推到当前 max(id)）。
+    // 如果不保留，下次 AUTOINCREMENT 可能给出已被 credit_locks 等审计表占用过的旧 id，触发 UNIQUE 冲突。
+    // 同时考虑 credit_locks 残留：把 seq 抬到 max(自身 seq, credit_locks.enhancement_id, video_enhancements_old.id)
+    const oldSeqRow = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'video_enhancements'").get();
+    const oldSeq = Number(oldSeqRow?.seq || 0);
+    const maxOldId = Number(db.prepare('SELECT MAX(id) AS m FROM video_enhancements').get()?.m || 0);
+    const maxLockedEnhId = Number(db.prepare(
+      'SELECT MAX(enhancement_id) AS m FROM credit_locks WHERE enhancement_id IS NOT NULL'
+    ).get()?.m || 0);
+    const preservedSeq = Math.max(oldSeq, maxOldId, maxLockedEnhId);
     db.exec(`
       ALTER TABLE video_enhancements RENAME TO video_enhancements_old;
       CREATE TABLE video_enhancements (
@@ -179,6 +192,7 @@ export function initDatabase() {
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         finished_at DATETIME,
         downloaded_at DATETIME,
+        deleted_at DATETIME,
         FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       );
@@ -203,6 +217,14 @@ export function initDatabase() {
       CREATE INDEX IF NOT EXISTS idx_video_enhancements_status ON video_enhancements(status);
       CREATE INDEX IF NOT EXISTS idx_video_enhancements_user ON video_enhancements(user_id);
     `);
+    // 把 sqlite_sequence 抬到原最高水位线，避免重建后 AUTOINCREMENT 给出已被审计表占用过的旧 id
+    if (preservedSeq > 0) {
+      db.prepare(
+        `INSERT INTO sqlite_sequence (name, seq) VALUES ('video_enhancements', ?)
+         ON CONFLICT(name) DO UPDATE SET seq = excluded.seq`
+      ).run(preservedSeq);
+      console.log(`[database] sqlite_sequence.video_enhancements.seq 保留为 ${preservedSeq}（原 seq=${oldSeq}, max(id)=${maxOldId}, max(credit_locks.enhancement_id)=${maxLockedEnhId}）`);
+    }
     console.log('[database] 迁移完成：video_enhancements 已重建');
   } else {
     // 极少情况下表结构已大致正确，仅按需补列
@@ -223,27 +245,47 @@ export function initDatabase() {
     }
   }
 
-  // 启动清理：删除「孤儿中转视频任务」——曾经删除 audio_generations 时未级联清掉 tasks 行,
-  // 在 tasks 表里残留为 task_kind='audio_intermediate' 但已无 audio_generations 引用。
-  // 现在 DELETE /api/audio-generations/:id 会同步删，所以这里只清扫历史残留即可。
+  // 增量迁移：四张业务表加 deleted_at（软删时间戳）。
+  // 下载管理 / 业务模块的「删除」行为改为 UPDATE deleted_at = CURRENT_TIMESTAMP，列表查询过滤 IS NULL。
+  // 这样 credit_locks / usage_logs 等审计表的外键永远指向真实存在的行，对账可追溯。
+  // 必须放在 video_enhancements 重建之后——否则 rebuild 创建的新表会重置该列。
+  for (const table of ['tasks', 'image_records', 'audio_generations', 'video_enhancements']) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+    if (!cols.includes('deleted_at')) {
+      console.log(`[database] 迁移：${table} 添加 deleted_at 列（软删支持）...`);
+      db.exec(`ALTER TABLE ${table} ADD COLUMN deleted_at DATETIME`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_deleted_at ON ${table}(deleted_at)`);
+    }
+  }
+
+  // 历史残留：曾经 DELETE /api/audio-generations/:id 直接硬删 audio_generations 行，
+  // 但没顺手清掉 tasks 里关联的 task_kind='audio_intermediate' 行（FK CASCADE 是 tasks→audio_generations
+  // 方向，不会反向触发）。这些孤儿 task 行已无 audio_generations 引用，对当前的软删模型来说应当被
+  // 软删（deleted_at 标记）以从下载列表里隐去；保留行体让 credit_locks.task_id 仍指向真实存在的行。
   try {
-    const orphanInfo = db.prepare(
-      `SELECT COUNT(*) AS n FROM tasks
+    const orphanTasks = db.prepare(
+      `SELECT id FROM tasks
        WHERE task_kind = 'audio_intermediate'
+         AND deleted_at IS NULL
          AND NOT EXISTS (SELECT 1 FROM audio_generations ag WHERE ag.task_id = tasks.id)`
-    ).get();
-    if (orphanInfo?.n > 0) {
-      console.log(`[database] 清理孤儿中转视频任务 ${orphanInfo.n} 条（task_kind='audio_intermediate' 但 audio_generations 无引用）...`);
-      const result = db.prepare(
-        `DELETE FROM tasks
-         WHERE task_kind = 'audio_intermediate'
-           AND NOT EXISTS (SELECT 1 FROM audio_generations ag WHERE ag.task_id = tasks.id)`
-      ).run();
-      console.log(`[database] 已清理 ${result.changes} 条孤儿任务`);
+    ).all();
+    if (orphanTasks.length > 0) {
+      console.log(`[database] 软删孤儿中转视频任务 ${orphanTasks.length} 条（task_kind='audio_intermediate' 已无 audio_generations 引用）...`);
+      const ids = orphanTasks.map((r) => r.id);
+      db.prepare(
+        `UPDATE tasks SET deleted_at = CURRENT_TIMESTAMP
+         WHERE id IN (${ids.map(() => '?').join(',')})`
+      ).run(...ids);
+      console.log(`[database] 已软删 ${orphanTasks.length} 条孤儿任务`);
     }
   } catch (e) {
-    console.warn('[database] 孤儿中转视频任务清理失败（不阻塞启动）：', e.message);
+    console.warn('[database] 孤儿中转视频任务软删失败（不阻塞启动）：', e.message);
   }
+
+  // 注：credit_locks 是积分扣除的操作账本，每条 lock 都需要保留 enhancement_id / image_record_id
+  // 以便对账（每个 id 的扣除记录都可追溯）。AUTOINCREMENT 已保证业务表 id 不会复用，
+  // 即便业务行被删除，credit_locks 行的外键值也不会被未来新行撞 UNIQUE。
+  // 因此这里不做任何 credit_locks 的清理/解绑，行内容完整保留。
 
   console.log(`[database] 数据库初始化成功：${DB_PATH}`);
   return db;

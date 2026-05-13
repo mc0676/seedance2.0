@@ -341,10 +341,10 @@ export default function EnhancementPage() {
           </div>
         )}
 
-        {/* === 我的增强记录 === */}
+        {/* === 增强记录 === */}
         <div>
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-lg font-semibold">我的增强记录</h2>
+            <h2 className="text-lg font-semibold">增强记录</h2>
             <button
               onClick={() => loadRecords(recordsPage)}
               className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 rounded-xl text-xs font-medium text-white transition-all"
@@ -382,6 +382,7 @@ export default function EnhancementPage() {
           source={dialogSource}
           userBalance={userBalance}
           unlimited={unlimited}
+          projectId={projectId}
           onClose={() => setDialogSource(null)}
           onSubmitted={(en) => {
             onSubmitted(en);
@@ -448,7 +449,7 @@ function RecordRow({ r }: { r: VideoEnhancement }) {
               {badge.text}
             </span>
             <span className="text-xs text-gray-300">
-              {SCENE_LABEL[r.scene]} · {VERSION_LABEL[r.tool_version]} · {r.target_resolution ?? (r.resolution_limit ? `${r.resolution_limit}px` : '-')}
+              {SCENE_LABEL[r.scene]} · {VERSION_LABEL[r.tool_version]} · {r.target_resolution ?? (r.resolution_limit ? `${r.resolution_limit}px` : '-')} · {r.target_fps ?? 30}fps
             </span>
             {r.task_id == null && (
               <span className="text-[10px] text-gray-500 border border-gray-700 rounded px-1.5 py-0.5">

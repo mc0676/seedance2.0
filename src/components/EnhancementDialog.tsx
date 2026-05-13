@@ -19,6 +19,8 @@ interface EnhancementDialogProps {
   source: EnhancementSource;
   userBalance: number;
   unlimited?: boolean;
+  /** 当前工作组 id；提交时一并带到后端 */
+  projectId?: number | null;
   onClose: () => void;
   onSubmitted: (enhancement: VideoEnhancement) => void;
 }
@@ -82,6 +84,7 @@ export default function EnhancementDialog({
   source,
   userBalance,
   unlimited,
+  projectId,
   onClose,
   onSubmitted,
 }: EnhancementDialogProps) {
@@ -141,6 +144,7 @@ export default function EnhancementDialog({
         scene,
         toolVersion,
         targetFps: effectiveFps,
+        ...(projectId ? { projectId } : {}),
         ...(resolutionMode === 'preset'
           ? { resolution: resolutionPreset }
           : { resolutionLimit }),
