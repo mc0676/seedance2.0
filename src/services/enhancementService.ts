@@ -36,8 +36,10 @@ export interface EnhancementListResult {
   pageSize: number;
 }
 
-export async function listMyEnhancements(page = 1, pageSize = 20): Promise<EnhancementListResult> {
-  const res = await fetch(`${API_BASE}/video-enhancements/list?page=${page}&pageSize=${pageSize}`, {
+export async function listMyEnhancements(page = 1, pageSize = 20, projectId?: number | null): Promise<EnhancementListResult> {
+  const qs = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+  if (projectId) qs.set('projectId', String(projectId));
+  const res = await fetch(`${API_BASE}/video-enhancements/list?${qs}`, {
     headers: getAuthHeaders(),
   });
   return asJson<EnhancementListResult>(res, '获取增强记录失败');

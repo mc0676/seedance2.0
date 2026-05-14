@@ -1589,6 +1589,28 @@ export default function SingleTaskPage() {
         </div>
 
         <div className="space-y-4">
+          {/* 模型选择 */}
+          <div className="bg-[#1c1f2e] rounded-2xl p-4 border border-gray-800">
+            <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-3">选择模型</label>
+            <div className="flex flex-col gap-2">
+              {(runtimeModels.length > 0
+                ? runtimeModels.map((m) => ({ value: m.model_key as typeof model, label: m.label, description: m.description || '' }))
+                : MODEL_OPTIONS
+              ).map((opt) => (
+                <button
+                  key={opt.value}
+                  onClick={() => { setModel(opt.value); if (opt.value === 'seedance-2.0-fast' && resolution === '1080p') setResolution('720p'); }}
+                  className={`w-full text-left px-4 py-3 rounded-xl border transition-all ${
+                    model === opt.value ? 'border-purple-500 bg-purple-500/10' : 'border-gray-700 bg-[#161824] hover:border-gray-600'
+                  }`}
+                >
+                  <div className={`text-sm font-medium ${model === opt.value ? 'text-purple-400' : 'text-gray-300'}`}>{opt.label}</div>
+                  <div className="text-xs text-gray-500 mt-0.5">{opt.description}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* 首尾图模式保留分列布局 */}
           {referenceMode === 'first_last_frame' ? (
             <div className="bg-[#1c1f2e] rounded-2xl border border-gray-800 p-4 space-y-3">
@@ -1838,28 +1860,6 @@ export default function SingleTaskPage() {
 
           {/* Settings */}
           <div className="bg-[#1c1f2e] rounded-2xl p-4 border border-gray-800 space-y-5">
-            {/* Model */}
-            <div>
-              <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-3">选择模型</label>
-              <div className="flex flex-col gap-2">
-                {(runtimeModels.length > 0
-                  ? runtimeModels.map((m) => ({ value: m.model_key as typeof model, label: m.label, description: m.description || '' }))
-                  : MODEL_OPTIONS
-                ).map((opt) => (
-                  <button
-                    key={opt.value}
-                    onClick={() => { setModel(opt.value); if (opt.value === 'seedance-2.0-fast' && resolution === '1080p') setResolution('720p'); }}
-                    className={`w-full text-left px-4 py-3 rounded-xl border transition-all ${
-                      model === opt.value ? 'border-purple-500 bg-purple-500/10' : 'border-gray-700 bg-[#161824] hover:border-gray-600'
-                    }`}
-                  >
-                    <div className={`text-sm font-medium ${model === opt.value ? 'text-purple-400' : 'text-gray-300'}`}>{opt.label}</div>
-                    <div className="text-xs text-gray-500 mt-0.5">{opt.description}</div>
-                  </button>
-                ))}
-              </div>
-            </div>
-
             <div>
               <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-3">画面比例</label>
               <div className="grid grid-cols-6 gap-2">

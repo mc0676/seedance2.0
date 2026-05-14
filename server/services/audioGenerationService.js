@@ -57,7 +57,7 @@ export function markError(id, errorMessage) {
   `).run(errorMessage || '生成失败', id);
 }
 
-export function listByUser({ userId, isAdmin = false, page = 1, pageSize = 20 }) {
+export function listByUser({ userId, isAdmin = false, page = 1, pageSize = 20, projectId = null }) {
   const db = getDatabase();
   const offset = (page - 1) * pageSize;
   // 工作组共享，与视频生成历史一致；过滤已软删
@@ -66,8 +66,12 @@ export function listByUser({ userId, isAdmin = false, page = 1, pageSize = 20 })
       SELECT 1 FROM project_members pm WHERE pm.project_id = a.project_id AND pm.user_id = ?
     )
   )`;
-  const where = `a.deleted_at IS NULL AND ${ownership}`;
+  let where = `a.deleted_at IS NULL AND ${ownership}`;
   const params = isAdmin ? [] : [userId, userId];
+  if (projectId) {
+    where += ' AND a.project_id = ?';
+    params.push(Number(projectId));
+  }
   const total = db.prepare(`SELECT COUNT(*) AS n FROM audio_generations a WHERE ${where}`).get(...params).n;
   const items = db.prepare(`
     SELECT a.id, a.task_id, a.user_id, a.project_id, a.reference_image_url, a.voice_prompt,

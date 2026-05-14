@@ -3913,8 +3913,13 @@ app.get('/api/video-enhancements/list', authenticate, (req, res) => {
         )
       )
     )`;
-    const where = `deleted_at IS NULL AND ${ownership}`;
+    let where = `deleted_at IS NULL AND ${ownership}`;
     const params = isAdmin ? [] : [req.user.id, req.user.id, req.user.id];
+    const queryProjectId = parseInt(req.query.projectId) || null;
+    if (queryProjectId) {
+      where += ' AND project_id = ?';
+      params.push(queryProjectId);
+    }
 
     const total = db.prepare(`SELECT COUNT(*) AS n FROM video_enhancements WHERE ${where}`).get(...params).n;
 
@@ -4136,7 +4141,7 @@ app.post('/api/happyhorse-tasks', authenticate, async (req, res) => {
       creditLockService.releaseForHappyhorse({ happyhorseTaskId, reason: 'DashScope 提交失败：' + e.message });
       db.prepare(`UPDATE tasks_happyhorse SET status='error', error_message=?, completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
         .run(e.message, happyhorseTaskId);
-      return res.status(502).json({ error: 'HappyHorse 提交失败：' + e.message });
+      return res.status(502).json({ error: '马匹提交失败：' + e.message });
     }
 
     db.prepare(
@@ -4507,7 +4512,8 @@ app.get('/api/audio-generations/list', authenticate, (req, res) => {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const pageSize = Math.max(1, Math.min(100, parseInt(req.query.pageSize) || 20));
     const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
-    const result = audioGenerationService.listByUser({ userId: req.user.id, isAdmin, page, pageSize });
+    const projectId = parseInt(req.query.projectId) || null;
+    const result = audioGenerationService.listByUser({ userId: req.user.id, isAdmin, page, pageSize, projectId });
     res.json({ success: true, data: result });
   } catch (error) {
     res.status(500).json({ error: error.message });

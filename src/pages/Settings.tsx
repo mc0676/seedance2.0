@@ -14,10 +14,6 @@ export default function SettingsPage() {
     duration: settings.duration || '4',
     resolution: settings.resolution || '720p',
     reference_mode: settings.reference_mode || 'reference',
-    download_path: settings.download_path || '',
-    max_concurrent: settings.max_concurrent || '5',
-    min_interval: settings.min_interval || '30000',
-    max_interval: settings.max_interval || '50000',
   });
 
   const [hasChanges, setHasChanges] = useState(false);
@@ -56,11 +52,7 @@ export default function SettingsPage() {
       localSettings.ratio !== settings.ratio ||
       localSettings.duration !== settings.duration ||
       localSettings.resolution !== settings.resolution ||
-      localSettings.reference_mode !== settings.reference_mode ||
-      localSettings.download_path !== settings.download_path ||
-      localSettings.max_concurrent !== settings.max_concurrent ||
-      localSettings.min_interval !== settings.min_interval ||
-      localSettings.max_interval !== settings.max_interval;
+      localSettings.reference_mode !== settings.reference_mode;
     setHasChanges(changed);
   }, [localSettings, settings]);
 
@@ -265,92 +257,6 @@ export default function SettingsPage() {
         <div className="bg-[#1c1f2e] rounded-xl p-6 mb-6 border border-gray-800">
           <h2 className="text-lg font-bold mb-4">批量生成设置</h2>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-400 mb-2">
-                最大并发数
-              </label>
-              <input
-                type="number"
-                min="1"
-                max="10"
-                value={localSettings.max_concurrent}
-                onChange={(e) =>
-                  setLocalSettings((prev) => ({
-                    ...prev,
-                    max_concurrent: e.target.value,
-                  }))
-                }
-                className="w-full bg-[#0f111a] border border-gray-700 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-400 mb-2">
-                最小间隔 (毫秒)
-              </label>
-              <input
-                type="number"
-                min="10000"
-                max="60000"
-                step="1000"
-                value={localSettings.min_interval}
-                onChange={(e) =>
-                  setLocalSettings((prev) => ({
-                    ...prev,
-                    min_interval: e.target.value,
-                  }))
-                }
-                className="w-full bg-[#0f111a] border border-gray-700 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-400 mb-2">
-                最大间隔 (毫秒)
-              </label>
-              <input
-                type="number"
-                min="30000"
-                max="120000"
-                step="1000"
-                value={localSettings.max_interval}
-                onChange={(e) =>
-                  setLocalSettings((prev) => ({
-                    ...prev,
-                    max_interval: e.target.value,
-                  }))
-                }
-                className="w-full bg-[#0f111a] border border-gray-700 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* 下载路径设置 */}
-        <div className="bg-[#1c1f2e] rounded-xl p-6 mb-6 border border-gray-800">
-          <h2 className="text-lg font-bold mb-4">下载路径设置</h2>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-400 mb-2">
-              视频保存路径
-            </label>
-            <input
-              type="text"
-              value={localSettings.download_path}
-              onChange={(e) =>
-                setLocalSettings((prev) => ({
-                  ...prev,
-                  download_path: e.target.value,
-                }))
-              }
-              placeholder="留空则使用默认路径：~/Videos/Seedance"
-              className="w-full bg-[#0f111a] border border-gray-700 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
-            />
-            <p className="text-xs text-gray-500 mt-2">
-              生成的视频将自动保存到此目录下的对应项目文件夹中
-            </p>
-          </div>
         </div>
 
         {/* 时区设置 */}
@@ -388,10 +294,6 @@ export default function SettingsPage() {
                 duration: settings.duration || '4',
                 resolution: settings.resolution || '720p',
                 reference_mode: settings.reference_mode || 'reference',
-                download_path: settings.download_path || '',
-                max_concurrent: settings.max_concurrent || '5',
-                min_interval: settings.min_interval || '30000',
-                max_interval: settings.max_interval || '50000',
               })
             }
             className="px-6 py-2.5 bg-[#1c1f2e] border border-gray-700 hover:border-gray-500 text-gray-300 hover:text-white rounded-xl transition-all font-medium"

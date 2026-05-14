@@ -343,3 +343,17 @@ ssh -i ~/.ssh/云屿 root@47.94.174.146 "docker exec seedance-blue node -e \"
   console.log('已更新');
 \""
 ```
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as local markdown files under .scratch/. See docs/agents/issue-tracker.md.
+
+### Triage labels
+
+Five canonical roles with default label names. See docs/agents/triage-labels.md.
+
+### Domain docs
+
+Single-context layout. See docs/agents/domain.md.

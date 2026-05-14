@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { getAuthHeaders } from '../services/authService';
-import { SparkleIcon } from '../components/Icons';
+import { SparkleIcon, GearIcon } from '../components/Icons';
 import { useApp } from '../context/AppContext';
 import { formatShortDateTime, useUserTimezone } from '../utils/datetime';
 import { getCreditBalance, type CreditBalance } from '../services/pricingService';
@@ -180,6 +180,11 @@ export default function ImageGenPage() {
 
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) { setError('请输入提示词'); return; }
+    // 积分预检
+    if (balance && !balance.unlimited && balance.available < 10) {
+      setError('可用积分不足（每次生成消耗 10 积分），请联系管理员充值');
+      return;
+    }
     setLoading(true);
     setError('');
     try {
@@ -229,11 +234,98 @@ export default function ImageGenPage() {
 
   return (
     <div className="h-screen flex flex-col md:flex-row overflow-hidden bg-[#0f111a] text-white">
+      {/* Mobile Header */}
+      <div className="md:hidden sticky top-0 z-40 bg-[#0f111a]/95 backdrop-blur-sm px-4 py-3 flex items-center justify-between border-b border-gray-800">
+        <h1 className="text-lg font-bold">图片生成</h1>
+      </div>
+
       {/* Left Panel */}
-      <div className="flex-1 md:w-[480px] md:flex-none md:border-r border-gray-800 overflow-y-auto p-4 md:p-6 bg-[#0f111a]">
-        <h2 className="text-xl font-bold mb-6">图片生成</h2>
+      <div className="flex-1 md:w-[520px] md:flex-none md:border-r border-gray-800 overflow-y-auto custom-scrollbar p-4 md:p-6 bg-[#0f111a]">
+        <div className="hidden md:flex flex-col gap-1 mb-4">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-xl font-bold truncate">图片生成</h2>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <button onClick={() => void loadHistory(1, false, currentProjectId)} disabled={historyLoading} className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 rounded-xl text-xs font-medium text-white transition-all disabled:opacity-50">
+                <svg className={`w-4 h-4 ${historyLoading ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                {historyLoading ? '刷新中...' : '刷新'}
+              </button>
+              <button onClick={() => window.location.href='/settings'} className="btn-ghost" title="设置">
+                <GearIcon className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+          {state.currentProject && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs px-2.5 py-1 rounded-xl bg-purple-500/20 border border-purple-500/30 text-purple-300 font-medium truncate max-w-[300px]">
+                {state.currentProject.name}
+              </span>
+            </div>
+          )}
+        </div>
 
         <div className="space-y-4">
+          {/* 模型选择 */}
+          <div className="bg-[#1c1f2e] rounded-2xl p-4 border border-gray-800">
+            <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-3">生图模型</label>
+            <div className="flex flex-col gap-2">
+              {IMAGE_MODELS.map((opt) => (
+                <button key={opt.value} onClick={() => setModel(opt.value)}
+                  className={`w-full text-left px-4 py-3 rounded-xl border transition-all ${model === opt.value ? 'border-purple-500 bg-purple-500/10' : 'border-gray-700 bg-[#161824] hover:border-gray-600'}`}
+                >
+                  <div className={`text-sm font-medium ${model === opt.value ? 'text-purple-400' : 'text-gray-300'}`}>{opt.label}</div>
+                  <div className="text-xs text-gray-500 mt-0.5">{opt.description}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 参考图 */}
+          <div className="bg-[#1c1f2e] rounded-2xl p-4 border border-gray-800">
+            <label className="text-sm font-bold text-gray-300 mb-2 block">
+              参考图 <span className="text-xs text-gray-500 font-normal">（选填，拖拽或点击上传，最多 4 张）</span>
+            </label>
+
+            {refUrls.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-3">
+                {refUrls.map((url, i) => (
+                  <div key={i} className="relative w-20 h-20 rounded-xl overflow-hidden border border-gray-700 bg-[#0d0f1a] group">
+                    <img src={url} alt={`参考图${i + 1}`} className="w-full h-full object-cover" />
+                    <button
+                      onClick={() => setRefUrls((prev) => prev.filter((_, idx) => idx !== i))}
+                      className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-lg"
+                    >×</button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div
+              onClick={() => !uploadingRef && refUrls.length < 4 && fileInputRef.current?.click()}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => { e.preventDefault(); e.stopPropagation(); if (!uploadingRef) handleRefUpload(e.dataTransfer.files); }}
+              className={`w-full border border-dashed border-gray-700 rounded-2xl flex flex-col items-center justify-center py-6 ${uploadingRef || refUrls.length >= 4 ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-purple-500/50 hover:bg-[#25293d]'} transition-all`}
+            >
+              {uploadingRef ? (
+                <div className="text-gray-400 text-sm flex items-center gap-2">
+                  <span className="animate-spin h-4 w-4 border-2 border-purple-400 border-t-transparent rounded-full" /> 上传中...
+                </div>
+              ) : refUrls.length >= 4 ? (
+                <div className="text-gray-500 text-xs text-center">
+                  <svg className="w-8 h-8 mx-auto mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                  <span className="block">已达上限（4 张）</span>
+                </div>
+              ) : (
+                <div className="text-gray-500 text-xs text-center">
+                  <svg className="w-10 h-10 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>
+                  <span className="block">点击或拖拽图片到此处</span>
+                  <span className="text-gray-600 text-[10px] mt-1 block">支持 JPG / PNG，单文件 ≤ 10MB</span>
+                </div>
+              )}
+              <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden"
+                onChange={(e) => { if (e.target.files) handleRefUpload(e.target.files); e.target.value = ''; }} />
+            </div>
+          </div>
+
           {/* Prompt */}
           <div className="bg-[#1c1f2e] rounded-2xl p-4 border border-gray-800">
             <label className="block text-sm font-bold mb-3 text-gray-300">提示词</label>
@@ -247,58 +339,8 @@ export default function ImageGenPage() {
             <div className="text-right text-xs text-gray-500 mt-2">{prompt.length}/5000</div>
           </div>
 
-          {/* 参考图 */}
-          <div className="bg-[#1c1f2e] rounded-2xl p-4 border border-gray-800">
-            <div className="flex items-center justify-between mb-3">
-              <label className="text-sm font-bold text-gray-300">参考图 <span className="text-gray-500 font-normal text-xs">（选填，最多 4 张）</span></label>
-              {refUrls.length > 0 && (
-                <button onClick={() => setRefUrls([])} className="text-xs text-gray-500 hover:text-red-400 transition-colors">清空</button>
-              )}
-            </div>
-            {refUrls.length > 0 && (
-              <div className="flex flex-wrap gap-2 mb-3">
-                {refUrls.map((url, i) => (
-                  <div key={i} className="relative w-16 h-16 rounded-lg overflow-hidden border border-gray-700 group">
-                    <img src={url} alt={`参考图${i + 1}`} className="w-full h-full object-cover" />
-                    <button
-                      onClick={() => setRefUrls((prev) => prev.filter((_, idx) => idx !== i))}
-                      className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-lg"
-                    >×</button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden"
-              onChange={(e) => handleRefUpload(e.target.files)} />
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploadingRef || refUrls.length >= 4}
-              className="w-full py-2.5 border border-dashed border-gray-600 rounded-xl text-sm text-gray-400 hover:border-purple-500/60 hover:text-purple-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-            >
-              {uploadingRef ? (
-                <><span className="animate-spin h-3.5 w-3.5 border-2 border-purple-400 border-t-transparent rounded-full" />上传中...</>
-              ) : (
-                <><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
-                {refUrls.length >= 4 ? '已达上限（4张）' : '添加参考图'}</>
-              )}
-            </button>
-          </div>
-
           {/* Settings */}
           <div className="bg-[#1c1f2e] rounded-2xl p-4 border border-gray-800 space-y-5">
-            <div>
-              <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-3">生图模型</label>
-              <div className="flex flex-col gap-2">
-                {IMAGE_MODELS.map((opt) => (
-                  <button key={opt.value} onClick={() => setModel(opt.value)}
-                    className={`w-full text-left px-4 py-3 rounded-xl border transition-all ${model === opt.value ? 'border-purple-500 bg-purple-500/10' : 'border-gray-700 bg-[#161824] hover:border-gray-600'}`}
-                  >
-                    <div className={`text-sm font-medium ${model === opt.value ? 'text-purple-400' : 'text-gray-300'}`}>{opt.label}</div>
-                    <div className="text-xs text-gray-500 mt-0.5">{opt.description}</div>
-                  </button>
-                ))}
-              </div>
-            </div>
 
             {model === 'gpt-image-2' ? (
               <div>
@@ -371,9 +413,7 @@ export default function ImageGenPage() {
       <div className="flex-1 bg-[#090a0f] overflow-y-auto flex flex-col">
         <div className="px-4 pt-4 pb-2 flex items-center justify-between">
           <h2 className="text-sm font-bold text-gray-400 uppercase tracking-wider">历史记录</h2>
-          {currentProjectId && (
-            <span className="text-xs text-gray-600">当前工作组</span>
-          )}
+
         </div>
 
         {loading && (

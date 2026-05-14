@@ -923,12 +923,16 @@ export default function HappyHorsePage() {
       <div className="flex-1 md:w-[520px] md:flex-none md:border-r border-gray-800 overflow-y-auto custom-scrollbar p-4 md:p-6 bg-[#0f111a]">
         <div className="hidden md:flex flex-col gap-1 mb-4">
           <div className="flex items-center justify-between gap-2">
-            <h2 className="text-xl font-bold truncate flex items-center gap-2">
-              <SparkleIcon className="w-5 h-5 text-pink-400" />
-              HappyHorse
-              <span className="text-xs font-normal text-gray-500">阿里云百炼 DashScope</span>
-            </h2>
+            <h2 className="text-xl font-bold truncate">HappyHorse</h2>
             <div className="flex items-center gap-2 flex-shrink-0">
+              <button
+                onClick={() => void loadTasks(page)}
+                disabled={tasksLoading}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 rounded-xl text-xs font-medium text-white transition-all disabled:opacity-50"
+              >
+                <svg className={`w-4 h-4 ${tasksLoading ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                {tasksLoading ? '刷新中...' : '刷新'}
+              </button>
               <button onClick={() => navigate('/settings')} className="btn-ghost" title="设置">
                 <GearIcon className="w-4 h-4" />
               </button>
@@ -954,7 +958,7 @@ export default function HappyHorsePage() {
                   onClick={() => setMode(m.mode)}
                   className={`px-3 py-2.5 rounded-xl text-sm border transition-all text-left ${
                     mode === m.mode
-                      ? 'border-pink-500 bg-pink-500/10 text-pink-300'
+                      ? 'border-purple-500 bg-purple-500/10 text-purple-300'
                       : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
                   }`}
                 >
@@ -1008,7 +1012,7 @@ export default function HappyHorsePage() {
                   const maxImg = mode === 'i2v' ? 1 : mode === 'video-edit' ? 5 : 9;
                   if (imgCount >= maxImg) return null;
                   return (
-                    <label className={`flex items-center justify-center gap-1.5 w-20 h-20 border border-dashed border-gray-700 rounded-xl text-xs text-gray-500 ${uploading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-pink-500/50 hover:bg-[#25293d]'} transition-all`}>
+                    <label className={`flex items-center justify-center gap-1.5 w-20 h-20 border border-dashed border-gray-700 rounded-xl text-xs text-gray-500 ${uploading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-purple-500/50 hover:bg-[#25293d]'} transition-all`}>
                       <PlusIcon className="w-3.5 h-3.5" />
                       <span>图片</span>
                       <input
@@ -1020,7 +1024,7 @@ export default function HappyHorsePage() {
                   );
                 })()}
                 {mode === 'video-edit' && !media.some((m) => m.type === 'video') && (
-                  <label className={`flex items-center justify-center gap-1.5 w-20 h-20 border border-dashed border-pink-700 rounded-xl text-xs text-pink-500 ${uploading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-pink-400 hover:bg-[#25293d]'} transition-all`}>
+                  <label className={`flex items-center justify-center gap-1.5 w-20 h-20 border border-dashed border-purple-700 rounded-xl text-xs text-purple-500 ${uploading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-purple-400 hover:bg-[#25293d]'} transition-all`}>
                     <PlusIcon className="w-3.5 h-3.5" />
                     <span>视频</span>
                     <input
@@ -1057,7 +1061,7 @@ export default function HappyHorsePage() {
                   onPaste={handleEditorPaste}
                   onCopy={handleEditorCopy}
                   onCut={handleEditorCut}
-                  className="prompt-editor w-full min-h-[120px] bg-[#0f111a] border border-gray-700 rounded-xl p-3 text-sm text-white focus:border-pink-500 outline-none whitespace-pre-wrap break-words"
+                  className="prompt-editor w-full min-h-[120px] bg-[#0f111a] border border-gray-700 rounded-xl p-3 text-sm text-white focus:border-purple-500 outline-none whitespace-pre-wrap break-words"
                 />
                 {mentionPanel && mentionItems.length > 0 && (
                   <div
@@ -1073,11 +1077,11 @@ export default function HappyHorsePage() {
                           type="button"
                           onClick={() => insertMentionChip(mi.tag)}
                           className={`flex items-center gap-2 w-full px-2 py-1.5 rounded-lg text-left text-sm transition-colors ${
-                            i === mentionPanel.focusIdx ? 'bg-pink-500/20 text-pink-200' : 'text-gray-300 hover:bg-gray-800'
+                            i === mentionPanel.focusIdx ? 'bg-purple-500/20 text-purple-200' : 'text-gray-300 hover:bg-gray-800'
                           }`}
                         >
                           <img src={mi.url} alt="" className="w-8 h-8 object-cover rounded border border-gray-700" />
-                          <span className="font-mono text-pink-300">{mi.tag}</span>
+                          <span className="font-mono text-purple-300">{mi.tag}</span>
                           <span className="truncate text-xs text-gray-400">{mi.name}</span>
                         </button>
                       ))}
@@ -1090,7 +1094,7 @@ export default function HappyHorsePage() {
                 onChange={(e) => setPrompt(e.target.value)}
                 rows={5}
                 maxLength={5000}
-                className="w-full bg-[#0f111a] border border-gray-700 rounded-xl p-3 text-sm text-white focus:border-pink-500 outline-none resize-none"
+                className="w-full bg-[#0f111a] border border-gray-700 rounded-xl p-3 text-sm text-white focus:border-purple-500 outline-none resize-none"
                 placeholder="描述你想生成的视频内容..."
               />
             )}
@@ -1108,7 +1112,7 @@ export default function HappyHorsePage() {
                     key={r}
                     onClick={() => setResolution(r)}
                     className={`px-3 py-2 rounded-xl text-sm font-medium border transition-all ${
-                      resolution === r ? 'border-pink-500 bg-pink-500/10 text-pink-300' : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
+                      resolution === r ? 'border-purple-500 bg-purple-500/10 text-purple-300' : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
                     }`}
                   >{r}</button>
                 ))}
@@ -1125,7 +1129,7 @@ export default function HappyHorsePage() {
                       key={r}
                       onClick={() => setRatio(r)}
                       className={`px-3 py-2 rounded-xl text-sm font-medium border transition-all ${
-                        ratio === r ? 'border-pink-500 bg-pink-500/10 text-pink-300' : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
+                        ratio === r ? 'border-purple-500 bg-purple-500/10 text-purple-300' : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
                       }`}
                     >{r}</button>
                   ))}
@@ -1143,7 +1147,7 @@ export default function HappyHorsePage() {
                       key={d}
                       onClick={() => setDuration(d)}
                       className={`px-3 py-2 rounded-xl text-sm font-medium border transition-all ${
-                        duration === d ? 'border-pink-500 bg-pink-500/10 text-pink-300' : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
+                        duration === d ? 'border-purple-500 bg-purple-500/10 text-purple-300' : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
                       }`}
                     >{d}秒</button>
                   ))}
@@ -1161,7 +1165,7 @@ export default function HappyHorsePage() {
                       key={v}
                       onClick={() => setAudioSetting(v)}
                       className={`px-3 py-2 rounded-xl text-sm font-medium border transition-all ${
-                        audioSetting === v ? 'border-pink-500 bg-pink-500/10 text-pink-300' : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
+                        audioSetting === v ? 'border-purple-500 bg-purple-500/10 text-purple-300' : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
                       }`}
                     >{v === 'auto' ? '自动' : '保留原声'}</button>
                   ))}
@@ -1176,7 +1180,7 @@ export default function HappyHorsePage() {
                 type="text" value={seed}
                 onChange={(e) => setSeed(e.target.value.replace(/\D/g, ''))}
                 placeholder="留空随机"
-                className="w-full bg-[#0f111a] border border-gray-700 rounded-xl px-3 py-2 text-sm text-white focus:border-pink-500 outline-none"
+                className="w-full bg-[#0f111a] border border-gray-700 rounded-xl px-3 py-2 text-sm text-white focus:border-purple-500 outline-none"
               />
             </div>
           </div>
@@ -1197,7 +1201,7 @@ export default function HappyHorsePage() {
                 className={`flex-1 font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2 ${
                   creditInsufficient
                     ? 'bg-amber-600 hover:bg-amber-500 text-white shadow-lg shadow-amber-900/20'
-                    : 'bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 disabled:from-gray-700 disabled:to-gray-700 disabled:text-gray-500 text-white shadow-lg shadow-pink-900/20'
+                    : 'bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:from-gray-700 disabled:to-gray-700 disabled:text-gray-500 text-white shadow-lg shadow-purple-900/20'
                 }`}
               >
                 {submitting ? (
@@ -1238,7 +1242,7 @@ export default function HappyHorsePage() {
                   <span className="text-amber-400">请先上传视频后再预估积分</span>
                 ) : estimate.credits > 0 ? (
                   <span>
-                    本次预计消耗 <span className="text-pink-300 font-semibold">{estimate.credits}</span> 积分
+                    本次预计消耗 <span className="text-purple-300 font-semibold">{estimate.credits}</span> 积分
                     <span className="ml-2 text-gray-500">（锁定 {estimate.lockedCredits}）</span>
                   </span>
                 ) : (
@@ -1259,13 +1263,12 @@ export default function HappyHorsePage() {
       {/* Right Panel - History */}
       <div className="flex-1 bg-[#090a0f] overflow-y-auto flex flex-col">
         <div className="px-4 pt-4 pb-2 flex items-center justify-between">
-          <h2 className="text-sm font-bold text-gray-400 uppercase tracking-wider">HappyHorse 历史记录（{tasksTotal}）</h2>
-          <button onClick={() => loadTasks(page)} className="text-xs text-gray-500 hover:text-white">刷新</button>
+          <h2 className="text-sm font-bold text-gray-400 uppercase tracking-wider">历史记录</h2>
         </div>
 
         {tasksLoading && tasks.length === 0 ? (
           <div className="flex-1 flex items-center justify-center text-gray-600 text-sm">
-            <span className="animate-spin h-4 w-4 border-2 border-pink-400 border-t-transparent rounded-full mr-2" />加载中...
+            <span className="animate-spin h-4 w-4 border-2 border-purple-400 border-t-transparent rounded-full mr-2" />加载中...
           </div>
         ) : tasks.length === 0 ? (
           <div className="flex-1 flex items-center justify-center text-gray-600 text-sm">暂无生成记录</div>
@@ -1322,7 +1325,7 @@ export default function HappyHorsePage() {
                       <div className="flex items-center gap-2 text-[10px]">
                         <span className={`px-2 py-0.5 rounded border ${badge.cls}`}>{badge.text}</span>
                         <span className="text-gray-500">#{t.id}</span>
-                        <span className="text-pink-400">{MODE_TABS.find((m) => m.mode === t.mode)?.label}</span>
+                        <span className="text-purple-400">{MODE_TABS.find((m) => m.mode === t.mode)?.label}</span>
                       </div>
                       <p className="text-xs text-gray-300 line-clamp-2 leading-relaxed">{t.prompt || '（无提示词）'}</p>
                       {t.status === 'error' && t.error_message && (
@@ -1347,7 +1350,7 @@ export default function HappyHorsePage() {
                         <span className="text-[10px] text-gray-600 flex-shrink-0">{formatShortDateTime(t.created_at)}</span>
                         <div className="flex flex-col items-end gap-1.5">
                           <div className="flex flex-wrap justify-end gap-1">
-                            <span className="text-[9px] px-1 py-0.5 rounded bg-pink-500/10 text-pink-300 border border-pink-500/20 leading-none">
+                            <span className="text-[9px] px-1 py-0.5 rounded bg-purple-500/10 text-purple-300 border border-purple-500/20 leading-none">
                               {MODE_TABS.find((m) => m.mode === t.mode)?.label}
                             </span>
                             {t.resolution && <span className="text-[9px] px-1 py-0.5 rounded bg-gray-700/60 text-gray-400 leading-none">{t.resolution}</span>}
@@ -1366,7 +1369,7 @@ export default function HappyHorsePage() {
                             {t.status === 'done' && t.video_url && (
                               <button
                                 onClick={() => handleDownload(t)}
-                                className="text-[11px] px-2 py-1 rounded-xl border border-pink-500/40 text-pink-300 hover:bg-pink-500/10 hover:border-pink-400 transition-all"
+                                className="text-[11px] px-2 py-1 rounded-xl border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition-all"
                               >下载</button>
                             )}
                             <button

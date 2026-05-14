@@ -8,3 +8,4 @@ server/data/*.db-wal
 /.idea/
 .ssh/
 /output.log
+backups/

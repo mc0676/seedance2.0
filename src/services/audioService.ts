@@ -42,8 +42,10 @@ export interface AudioGenerationListResult {
   pageSize: number;
 }
 
-export async function listAudioGenerations(page = 1, pageSize = 20): Promise<AudioGenerationListResult> {
-  const res = await fetch(`${API_BASE}/audio-generations/list?page=${page}&pageSize=${pageSize}`, {
+export async function listAudioGenerations(page = 1, pageSize = 20, projectId?: number | null): Promise<AudioGenerationListResult> {
+  const qs = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+  if (projectId) qs.set('projectId', String(projectId));
+  const res = await fetch(`${API_BASE}/audio-generations/list?${qs}`, {
     headers: getAuthHeaders(),
   });
   const body = await res.json().catch(() => ({}));

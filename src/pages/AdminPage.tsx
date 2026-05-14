@@ -401,6 +401,7 @@ export default function AdminPage() {
   const [newCode, setNewCode] = useState({ code: '', maxUses: 1, note: '', creditsValue: 0 });
   const [editingCodeId, setEditingCodeId] = useState<number | null>(null);
   const [editingCodeData, setEditingCodeData] = useState({ maxUses: 1, note: '', creditsValue: 0 });
+  const [selectedCodeIds, setSelectedCodeIds] = useState<number[]>([]);
 
   // 系统配置
   const [registrationEnabled, setRegistrationEnabled] = useState(true);
@@ -442,6 +443,31 @@ export default function AdminPage() {
     if (!confirm('确定删除此激活码？已激活的用户不受影响。')) return;
     try {
       await deleteActivationCode(id);
+      await loadCodes();
+    } catch (err) { alert(err instanceof Error ? err.message : '删除失败'); }
+  };
+
+  const handleSelectAllCodes = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.checked) {
+      setSelectedCodeIds(codes.map((c) => c.id));
+    } else {
+      setSelectedCodeIds([]);
+    }
+  };
+
+  const handleSelectUsedUpCodes = () => {
+    const usedUpIds = codes.filter((c) => c.used_count >= c.max_uses).map((c) => c.id);
+    setSelectedCodeIds(usedUpIds);
+  };
+
+  const handleDeleteSelectedCodes = async () => {
+    if (selectedCodeIds.length === 0) return;
+    if (!confirm(`确定删除选中的 ${selectedCodeIds.length} 个激活码？已激活的用户不受影响。`)) return;
+    try {
+      for (const id of selectedCodeIds) {
+        await deleteActivationCode(id);
+      }
+      setSelectedCodeIds([]);
       await loadCodes();
     } catch (err) { alert(err instanceof Error ? err.message : '删除失败'); }
   };
@@ -895,57 +921,6 @@ export default function AdminPage() {
           </div>
         )}
 
-        {/* 系统设置（仅系统管理员） */}
-        {isSuperAdmin && (
-        <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-8">
-          <h2 className="text-xl font-semibold text-white mb-4">系统设置</h2>
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-white text-sm font-medium">开放用户注册</p>
-              <p className="text-gray-400 text-xs mt-0.5">关闭后新用户无法注册账号</p>
-            </div>
-            <button
-              onClick={() => handleToggleRegistration(!registrationEnabled)}
-              disabled={savingConfig}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${registrationEnabled ? 'bg-purple-600' : 'bg-gray-700'} ${savingConfig ? 'opacity-50 cursor-not-allowed' : ''}`}
-            >
-              <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${registrationEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
-            </button>
-          </div>
-
-          <div className="border-t border-gray-700 mt-4 pt-4">
-            <div className="flex items-center justify-between mb-3">
-              <div>
-                <p className="text-white text-sm font-medium">维护模式</p>
-                <p className="text-gray-400 text-xs mt-0.5">开启后所有用户看到维护公告，仅管理员可正常使用</p>
-              </div>
-              <button
-                onClick={() => handleToggleMaintenance(!maintenanceMode)}
-                disabled={savingConfig}
-                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${maintenanceMode ? 'bg-yellow-500' : 'bg-gray-700'} ${savingConfig ? 'opacity-50 cursor-not-allowed' : ''}`}
-              >
-                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${maintenanceMode ? 'translate-x-6' : 'translate-x-1'}`} />
-              </button>
-            </div>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={maintenanceMessage}
-                onChange={(e) => setMaintenanceMessage(e.target.value)}
-                placeholder="维护公告内容"
-                className="flex-1 px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500"
-              />
-              <button
-                onClick={handleSaveMaintenanceMessage}
-                disabled={savingConfig}
-                className="btn-save disabled:opacity-50"
-              >
-                保存
-              </button>
-            </div>
-          </div>
-        </div>
-        )}
 
         {/* 激活码管理 */}
         <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl overflow-hidden mb-8">
@@ -999,6 +974,13 @@ export default function AdminPage() {
           </div>
 
           {/* 激活码列表 */}
+          {selectedCodeIds.length > 0 && (
+            <div className="px-6 py-3 bg-[#0f111a] border-b border-gray-800 flex items-center gap-3">
+              <span className="text-sm text-gray-300">已选择 {selectedCodeIds.length} 项</span>
+              <button onClick={handleDeleteSelectedCodes} className="px-3 py-1.5 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-md text-xs font-medium transition-all">删除选中（{selectedCodeIds.length}）</button>
+              <button onClick={handleSelectUsedUpCodes} className="px-3 py-1.5 bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 rounded-md text-xs font-medium transition-all">一键选中已用完</button>
+            </div>
+          )}
           {codes.length === 0 ? (
             <div className="p-8 text-center text-gray-500">暂无激活码</div>
           ) : (
@@ -1006,6 +988,9 @@ export default function AdminPage() {
               <table className="w-full">
                 <thead className="bg-[#0f111a]">
                   <tr>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase w-10">
+                      <input type="checkbox" onChange={handleSelectAllCodes} checked={selectedCodeIds.length === codes.length && codes.length > 0} className="rounded" />
+                    </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase">激活码</th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase">积分变化</th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase">已用 / 总次</th>
@@ -1017,6 +1002,18 @@ export default function AdminPage() {
                 <tbody className="divide-y divide-gray-800">
                   {codes.map((c) => (
                     <tr key={c.id} className="hover:bg-[#0f111a]/50">
+                      <td className="px-6 py-4 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={selectedCodeIds.includes(c.id)}
+                          onChange={() => {
+                            setSelectedCodeIds((prev) =>
+                              prev.includes(c.id) ? prev.filter((id) => id !== c.id) : [...prev, c.id]
+                            );
+                          }}
+                          className="rounded"
+                        />
+                      </td>
                       <td className="px-6 py-4 text-sm font-mono text-white">{c.code}</td>
                       <td className="px-6 py-4 text-sm">
                         {editingCodeId === c.id ? (
@@ -1087,6 +1084,247 @@ export default function AdminPage() {
             </div>
           )}
         </div>
+
+        {/* 用户列表 */}
+        <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl overflow-hidden">
+          <div className="p-6 border-b border-gray-800">
+            <div className="flex items-center justify-between flex-wrap gap-4">
+              <h2 className="text-xl font-semibold text-white">用户管理</h2>
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={filterEmail}
+                    onChange={(e) => setFilterEmail(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleSearchEmail(); }}
+                    placeholder="按邮箱搜索"
+                    className="px-4 py-2 bg-[#0f111a] border border-gray-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 w-56"
+                  />
+                  <button
+                    onClick={handleSearchEmail}
+                    className="px-3 py-2 bg-purple-600 hover:bg-purple-500 rounded-xl text-white text-sm font-medium transition-colors"
+                  >
+                    搜索
+                  </button>
+                </div>
+                {isSuperAdmin && (
+                  <select
+                    value={filterRole}
+                    onChange={(e) => setFilterRole(e.target.value)}
+                    className="px-4 py-2 bg-[#0f111a] border border-gray-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  >
+                    <option value="all">所有角色</option>
+                    <option value="user">普通用户</option>
+                    <option value="admin">管理员</option>
+                  </select>
+                )}
+                <select
+                  value={filterStatus}
+                  onChange={(e) => setFilterStatus(e.target.value)}
+                  className="px-4 py-2 bg-[#0f111a] border border-gray-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                >
+                  <option value="all">所有状态</option>
+                  <option value="active">正常</option>
+                  <option value="disabled">禁用</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {loading ? (
+            <div className="p-12 text-center">
+              <div className="inline-block animate-spin text-purple-500">
+                <svg className="w-8 h-8" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                  <path d="M21 12a9 9 0 1 1-6.219-8.56" strokeWidth={2} strokeLinecap="round" />
+                </svg>
+              </div>
+              <p className="text-gray-400 mt-4">加载中...</p>
+            </div>
+          ) : error ? (
+            <div className="p-12 text-center text-red-400">{error}</div>
+          ) : (
+            <>
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead className="bg-[#0f111a]">
+                    <tr>
+                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">ID</th>
+                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">邮箱</th>
+                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">角色</th>
+                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">状态</th>
+                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">积分</th>
+                      {isSuperAdmin && <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">无限额度</th>}
+                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">注册时间</th>
+                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-800">
+                    {(isSuperAdmin ? users : users).map((user) => {
+                      const canEdit = isSuperAdmin || user.role === 'user';
+                      return (
+                      <tr key={user.id} className="hover:bg-[#0f111a]/50">
+                        <td className="px-6 py-4 text-sm text-gray-400">#{user.id}</td>
+                        <td className="px-6 py-4 text-sm text-white">{user.email}</td>
+                        <td className="px-6 py-4 text-sm">
+                          <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                            user.role === 'super_admin' ? 'bg-red-500/20 text-red-400' :
+                            user.role === 'admin' ? 'bg-amber-500/20 text-amber-400' :
+                            'bg-gray-500/20 text-gray-400'
+                          }`}>
+                            {user.role === 'super_admin' ? '系统管理员' : user.role === 'admin' ? '普通管理员' : '普通用户'}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 text-sm">
+                          <span className={`px-2 py-1 rounded-full text-xs font-medium ${user.status === 'active' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+                            {user.status === 'active' ? '正常' : '禁用'}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 text-sm text-white">
+                          {(user as any).unlimited_credits || user.unlimitedCredits ? (
+                            <span className="text-amber-400 font-semibold">∞</span>
+                          ) : (
+                            user.credits
+                          )}
+                        </td>
+                        {isSuperAdmin && (
+                          <td className="px-6 py-4 text-sm">
+                            <button
+                              onClick={() => handleToggleUnlimited(user)}
+                              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${(user as any).unlimited_credits || user.unlimitedCredits ? 'bg-amber-500' : 'bg-gray-700'}`}
+                            >
+                              <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${(user as any).unlimited_credits || user.unlimitedCredits ? 'translate-x-5' : 'translate-x-1'}`} />
+                            </button>
+                          </td>
+                        )}
+                        <td className="px-6 py-4 text-sm text-gray-400">
+                          {formatDateTime(user.createdAt!)}
+                        </td>
+                        <td className="px-6 py-4 text-sm">
+                          <div className="flex items-center gap-2">
+                            {canEdit ? (
+                              <>
+                                <button
+                                  onClick={() => handleStatusChange(user.id, user.status === 'active' ? 'disabled' : 'active')}
+                                  className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${user.status === 'active' ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30' : 'bg-green-500/20 text-green-400 hover:bg-green-500/30'}`}
+                                >
+                                  {user.status === 'active' ? '禁用' : '启用'}
+                                </button>
+                                {isSuperAdmin && user.id !== currentUser?.id && (
+                                  <select
+                                    value={user.role}
+                                    onChange={async (e) => {
+                                      try {
+                                        await setUserRole(user.id, e.target.value as 'user' | 'admin' | 'super_admin');
+                                        loadUsers(currentPage);
+                                      } catch (err) { alert(err instanceof Error ? err.message : '修改失败'); }
+                                    }}
+                                    className="px-2 py-1 bg-[#0f111a] border border-gray-700 rounded text-xs text-white"
+                                  >
+                                    <option value="user">普通用户</option>
+                                    <option value="admin">普通管理员</option>
+                                    <option value="super_admin">系统管理员</option>
+                                  </select>
+                                )}
+                                <button
+                                  onClick={() => handleOpenUserModal(user)}
+                                  className="px-3 py-1.5 bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 rounded-md text-xs font-medium transition-all"
+                                >
+                                  编辑
+                                </button>
+                              </>
+                            ) : (
+                              <span className="text-xs text-gray-600">—</span>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                      );
+                    })}
+
+                  </tbody>
+                </table>
+              </div>
+
+              {/* 分页 */}
+              <div className="p-6 border-t border-gray-800 flex items-center justify-between">
+                <p className="text-sm text-gray-400">共 {totalUsers} 个用户，第 {currentPage} / {totalPages} 页</p>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => loadUsers(currentPage - 1)} disabled={currentPage <= 1} className="btn-page">上一页</button>
+                  <button onClick={() => loadUsers(currentPage + 1)} disabled={currentPage >= totalPages} className="btn-page">下一页</button>
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs text-gray-400">跳转</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={totalPages}
+                      defaultValue={currentPage}
+                      key={currentPage}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          const v = parseInt((e.target as HTMLInputElement).value);
+                          if (!isNaN(v) && v >= 1 && v <= totalPages) loadUsers(v);
+                        }
+                      }}
+                      className="w-16 px-2 py-1 bg-[#0f111a] border border-gray-700 rounded text-white text-sm"
+                    />
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* 系统设置（仅系统管理员） */}
+        {isSuperAdmin && (
+        <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-8">
+          <h2 className="text-xl font-semibold text-white mb-4">系统设置</h2>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-white text-sm font-medium">开放用户注册</p>
+              <p className="text-gray-400 text-xs mt-0.5">关闭后新用户无法注册账号</p>
+            </div>
+            <button
+              onClick={() => handleToggleRegistration(!registrationEnabled)}
+              disabled={savingConfig}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${registrationEnabled ? 'bg-purple-600' : 'bg-gray-700'} ${savingConfig ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+              <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${registrationEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+            </button>
+          </div>
+
+          <div className="border-t border-gray-700 mt-4 pt-4">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <p className="text-white text-sm font-medium">维护模式</p>
+                <p className="text-gray-400 text-xs mt-0.5">开启后所有用户看到维护公告，仅管理员可正常使用</p>
+              </div>
+              <button
+                onClick={() => handleToggleMaintenance(!maintenanceMode)}
+                disabled={savingConfig}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${maintenanceMode ? 'bg-yellow-500' : 'bg-gray-700'} ${savingConfig ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${maintenanceMode ? 'translate-x-6' : 'translate-x-1'}`} />
+              </button>
+            </div>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={maintenanceMessage}
+                onChange={(e) => setMaintenanceMessage(e.target.value)}
+                placeholder="维护公告内容"
+                className="flex-1 px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500"
+              />
+              <button
+                onClick={handleSaveMaintenanceMessage}
+                disabled={savingConfig}
+                className="btn-save disabled:opacity-50"
+              >
+                保存
+              </button>
+            </div>
+          </div>
+        </div>
+        )}
 
         {/* 模型计费、素材库、Key组、速创Key、全局任务（仅系统管理员） */}
         {isSuperAdmin && (<>
@@ -1176,85 +1414,6 @@ export default function AdminPage() {
             );
           })}
         </div>
-
-            {/* 音频生成中转视频配置 */}
-            <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
-                <h2 className="text-xl font-semibold text-white mb-2">音频生成中转配置</h2>
-                <p className="text-xs text-gray-500 mb-4">音频生成会先生成一段中转视频再提取音轨,这里配置中转视频的参数,降低消耗。默认:Seedance
-                    2.0 Fast / 1:1 / 480p / 4 秒</p>
-                {audioCfg && audioCfgOptions ? (
-                    audioCfgEditing && audioCfgDraft ? (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                            <label className="block">
-                                <span className="text-xs text-gray-400 block mb-1">模型</span>
-                                <select
-                                    className="w-full px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-white text-sm focus:outline-none focus:border-purple-500"
-                                    value={audioCfgDraft.model}
-                                    onChange={(e) => setAudioCfgDraft({...audioCfgDraft, model: e.target.value})}
-                                >
-                                    {Array.from(new Set([audioCfgDraft.model, ...modelPricings.map((m) => m.model_key), 'seedance-2.0-fast', 'seedance-2.0'])).map((k) => (
-                                        <option key={k} value={k}>{k}</option>
-                                    ))}
-                                </select>
-                            </label>
-                            <label className="block">
-                                <span className="text-xs text-gray-400 block mb-1">画面比例</span>
-                                <select
-                                    className="w-full px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-white text-sm focus:outline-none focus:border-purple-500"
-                                    value={audioCfgDraft.ratio}
-                                    onChange={(e) => setAudioCfgDraft({...audioCfgDraft, ratio: e.target.value})}
-                                >
-                                    {audioCfgOptions.ratios.map((r) => <option key={r} value={r}>{r}</option>)}
-                                </select>
-                            </label>
-                            <label className="block">
-                                <span className="text-xs text-gray-400 block mb-1">分辨率</span>
-                                <select
-                                    className="w-full px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-white text-sm focus:outline-none focus:border-purple-500"
-                                    value={audioCfgDraft.resolution}
-                                    onChange={(e) => setAudioCfgDraft({...audioCfgDraft, resolution: e.target.value})}
-                                >
-                                    {audioCfgOptions.resolutions.map((r) => <option key={r} value={r}>{r}</option>)}
-                                </select>
-                            </label>
-                            <label className="block">
-                                <span className="text-xs text-gray-400 block mb-1">时长(秒)</span>
-                                <select
-                                    className="w-full px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-white text-sm focus:outline-none focus:border-purple-500"
-                                    value={audioCfgDraft.duration}
-                                    onChange={(e) => setAudioCfgDraft({
-                                        ...audioCfgDraft,
-                                        duration: Number(e.target.value)
-                                    })}
-                                >
-                                    {audioCfgOptions.durations.map((d) => <option key={d} value={d}>{d}s</option>)}
-                                </select>
-                            </label>
-                            <div className="sm:col-span-2 flex gap-2 mt-1">
-                                <button onClick={handleSaveAudioCfg} disabled={audioCfgSaving}
-                                        className="btn-save">{audioCfgSaving ? '保存中...' : '保存'}</button>
-                                <button onClick={() => setAudioCfgEditing(false)}
-                                        className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-xl text-white text-sm">取消
-                                </button>
-                            </div>
-                        </div>
-                    ) : (
-                        <div className="flex items-center gap-3 flex-wrap">
-                            <code
-                                className="flex-1 min-w-0 px-3 py-2 bg-[#0f111a] rounded text-gray-300 text-sm font-mono">
-                                {audioCfg.model} · {audioCfg.ratio} · {audioCfg.resolution} · {audioCfg.duration}s
-                            </code>
-                            <button onClick={() => {
-                                setAudioCfgDraft(audioCfg);
-                                setAudioCfgEditing(true);
-                            }} className="btn-edit">修改
-                            </button>
-                        </div>
-                    )
-                ) : (
-                    <div className="text-xs text-gray-500">加载中...</div>
-                )}
-            </div>
 
         {/* 火山原生资产库 */}
         <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
@@ -1849,179 +2008,86 @@ export default function AdminPage() {
           )}
         </div>
 
-        </>)}
-
-        {/* 用户列表 */}
-        <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl overflow-hidden">
-          <div className="p-6 border-b border-gray-800">
-            <div className="flex items-center justify-between flex-wrap gap-4">
-              <h2 className="text-xl font-semibold text-white">用户管理</h2>
-              <div className="flex items-center gap-3">
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={filterEmail}
-                    onChange={(e) => setFilterEmail(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') handleSearchEmail(); }}
-                    placeholder="按邮箱搜索"
-                    className="px-4 py-2 bg-[#0f111a] border border-gray-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 w-56"
-                  />
-                  <button
-                    onClick={handleSearchEmail}
-                    className="px-3 py-2 bg-purple-600 hover:bg-purple-500 rounded-xl text-white text-sm font-medium transition-colors"
-                  >
-                    搜索
-                  </button>
-                </div>
-                {isSuperAdmin && (
-                  <select
-                    value={filterRole}
-                    onChange={(e) => setFilterRole(e.target.value)}
-                    className="px-4 py-2 bg-[#0f111a] border border-gray-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
-                  >
-                    <option value="all">所有角色</option>
-                    <option value="user">普通用户</option>
-                    <option value="admin">管理员</option>
-                  </select>
-                )}
-                <select
-                  value={filterStatus}
-                  onChange={(e) => setFilterStatus(e.target.value)}
-                  className="px-4 py-2 bg-[#0f111a] border border-gray-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
-                >
-                  <option value="all">所有状态</option>
-                  <option value="active">正常</option>
-                  <option value="disabled">禁用</option>
-                </select>
-              </div>
-            </div>
-          </div>
-
-          {loading ? (
-            <div className="p-12 text-center">
-              <div className="inline-block animate-spin text-purple-500">
-                <svg className="w-8 h-8" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                  <path d="M21 12a9 9 0 1 1-6.219-8.56" strokeWidth={2} strokeLinecap="round" />
-                </svg>
-              </div>
-              <p className="text-gray-400 mt-4">加载中...</p>
-            </div>
-          ) : error ? (
-            <div className="p-12 text-center text-red-400">{error}</div>
-          ) : (
-            <>
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead className="bg-[#0f111a]">
-                    <tr>
-                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">ID</th>
-                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">邮箱</th>
-                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">角色</th>
-                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">状态</th>
-                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">积分</th>
-                      {isSuperAdmin && <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">无限额度</th>}
-                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">注册时间</th>
-                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">操作</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-800">
-                    {(isSuperAdmin ? users : users).map((user) => {
-                      const canEdit = isSuperAdmin || user.role === 'user';
-                      return (
-                      <tr key={user.id} className="hover:bg-[#0f111a]/50">
-                        <td className="px-6 py-4 text-sm text-gray-400">#{user.id}</td>
-                        <td className="px-6 py-4 text-sm text-white">{user.email}</td>
-                        <td className="px-6 py-4 text-sm">
-                          <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                            user.role === 'super_admin' ? 'bg-red-500/20 text-red-400' :
-                            user.role === 'admin' ? 'bg-amber-500/20 text-amber-400' :
-                            'bg-gray-500/20 text-gray-400'
-                          }`}>
-                            {user.role === 'super_admin' ? '系统管理员' : user.role === 'admin' ? '普通管理员' : '普通用户'}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 text-sm">
-                          <span className={`px-2 py-1 rounded-full text-xs font-medium ${user.status === 'active' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
-                            {user.status === 'active' ? '正常' : '禁用'}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 text-sm text-white">
-                          {(user as any).unlimited_credits || user.unlimitedCredits ? (
-                            <span className="text-amber-400 font-semibold">∞</span>
-                          ) : (
-                            user.credits
-                          )}
-                        </td>
-                        {isSuperAdmin && (
-                          <td className="px-6 py-4 text-sm">
-                            <button
-                              onClick={() => handleToggleUnlimited(user)}
-                              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${(user as any).unlimited_credits || user.unlimitedCredits ? 'bg-amber-500' : 'bg-gray-700'}`}
-                            >
-                              <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${(user as any).unlimited_credits || user.unlimitedCredits ? 'translate-x-5' : 'translate-x-1'}`} />
+            {/* 音频生成中转视频配置 */}
+            <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
+                <h2 className="text-xl font-semibold text-white mb-2">音频生成中转配置</h2>
+                <p className="text-xs text-gray-500 mb-4">音频生成会先生成一段中转视频再提取音轨,这里配置中转视频的参数,降低消耗。默认:Seedance
+                    2.0 Fast / 1:1 / 480p / 4 秒</p>
+                {audioCfg && audioCfgOptions ? (
+                    audioCfgEditing && audioCfgDraft ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <label className="block">
+                                <span className="text-xs text-gray-400 block mb-1">模型</span>
+                                <select
+                                    className="w-full px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-white text-sm focus:outline-none focus:border-purple-500"
+                                    value={audioCfgDraft.model}
+                                    onChange={(e) => setAudioCfgDraft({...audioCfgDraft, model: e.target.value})}
+                                >
+                                    {Array.from(new Set([audioCfgDraft.model, ...modelPricings.map((m) => m.model_key), 'seedance-2.0-fast', 'seedance-2.0'])).map((k) => (
+                                        <option key={k} value={k}>{k}</option>
+                                    ))}
+                                </select>
+                            </label>
+                            <label className="block">
+                                <span className="text-xs text-gray-400 block mb-1">画面比例</span>
+                                <select
+                                    className="w-full px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-white text-sm focus:outline-none focus:border-purple-500"
+                                    value={audioCfgDraft.ratio}
+                                    onChange={(e) => setAudioCfgDraft({...audioCfgDraft, ratio: e.target.value})}
+                                >
+                                    {audioCfgOptions.ratios.map((r) => <option key={r} value={r}>{r}</option>)}
+                                </select>
+                            </label>
+                            <label className="block">
+                                <span className="text-xs text-gray-400 block mb-1">分辨率</span>
+                                <select
+                                    className="w-full px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-white text-sm focus:outline-none focus:border-purple-500"
+                                    value={audioCfgDraft.resolution}
+                                    onChange={(e) => setAudioCfgDraft({...audioCfgDraft, resolution: e.target.value})}
+                                >
+                                    {audioCfgOptions.resolutions.map((r) => <option key={r} value={r}>{r}</option>)}
+                                </select>
+                            </label>
+                            <label className="block">
+                                <span className="text-xs text-gray-400 block mb-1">时长(秒)</span>
+                                <select
+                                    className="w-full px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-white text-sm focus:outline-none focus:border-purple-500"
+                                    value={audioCfgDraft.duration}
+                                    onChange={(e) => setAudioCfgDraft({
+                                        ...audioCfgDraft,
+                                        duration: Number(e.target.value)
+                                    })}
+                                >
+                                    {audioCfgOptions.durations.map((d) => <option key={d} value={d}>{d}s</option>)}
+                                </select>
+                            </label>
+                            <div className="sm:col-span-2 flex gap-2 mt-1">
+                                <button onClick={handleSaveAudioCfg} disabled={audioCfgSaving}
+                                        className="btn-save">{audioCfgSaving ? '保存中...' : '保存'}</button>
+                                <button onClick={() => setAudioCfgEditing(false)}
+                                        className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-xl text-white text-sm">取消
+                                </button>
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="flex items-center gap-3 flex-wrap">
+                            <code
+                                className="flex-1 min-w-0 px-3 py-2 bg-[#0f111a] rounded text-gray-300 text-sm font-mono">
+                                {audioCfg.model} · {audioCfg.ratio} · {audioCfg.resolution} · {audioCfg.duration}s
+                            </code>
+                            <button onClick={() => {
+                                setAudioCfgDraft(audioCfg);
+                                setAudioCfgEditing(true);
+                            }} className="btn-edit">修改
                             </button>
-                          </td>
-                        )}
-                        <td className="px-6 py-4 text-sm text-gray-400">
-                          {formatDateTime(user.createdAt!)}
-                        </td>
-                        <td className="px-6 py-4 text-sm">
-                          <div className="flex items-center gap-2">
-                            {canEdit ? (
-                              <>
-                                <button
-                                  onClick={() => handleStatusChange(user.id, user.status === 'active' ? 'disabled' : 'active')}
-                                  className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${user.status === 'active' ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30' : 'bg-green-500/20 text-green-400 hover:bg-green-500/30'}`}
-                                >
-                                  {user.status === 'active' ? '禁用' : '启用'}
-                                </button>
-                                {isSuperAdmin && user.id !== currentUser?.id && (
-                                  <select
-                                    value={user.role}
-                                    onChange={async (e) => {
-                                      try {
-                                        await setUserRole(user.id, e.target.value as 'user' | 'admin' | 'super_admin');
-                                        loadUsers(currentPage);
-                                      } catch (err) { alert(err instanceof Error ? err.message : '修改失败'); }
-                                    }}
-                                    className="px-2 py-1 bg-[#0f111a] border border-gray-700 rounded text-xs text-white"
-                                  >
-                                    <option value="user">普通用户</option>
-                                    <option value="admin">普通管理员</option>
-                                    <option value="super_admin">系统管理员</option>
-                                  </select>
-                                )}
-                                <button
-                                  onClick={() => handleOpenUserModal(user)}
-                                  className="px-3 py-1.5 bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 rounded-md text-xs font-medium transition-all"
-                                >
-                                  编辑
-                                </button>
-                              </>
-                            ) : (
-                              <span className="text-xs text-gray-600">—</span>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                      );
-                    })}
+                        </div>
+                    )
+                ) : (
+                    <div className="text-xs text-gray-500">加载中...</div>
+                )}
+            </div>
 
-                  </tbody>
-                </table>
-              </div>
-
-              {/* 分页 */}
-              <div className="p-6 border-t border-gray-800 flex items-center justify-between">
-                <p className="text-sm text-gray-400">共 {totalUsers} 个用户，第 {currentPage} / {totalPages} 页</p>
-                <div className="flex items-center gap-2">
-                  <button onClick={() => loadUsers(currentPage - 1)} disabled={currentPage <= 1} className="btn-page">上一页</button>
-                  <button onClick={() => loadUsers(currentPage + 1)} disabled={currentPage >= totalPages} className="btn-page">下一页</button>
-                </div>
-              </div>
-            </>
-          )}
-        </div>
+        </>)}
 
         {/* 用户编辑弹窗 */}
         {showUserModal && selectedUser && (
