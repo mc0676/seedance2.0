@@ -220,6 +220,88 @@ function queryEnhancementRows({ db, projectId, isAdmin, userId, status }) {
 }
 
 /**
+ * 将 tasks_happyhorse 行转为 DownloadTask 格式
+ * 归到 model_type='video' 大类（HappyHorse 产物本身就是 mp4），
+ * 用 happyhorse_subtype + happyhorse_mode 区分。
+ * 前端按 model_subtype='happyhorse' 决定下载完成回调走哪条 mark-downloaded。
+ */
+const HAPPYHORSE_MODE_LABEL = { t2v: '文生视频', i2v: '首帧视频', r2v: '多图生视频', 'video-edit': '视频编辑' };
+function happyhorseRowToTask(r) {
+  const videoUrl = r.video_url || null;
+  const downloaded = !!r.downloaded_at;
+  let effective = 'generating';
+  if (r.status === 'error' || r.status === 'canceled') effective = 'failed';
+  else if (r.status === 'done') effective = videoUrl ? (downloaded ? 'done' : 'pending') : 'failed';
+  else if (r.status === 'pending' || r.status === 'processing') effective = 'generating';
+  else effective = 'failed';
+  return {
+    id: r.id,
+    prompt: r.prompt || '',
+    model: r.model,
+    ratio: r.ratio,
+    duration: r.duration,
+    resolution: r.resolution,
+    status: r.status === 'done' ? 'done' : (r.status === 'error' || r.status === 'canceled' ? 'error' : 'generating'),
+    download_status: downloaded ? 'done' : 'pending',
+    video_url: videoUrl,
+    image_urls: null,
+    video_path: null,
+    download_path: null,
+    downloaded_at: r.downloaded_at || null,
+    account_info: null,
+    submit_id: null,
+    history_id: null,
+    created_at: r.created_at,
+    completed_at: r.completed_at,
+    error_message: r.error_message,
+    project_id: r.project_id,
+    project_name: r.project_name || null,
+    hasHistory: false,
+    model_type: 'video',
+    model_subtype: 'happyhorse',
+    effective_download_status: effective,
+    assets: [],
+    credits_used: r.credits_used,
+    // happyhorse 专有
+    happyhorse_mode: r.mode,
+    happyhorse_mode_label: HAPPYHORSE_MODE_LABEL[r.mode] || r.mode,
+  };
+}
+
+function queryHappyhorseRows({ db, projectId, isAdmin, userId, status }) {
+  const where = [];
+  const params = [];
+  where.push('h.deleted_at IS NULL');
+  if (projectId) { where.push('h.project_id = ?'); params.push(projectId); }
+  if (!isAdmin && userId !== null) {
+    where.push(`(h.user_id = ? OR EXISTS (
+      SELECT 1 FROM project_members pm WHERE pm.project_id = h.project_id AND pm.user_id = ?
+    ))`);
+    params.push(userId, userId);
+  }
+  if (status === 'generating') {
+    where.push("h.status IN ('pending','processing')");
+  } else if (status === 'pending') {
+    where.push("h.status = 'done' AND h.video_url IS NOT NULL AND h.video_url != '' AND h.downloaded_at IS NULL");
+  } else if (status === 'done') {
+    where.push("h.status = 'done' AND h.downloaded_at IS NOT NULL");
+  } else if (status === 'failed') {
+    where.push("(h.status IN ('error','canceled') OR (h.status = 'done' AND (h.video_url IS NULL OR h.video_url = '')))");
+  }
+  const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  return db.prepare(`
+    SELECT h.id, h.user_id, h.project_id, h.mode, h.model, h.prompt, h.ratio, h.duration, h.resolution,
+           h.status, h.video_url, h.credits_used, h.error_message,
+           h.created_at, h.completed_at, h.downloaded_at,
+           p.name AS project_name
+    FROM tasks_happyhorse h
+    LEFT JOIN projects p ON p.id = h.project_id
+    ${whereClause}
+    ORDER BY h.created_at DESC
+  `).all(...params);
+}
+
+/**
  * 视频下载服务
  * 负责将生成的视频保存到本地
  */
@@ -576,6 +658,8 @@ export function getDownloadTasks(options = {}) {
     };
   }
 
+  // HappyHorse 归到 video 大类，没有独立筛选项
+
   const whereClause = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
   const countStmt = db.prepare(`
     SELECT COUNT(*) as count
@@ -684,7 +768,10 @@ export function getDownloadTasks(options = {}) {
     // 合并画质增强
     const enhRows = queryEnhancementRows({ db, projectId, isAdmin, userId, status });
     const enhTasks = enhRows.map((r) => enhancementRowToTask(r));
-    const merged = [...videoTasks, ...imgTasks, ...audioTasks, ...enhTasks].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    // 合并 HappyHorse
+    const hhRows = queryHappyhorseRows({ db, projectId, isAdmin, userId, status });
+    const hhTasks = hhRows.map((r) => happyhorseRowToTask(r));
+    const merged = [...videoTasks, ...imgTasks, ...audioTasks, ...enhTasks, ...hhTasks].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
     return {
       tasks: merged.slice((page - 1) * pageSize, page * pageSize),
       total: merged.length,
@@ -732,6 +819,55 @@ export function getDownloadTasks(options = {}) {
   }));
 
 
+
+  // HappyHorse 视频合并到 video 大类：取所有可见 happyhorse 行，按 created_at 与 Seedance 视频混合排序，
+  // 然后按当前 page/pageSize 在内存分页。total 也加上 happyhorse 总数。
+  // 注意：这里我们用 stmt 已经拿到了 Seedance 当前页的 tasks（受 LIMIT/OFFSET 限制）。
+  // 为了让"全部视频"能正确混排，重新执行不分页的 video 查询 + happyhorse 全量，再分页。
+  if (type === 'video') {
+    const allVideoRows = db.prepare(`${columnSelect} ORDER BY t.created_at DESC`).all(...params);
+    const allVideoTaskIds = allVideoRows.map((t) => t.id);
+    let assetsByTaskAll = {};
+    let enhancementsByTaskAll = {};
+    if (allVideoTaskIds.length > 0) {
+      const placeholders = allVideoTaskIds.map(() => '?').join(',');
+      const assets = db.prepare(
+        `SELECT task_id, asset_type, image_uri, original_name, sort_order FROM task_assets WHERE task_id IN (${placeholders}) AND image_uri IS NOT NULL AND image_uri != '' ORDER BY sort_order ASC`
+      ).all(...allVideoTaskIds);
+      for (const a of assets) {
+        if (!assetsByTaskAll[a.task_id]) assetsByTaskAll[a.task_id] = [];
+        assetsByTaskAll[a.task_id].push({ assetType: a.asset_type, uri: a.image_uri, originalName: a.original_name || null });
+      }
+      const enhancements = db.prepare(
+        `SELECT id, task_id, status, tool_version, scene, target_resolution,
+                enhanced_video_url, error_message, credits_used, duration_seconds,
+                created_at, finished_at
+         FROM video_enhancements WHERE task_id IN (${placeholders}) AND deleted_at IS NULL
+         ORDER BY created_at DESC`
+      ).all(...allVideoTaskIds);
+      for (const e of enhancements) {
+        if (!enhancementsByTaskAll[e.task_id]) enhancementsByTaskAll[e.task_id] = [];
+        enhancementsByTaskAll[e.task_id].push(e);
+      }
+    }
+    const seedanceVideoTasks = allVideoRows.map((task) => ({
+      ...task,
+      hasHistory: !!task.history_id,
+      model_type: 'video',
+      assets: assetsByTaskAll[task.id] || [],
+      enhancements: enhancementsByTaskAll[task.id] || [],
+    }));
+    const hhRows = queryHappyhorseRows({ db, projectId, isAdmin, userId, status });
+    const hhTasks = hhRows.map((r) => happyhorseRowToTask(r));
+    const merged = [...seedanceVideoTasks, ...hhTasks]
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    return {
+      tasks: merged.slice((page - 1) * pageSize, page * pageSize),
+      total: merged.length,
+      page,
+      pageSize,
+    };
+  }
 
   return {
     tasks: videoTasks,

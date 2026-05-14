@@ -6,6 +6,7 @@ import { getDatabase } from '../database/index.js';
  */
 export const FEATURE_KEYS = [
   { key: 'generate_video_seedance', label: '视频生成 (Seedance 2.0)', defaultEnabled: true },
+  { key: 'generate_video_happyhorse', label: '视频生成 (HappyHorse)', defaultEnabled: false },
 ];
 
 const FEATURE_KEY_SET = new Set(FEATURE_KEYS.map((f) => f.key));

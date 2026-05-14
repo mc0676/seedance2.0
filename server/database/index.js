@@ -287,6 +287,81 @@ export function initDatabase() {
   // 即便业务行被删除，credit_locks 行的外键值也不会被未来新行撞 UNIQUE。
   // 因此这里不做任何 credit_locks 的清理/解绑，行内容完整保留。
 
+  // 增量迁移：HappyHorse 视频生成模块（DashScope 异步轮询）
+  // 1) credit_locks 加 task_happyhorse_id（UNIQUE 通过单独索引实现）
+  // 2) 创建 tasks_happyhorse / model_pricing_happyhorse 表
+  // 3) 写入 happyhorse_api_key 占位
+  {
+    const clCols = db.prepare("PRAGMA table_info(credit_locks)").all().map((c) => c.name);
+    if (!clCols.includes('task_happyhorse_id')) {
+      console.log('[database] 迁移：credit_locks 添加 task_happyhorse_id 列...');
+      db.exec(`ALTER TABLE credit_locks ADD COLUMN task_happyhorse_id INTEGER`);
+    }
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_locks_task_happyhorse_id_unique
+             ON credit_locks(task_happyhorse_id) WHERE task_happyhorse_id IS NOT NULL`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_credit_locks_happyhorse ON credit_locks(task_happyhorse_id)`);
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS tasks_happyhorse (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        project_id INTEGER NOT NULL,
+        mode TEXT NOT NULL CHECK (mode IN ('t2v', 'i2v', 'r2v', 'video-edit')),
+        model TEXT NOT NULL,
+        prompt TEXT NOT NULL DEFAULT '',
+        ratio TEXT,
+        duration INTEGER,
+        resolution TEXT NOT NULL,
+        media_json TEXT,
+        watermark INTEGER DEFAULT 0,
+        audio_setting TEXT,
+        seed INTEGER,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'done', 'error', 'canceled')),
+        dashscope_task_id TEXT,
+        request_id TEXT,
+        video_url TEXT,
+        video_path TEXT,
+        download_status TEXT DEFAULT 'pending',
+        download_path TEXT,
+        downloaded_at DATETIME,
+        result_duration REAL,
+        result_output_duration REAL,
+        result_input_duration REAL,
+        result_resolution INTEGER,
+        result_ratio TEXT,
+        credits_used INTEGER DEFAULT 0,
+        error_message TEXT,
+        submitted_at DATETIME,
+        completed_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        deleted_at DATETIME,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_tasks_happyhorse_user ON tasks_happyhorse(user_id);
+      CREATE INDEX IF NOT EXISTS idx_tasks_happyhorse_project ON tasks_happyhorse(project_id);
+      CREATE INDEX IF NOT EXISTS idx_tasks_happyhorse_status ON tasks_happyhorse(status);
+      CREATE INDEX IF NOT EXISTS idx_tasks_happyhorse_dashscope ON tasks_happyhorse(dashscope_task_id);
+
+      CREATE TABLE IF NOT EXISTS model_pricing_happyhorse (
+        mode TEXT NOT NULL CHECK (mode IN ('t2v', 'i2v', 'r2v', 'video-edit')),
+        resolution TEXT NOT NULL CHECK (resolution IN ('720P', '1080P')),
+        credits_per_second INTEGER NOT NULL,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (mode, resolution)
+      );
+      INSERT OR IGNORE INTO model_pricing_happyhorse (mode, resolution, credits_per_second) VALUES
+        ('t2v', '720P', 90), ('t2v', '1080P', 160),
+        ('i2v', '720P', 90), ('i2v', '1080P', 160),
+        ('r2v', '720P', 90), ('r2v', '1080P', 160),
+        ('video-edit', '720P', 90), ('video-edit', '1080P', 160);
+
+      INSERT OR IGNORE INTO system_config (key, value, description)
+      VALUES ('happyhorse_api_key', '', 'HappyHorse (阿里云百炼 DashScope) API Key');
+    `);
+  }
+
   console.log(`[database] 数据库初始化成功：${DB_PATH}`);
   return db;
 }

@@ -158,6 +158,14 @@ export async function markEnhancementDownloaded(id: number): Promise<void> {
   });
 }
 
+/** 标记 HappyHorse 任务已下载（持久化到 tasks_happyhorse.downloaded_at） */
+export async function markHappyhorseDownloaded(id: number): Promise<void> {
+  await fetch(`${API_BASE}/happyhorse-tasks/${id}/mark-downloaded`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+  });
+}
+
 /**
  * 通过代理直接从远程 URL 下载视频到浏览器（无需先保存到服务器）
  */

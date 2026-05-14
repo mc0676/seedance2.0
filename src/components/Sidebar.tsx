@@ -52,6 +52,12 @@ export default function Sidebar({ currentUser, onLogout }: SidebarProps) {
       icon: FilmIcon,
     },
     {
+      id: 'HAPPYHORSE',
+      label: 'HappyHorse',
+      path: '/happyhorse',
+      icon: FilmIcon,
+    },
+    {
       id: 'IMAGE_GEN',
       label: '图片生成',
       path: '/image-gen',

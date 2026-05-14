@@ -164,6 +164,13 @@ export default function AdminPage() {
   const [mediaKitKeyDraft, setMediaKitKeyDraft] = useState('');
   const [enhancementPricing, setEnhancementPricing] = useState<AdminEnhancementPricing | null>(null);
 
+  // HappyHorse
+  const [happyhorseKeyMasked, setHappyhorseKeyMasked] = useState('');
+  const [happyhorseKeyConfigured, setHappyhorseKeyConfigured] = useState(false);
+  const [happyhorseKeyEditing, setHappyhorseKeyEditing] = useState(false);
+  const [happyhorseKeyDraft, setHappyhorseKeyDraft] = useState('');
+  const [happyhorsePricing, setHappyhorsePricing] = useState<Array<{ mode: string; resolution: string; credits_per_second: number }>>([]);
+
   // 音频生成中转配置
   const [audioCfg, setAudioCfg] = useState<AudioGenConfig | null>(null);
   const [audioCfgDraft, setAudioCfgDraft] = useState<AudioGenConfig | null>(null);
@@ -517,6 +524,15 @@ export default function AdminPage() {
       getWuyinKey().then((d) => setWuyinKey(d.key)).catch(() => {});
       getMediaKitKey().then((d) => setMediaKitKey(d.key)).catch(() => {});
       fetchEnhancementPricing().then(setEnhancementPricing).catch(() => {});
+      // HappyHorse
+      fetch('/api/admin/happyhorse-key', { headers: getAuthHeaders() })
+        .then((r) => r.json())
+        .then((j) => { if (j?.success) { setHappyhorseKeyMasked(j.data.masked || ''); setHappyhorseKeyConfigured(!!j.data.configured); } })
+        .catch(() => {});
+      fetch('/api/admin/happyhorse-pricing', { headers: getAuthHeaders() })
+        .then((r) => r.json())
+        .then((j) => { if (j?.success) setHappyhorsePricing(j.data.pricing || []); })
+        .catch(() => {});
       getAudioGenConfig().then((d) => { setAudioCfg(d.config); setAudioCfgOptions(d.options); }).catch(() => {});
       loadVolcAkSk();
     }
@@ -627,6 +643,40 @@ export default function AdminPage() {
       setMediaKitKeyEditing(false);
     } catch (e) { alert(e instanceof Error ? e.message : '保存失败'); }
   };
+
+  const handleSaveHappyhorseKey = async () => {
+    try {
+      const res = await fetch('/api/admin/happyhorse-key', {
+        method: 'PUT',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ apiKey: happyhorseKeyDraft }),
+      });
+      const j = await res.json();
+      if (!j?.success) throw new Error(j?.error || '保存失败');
+      // 重新拉
+      const r2 = await fetch('/api/admin/happyhorse-key', { headers: getAuthHeaders() });
+      const j2 = await r2.json();
+      if (j2?.success) {
+        setHappyhorseKeyMasked(j2.data.masked || '');
+        setHappyhorseKeyConfigured(!!j2.data.configured);
+      }
+      setHappyhorseKeyEditing(false);
+    } catch (e) { alert(e instanceof Error ? e.message : '保存失败'); }
+  };
+
+  const handleUpdateHappyhorsePrice = async (mode: string, resolution: string, creditsPerSecond: number) => {
+    try {
+      const res = await fetch('/api/admin/happyhorse-pricing', {
+        method: 'PUT',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ pricing: [{ mode, resolution, credits_per_second: creditsPerSecond }] }),
+      });
+      const j = await res.json();
+      if (!j?.success) throw new Error(j?.error || '保存失败');
+      setHappyhorsePricing(j.data.pricing || []);
+    } catch (e) { alert(e instanceof Error ? e.message : '保存失败'); }
+  };
+
 
   const handleSaveAudioCfg = async () => {
     if (!audioCfgDraft) return;
@@ -1605,6 +1655,64 @@ export default function AdminPage() {
             )}
             {!enhancementPricing && (
               <div className="text-xs text-gray-600">加载中...</div>
+            )}
+          </div>
+        </div>
+
+        {/* HappyHorse API Key + 计费 */}
+        <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
+          <h2 className="text-xl font-semibold text-white mb-2">HappyHorse API Key</h2>
+          <p className="text-xs text-gray-500 mb-4">用于 HappyHorse 视频生成（dashscope.aliyuncs.com，阿里云百炼）</p>
+          {happyhorseKeyEditing ? (
+            <div className="flex gap-2">
+              <input
+                className="flex-1 px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-white text-sm font-mono focus:outline-none focus:border-purple-500"
+                value={happyhorseKeyDraft}
+                onChange={(e) => setHappyhorseKeyDraft(e.target.value)}
+                placeholder="sk-xxxxxxxx"
+              />
+              <button onClick={handleSaveHappyhorseKey} className="btn-save">保存</button>
+              <button onClick={() => setHappyhorseKeyEditing(false)} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-xl text-white text-sm">取消</button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-3">
+              <code className="flex-1 px-3 py-2 bg-[#0f111a] rounded text-gray-300 text-sm font-mono truncate">
+                {happyhorseKeyConfigured ? happyhorseKeyMasked : '（未配置）'}
+              </code>
+              <button onClick={() => { setHappyhorseKeyDraft(''); setHappyhorseKeyEditing(true); }} className="btn-edit">修改</button>
+            </div>
+          )}
+
+          <div className="mt-6">
+            <h3 className="text-sm font-semibold text-white mb-2">HappyHorse 模型计费管理</h3>
+            <p className="text-xs text-gray-500 mb-3">单价：积分/秒。1 元 = 100 积分。video-edit 按"输入+输出"秒数计费，其他按"输出"秒数计费。</p>
+            {happyhorsePricing.length === 0 ? (
+              <div className="text-xs text-gray-600">加载中...</div>
+            ) : (
+              <div className="grid grid-cols-2 gap-2">
+                {happyhorsePricing.map((p) => (
+                  <div key={`${p.mode}-${p.resolution}`} className="flex items-center gap-2 bg-[#0f111a] rounded-xl px-3 py-2">
+                    <div className="flex-1 text-sm text-white">
+                      <span className="font-mono">{p.mode}</span>
+                      <span className="text-gray-500 mx-1">·</span>
+                      <span>{p.resolution}</span>
+                    </div>
+                    <input
+                      type="number"
+                      min={0}
+                      defaultValue={p.credits_per_second}
+                      onBlur={(e) => {
+                        const v = parseInt(e.target.value, 10);
+                        if (Number.isFinite(v) && v !== p.credits_per_second) {
+                          void handleUpdateHappyhorsePrice(p.mode, p.resolution, v);
+                        }
+                      }}
+                      className="w-20 px-2 py-1 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm"
+                    />
+                    <span className="text-xs text-gray-500">积分/秒</span>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         </div>

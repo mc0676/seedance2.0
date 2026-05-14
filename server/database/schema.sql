@@ -346,6 +346,7 @@ CREATE TABLE IF NOT EXISTS credit_locks (
   task_id            INTEGER UNIQUE,
   image_record_id    INTEGER UNIQUE,
   enhancement_id     INTEGER UNIQUE,
+  task_happyhorse_id INTEGER UNIQUE,
   estimated_credits  INTEGER NOT NULL,
   locked_credits     INTEGER NOT NULL,
   status             TEXT NOT NULL DEFAULT 'locked' CHECK (status IN ('locked', 'settled', 'released')),
@@ -361,6 +362,67 @@ CREATE INDEX IF NOT EXISTS idx_credit_locks_user_status ON credit_locks(user_id,
 CREATE INDEX IF NOT EXISTS idx_credit_locks_task ON credit_locks(task_id);
 CREATE INDEX IF NOT EXISTS idx_credit_locks_image ON credit_locks(image_record_id);
 CREATE INDEX IF NOT EXISTS idx_credit_locks_enhancement ON credit_locks(enhancement_id);
+CREATE INDEX IF NOT EXISTS idx_credit_locks_happyhorse ON credit_locks(task_happyhorse_id);
+
+-- HappyHorse 视频任务（DashScope 异步轮询，4 个子模式共用一张表）
+CREATE TABLE IF NOT EXISTS tasks_happyhorse (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  project_id INTEGER NOT NULL,
+  mode TEXT NOT NULL CHECK (mode IN ('t2v', 'i2v', 'r2v', 'video-edit')),
+  model TEXT NOT NULL,
+  prompt TEXT NOT NULL DEFAULT '',
+  ratio TEXT,
+  duration INTEGER,
+  resolution TEXT NOT NULL,
+  media_json TEXT,                      -- JSON: [{type, url, original_name?}]
+  watermark INTEGER DEFAULT 0,          -- 强制不加水印（产品决策）
+  audio_setting TEXT,                   -- 仅 video-edit：'auto' | 'origin'
+  seed INTEGER,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'done', 'error', 'canceled')),
+  dashscope_task_id TEXT,
+  request_id TEXT,
+  video_url TEXT,                       -- DashScope 临时 URL（24h）
+  video_path TEXT,
+  download_status TEXT DEFAULT 'pending',
+  download_path TEXT,
+  downloaded_at DATETIME,
+  result_duration REAL,                 -- usage.duration（用于计费）
+  result_output_duration REAL,
+  result_input_duration REAL,
+  result_resolution INTEGER,            -- usage.SR
+  result_ratio TEXT,
+  credits_used INTEGER DEFAULT 0,
+  error_message TEXT,
+  submitted_at DATETIME,
+  completed_at DATETIME,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  deleted_at DATETIME,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_happyhorse_user ON tasks_happyhorse(user_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_happyhorse_project ON tasks_happyhorse(project_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_happyhorse_status ON tasks_happyhorse(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_happyhorse_dashscope ON tasks_happyhorse(dashscope_task_id);
+
+-- HappyHorse 计费表（mode × resolution → 积分/秒），命名沿用 model_pricing_* 规范
+CREATE TABLE IF NOT EXISTS model_pricing_happyhorse (
+  mode TEXT NOT NULL CHECK (mode IN ('t2v', 'i2v', 'r2v', 'video-edit')),
+  resolution TEXT NOT NULL CHECK (resolution IN ('720P', '1080P')),
+  credits_per_second INTEGER NOT NULL,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (mode, resolution)
+);
+INSERT OR IGNORE INTO model_pricing_happyhorse (mode, resolution, credits_per_second) VALUES
+  ('t2v', '720P', 90), ('t2v', '1080P', 160),
+  ('i2v', '720P', 90), ('i2v', '1080P', 160),
+  ('r2v', '720P', 90), ('r2v', '1080P', 160),
+  ('video-edit', '720P', 90), ('video-edit', '1080P', 160);
+
+INSERT OR IGNORE INTO system_config (key, value, description) VALUES
+  ('happyhorse_api_key', '', 'HappyHorse (阿里云百炼 DashScope) API Key');
 
 -- 视频画质增强（火山 AI MediaKit）
 CREATE TABLE IF NOT EXISTS video_enhancements (

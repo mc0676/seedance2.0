@@ -160,12 +160,6 @@ export default function EnhancementPage() {
   return (
     <div className="min-h-screen bg-[#0f111a] text-white">
       <div className="max-w-6xl mx-auto px-6 py-8">
-        {/* 警示框 */}
-        <div className="mb-6 p-4 bg-red-500/15 border border-red-500/50 rounded-xl flex items-center gap-3">
-          <div className="w-2 h-2 bg-red-500 rounded-full flex-shrink-0" />
-          <span className="text-red-300 text-sm font-medium">测试功能未启用</span>
-        </div>
-
         {/* 标题 */}
         <div className="mb-6 flex items-center gap-3">
           <SparkleIcon className="w-7 h-7 text-purple-400" />

@@ -34,6 +34,7 @@ function _settle(lockRow, actualCredits, refLabel) {
   // usage_logs：视频用 task_id，图片用 NULL（image_record_id 记录在 meta）
   const action = meta.type === 'image' ? 'generate_image'
     : meta.type === 'enhancement' ? 'enhance_video'
+    : meta.type === 'happyhorse' ? 'generate_video_happyhorse'
     : 'generate_video';
   const logTaskId = lockRow.task_id ?? null;
   db.prepare(`
@@ -235,6 +236,63 @@ export function getByEnhancement(enhancementId) {
   return getDatabase().prepare(`SELECT * FROM credit_locks WHERE enhancement_id = ?`).get(enhancementId) || null;
 }
 
+// ── HappyHorse 接口（happyhorseTaskId 维度）──────────────────────────────────
+
+export function lockForHappyhorse({ userId, happyhorseTaskId, credits, meta = null }) {
+  const db = getDatabase();
+  const tx = db.transaction(() => {
+    const user = db.prepare('SELECT credits, unlimited_credits FROM users WHERE id = ?').get(userId);
+    if (!user) throw new Error('用户不存在');
+    if (!user.unlimited_credits) {
+      const lockedSum = db.prepare(
+        `SELECT COALESCE(SUM(locked_credits), 0) AS sum FROM credit_locks WHERE user_id = ? AND status = 'locked'`
+      ).get(userId).sum;
+      const available = user.credits - lockedSum;
+      if (available < credits) {
+        throw new Error(`可用积分不足（可用 ${available}，需要 ${credits}）`);
+      }
+      console.log(`[计费][lockForHappyhorse] user=${userId} happyhorseTask=${happyhorseTaskId} 余额=${user.credits} 已锁=${lockedSum} 可用=${available} 锁定=${credits}`);
+    } else {
+      console.log(`[计费][lockForHappyhorse] user=${userId} happyhorseTask=${happyhorseTaskId} 无限额度 锁定=${credits}`);
+    }
+    const metaObj = Object.assign({ type: 'happyhorse' }, meta || {});
+    db.prepare(`
+      INSERT INTO credit_locks (user_id, task_happyhorse_id, estimated_credits, locked_credits, status, meta)
+      VALUES (?, ?, ?, ?, 'locked', ?)
+    `).run(userId, happyhorseTaskId, credits, credits, JSON.stringify(metaObj));
+  });
+  tx();
+  return getByHappyhorse(happyhorseTaskId);
+}
+
+export function settleForHappyhorse({ happyhorseTaskId, actualCredits }) {
+  const db = getDatabase();
+  const tx = db.transaction(() => {
+    const lockRow = db.prepare(`SELECT * FROM credit_locks WHERE task_happyhorse_id = ?`).get(happyhorseTaskId);
+    if (!lockRow) { console.warn(`[计费][settleForHappyhorse] happyhorseTask=${happyhorseTaskId} 无锁定记录`); return null; }
+    if (lockRow.status !== 'locked') { console.warn(`[计费][settleForHappyhorse] happyhorseTask=${happyhorseTaskId} 状态已是 ${lockRow.status}，跳过`); return lockRow; }
+    _settle(lockRow, actualCredits, `happyhorseTask=${happyhorseTaskId}`);
+  });
+  tx();
+  return getByHappyhorse(happyhorseTaskId);
+}
+
+export function releaseForHappyhorse({ happyhorseTaskId, reason = '' }) {
+  const db = getDatabase();
+  const tx = db.transaction(() => {
+    const lockRow = db.prepare(`SELECT * FROM credit_locks WHERE task_happyhorse_id = ?`).get(happyhorseTaskId);
+    if (!lockRow) { console.warn(`[计费][releaseForHappyhorse] happyhorseTask=${happyhorseTaskId} 无锁定记录`); return null; }
+    if (lockRow.status !== 'locked') { console.warn(`[计费][releaseForHappyhorse] happyhorseTask=${happyhorseTaskId} 状态已是 ${lockRow.status}，跳过`); return lockRow; }
+    _release(lockRow, reason, `happyhorseTask=${happyhorseTaskId}`);
+  });
+  tx();
+  return getByHappyhorse(happyhorseTaskId);
+}
+
+export function getByHappyhorse(happyhorseTaskId) {
+  return getDatabase().prepare(`SELECT * FROM credit_locks WHERE task_happyhorse_id = ?`).get(happyhorseTaskId) || null;
+}
+
 // ── 通用工具 ──────────────────────────────────────────────────────────────────
 
 export function getLockedTotal(userId) {
@@ -252,5 +310,6 @@ export default {
   lock, settle, release, getByTask,
   lockForImage, settleForImage, releaseForImage, getByImageRecord,
   lockForEnhancement, settleForEnhancement, releaseForEnhancement, getByEnhancement,
+  lockForHappyhorse, settleForHappyhorse, releaseForHappyhorse, getByHappyhorse,
   getLockedTotal, listUserLocks,
 };

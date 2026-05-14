@@ -84,9 +84,15 @@ export default function DownloadManagementPage() {
 
   // 各源表（tasks / image_records / audio_generations）的 id 各自自增,易冲突。
   // 用 model_type + id 作为行唯一键 + 显示 ID 类型前缀,避免歧义。
-  const rowKey = (t: DownloadTask) => `${t.model_type}:${t.id}`;
+  const rowKey = (t: DownloadTask) => `${t.model_subtype || t.model_type}:${t.id}`;
+  // V-HappyHorse → 让 HappyHorse 视频任务 ID 在大类(V)下可识别
   const TYPE_PREFIX: Record<string, string> = { video: 'V', image: 'I', audio: 'A', enhancement: 'E' };
-  const displayId = (t: DownloadTask) => `${TYPE_PREFIX[t.model_type] || 'T'}-${t.id.toString().padStart(6, '0')}`;
+  const displayId = (t: DownloadTask) => {
+    if (t.model_type === 'video' && t.model_subtype === 'happyhorse') {
+      return `V-H-${t.id.toString().padStart(6, '0')}`;
+    }
+    return `${TYPE_PREFIX[t.model_type] || 'T'}-${t.id.toString().padStart(6, '0')}`;
+  };
 
   // 轮询引用
   const pollIntervalRef = useRef<number | null>(null);
@@ -289,6 +295,8 @@ export default function DownloadManagementPage() {
       downloadService.markAudioGenerationDownloaded(task.id).then(() => loadTasks()).catch(rollback);
     } else if (task.model_type === 'enhancement') {
       downloadService.markEnhancementDownloaded(task.id).then(() => loadTasks()).catch(rollback);
+    } else if (task.model_subtype === 'happyhorse') {
+      downloadService.markHappyhorseDownloaded(task.id).then(() => loadTasks()).catch(rollback);
     }
     // video 由 handleBrowserDownload 内部已调 markDownloaded + loadTasks，这里不重复
   };
@@ -332,7 +340,9 @@ export default function DownloadManagementPage() {
   };
 
   const handleBrowserDownload = async (task: DownloadTask) => {
-    const baseName = task.model_type === 'enhancement' ? 'enhanced' : 'task';
+    const baseName = task.model_type === 'enhancement' ? 'enhanced'
+      : task.model_subtype === 'happyhorse' ? 'happyhorse'
+      : 'task';
     const filename = `${baseName}_${task.id}_${(task.prompt || 'video').substring(0, 20).replace(/[^\w\u4e00-\u9fa5]/g, '_')}.mp4`;
     // 有远程 URL 直接走代理下载，无需先保存到服务器
     if (task.video_url) {
@@ -340,6 +350,8 @@ export default function DownloadManagementPage() {
       // markDownloaded after triggering download (fire-and-forget refresh)
       if (task.model_type === 'enhancement') {
         downloadService.markEnhancementDownloaded(task.id).then(() => loadTasks()).catch(() => {});
+      } else if (task.model_subtype === 'happyhorse') {
+        downloadService.markHappyhorseDownloaded(task.id).then(() => loadTasks()).catch(() => {});
       } else {
         downloadService.markDownloaded(task.id).then(() => loadTasks()).catch(() => {});
       }
@@ -657,7 +669,10 @@ export default function DownloadManagementPage() {
                         ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
                         : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
                     }`}>
-                      {task.model_type === 'video' ? '视频'
+                      {task.model_type === 'video'
+                        ? (task.model_subtype === 'happyhorse'
+                            ? `视频·HappyHorse${task.happyhorse_mode_label ? '·' + task.happyhorse_mode_label : ''}`
+                            : '视频')
                         : task.model_type === 'audio' ? '音频'
                         : task.model_type === 'enhancement' ? '画质增强'
                         : '图片'}

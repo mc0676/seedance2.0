@@ -345,12 +345,17 @@ export interface DownloadTask {
   project_name?: string;
   hasHistory: boolean;
   model_type: 'image' | 'video' | 'audio' | 'enhancement';
+  /** 大类下的子类型，目前仅用于 video 下区分 HappyHorse */
+  model_subtype?: 'happyhorse';
   effective_download_status: DownloadStatus;
   assets?: Array<{ assetType: string; uri: string; originalName?: string | null }>;
   credits_used?: number;
   enhancements?: VideoEnhancement[];
   // 音频行专用：参考图缩略图，浏览器端 mp4→mp3 转码使用 video_url
   reference_image_url?: string;
+  // HappyHorse 行专用：子模式 + 显示标签（用于卡片副标题）
+  happyhorse_mode?: 't2v' | 'i2v' | 'r2v' | 'video-edit';
+  happyhorse_mode_label?: string;
 }
 
 /**
@@ -421,6 +426,61 @@ export interface AudioGeneration {
   task_status?: string | null;
   task_video_url?: string | null;
   task_progress?: string | null;
+}
+
+/**
+ * HappyHorse 视频生成（阿里云百炼 DashScope）
+ */
+export type HappyhorseMode = 't2v' | 'i2v' | 'r2v' | 'video-edit';
+export type HappyhorseResolution = '720P' | '1080P';
+export type HappyhorseRatio = '16:9' | '9:16' | '1:1' | '4:3' | '3:4' | '4:5' | '5:4';
+export type HappyhorseStatus = 'pending' | 'processing' | 'done' | 'error' | 'canceled';
+
+export interface HappyhorseMediaItem {
+  type: 'first_frame' | 'reference_image' | 'video';
+  url: string;
+  original_name?: string | null;
+}
+
+export interface HappyhorseTask {
+  id: number;
+  user_id: number;
+  project_id: number;
+  mode: HappyhorseMode;
+  model: string;
+  prompt: string;
+  ratio: HappyhorseRatio | null;
+  duration: number | null;
+  resolution: HappyhorseResolution;
+  media: HappyhorseMediaItem[];
+  watermark: number;
+  audio_setting: 'auto' | 'origin' | null;
+  seed: number | null;
+  status: HappyhorseStatus;
+  dashscope_task_id: string | null;
+  request_id: string | null;
+  video_url: string | null;
+  video_path: string | null;
+  download_status: string | null;
+  download_path: string | null;
+  downloaded_at: string | null;
+  result_duration: number | null;
+  result_output_duration: number | null;
+  result_input_duration: number | null;
+  result_resolution: number | null;
+  result_ratio: string | null;
+  credits_used: number;
+  error_message: string | null;
+  submitted_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface HappyhorsePricingItem {
+  mode: HappyhorseMode;
+  resolution: HappyhorseResolution;
+  credits_per_second: number;
 }
 
 /**

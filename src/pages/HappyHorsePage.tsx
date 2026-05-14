@@ -1,0 +1,1441 @@
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useApp } from '../context/AppContext';
+import { uploadToOss, FILE_LIMITS } from '../services/ossService';
+import { CloseIcon, PlusIcon, SparkleIcon, GearIcon } from '../components/Icons';
+import { formatShortDateTime, useUserTimezone } from '../utils/datetime';
+import { getCreditBalance } from '../services/pricingService';
+import { useNavigate } from 'react-router-dom';
+import {
+  submitHappyhorseTask,
+  listMyHappyhorseTasks,
+  getHappyhorsePricing,
+  estimateHappyhorseCredits,
+} from '../services/happyhorseService';
+import type {
+  HappyhorseMode, HappyhorseResolution, HappyhorseRatio,
+  HappyhorseMediaItem, HappyhorseTask, HappyhorsePricingItem,
+} from '../types';
+
+const MODE_TABS: { mode: HappyhorseMode; label: string; desc: string }[] = [
+  { mode: 't2v', label: '文生视频', desc: 'happyhorse-1.0-t2v · 仅 prompt → 视频' },
+  { mode: 'i2v', label: '首帧视频', desc: 'happyhorse-1.0-i2v · 上传 1 张首帧图 + prompt' },
+  { mode: 'r2v', label: '多图生视频', desc: 'happyhorse-1.0-r2v · 1~9 张参考图，prompt 中用 @ 引用图片，提交时自动转换为 [Image N]' },
+  { mode: 'video-edit', label: '视频编辑', desc: 'happyhorse-1.0-video-edit · 1 个视频 + 0~5 张参考图（输入+输出均计费）' },
+];
+const RATIO_OPTIONS: HappyhorseRatio[] = ['16:9', '9:16', '1:1', '4:3', '3:4', '4:5', '5:4'];
+const RESOLUTIONS: HappyhorseResolution[] = ['720P', '1080P'];
+const DURATION_OPTIONS = [3, 4, 5, 6, 7, 8, 10, 12, 15];
+
+const STATUS_BADGE: Record<HappyhorseTask['status'], { text: string; cls: string }> = {
+  pending: { text: '排队中', cls: 'bg-gray-700/40 text-gray-300 border-gray-600' },
+  processing: { text: '处理中', cls: 'bg-blue-500/20 text-blue-300 border-blue-500/40' },
+  done: { text: '已完成', cls: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' },
+  error: { text: '失败', cls: 'bg-red-500/20 text-red-300 border-red-500/40' },
+  canceled: { text: '已取消', cls: 'bg-gray-700/40 text-gray-300 border-gray-600' },
+};
+
+function MediaThumb({
+  m, idx, onRemove,
+}: { m: HappyhorseMediaItem; idx: number; onRemove: () => void }) {
+  const isVideo = m.type === 'video';
+  const isFirstFrame = m.type === 'first_frame';
+  return (
+    <div className="relative group flex flex-col items-center gap-1">
+      <div className="w-20 h-20 flex-shrink-0 relative rounded-xl border border-gray-700 bg-[#0d0f1a] overflow-hidden flex items-center justify-center">
+        {isVideo ? (
+          <div className="flex flex-col items-center gap-1 px-1 w-full">
+            <span className="text-2xl">🎬</span>
+            <div className="text-[9px] text-gray-400 truncate w-full text-center px-1">{m.original_name || '视频'}</div>
+          </div>
+        ) : (
+          <img src={m.url} alt="" className="w-full h-full object-cover pointer-events-none" />
+        )}
+        <span className={`absolute top-0 left-0 text-[9px] font-bold px-1 py-0.5 rounded-tl-xl rounded-br-lg leading-none ${
+          isVideo ? 'bg-blue-600/90 text-white'
+            : isFirstFrame ? 'bg-amber-600/90 text-white'
+            : 'bg-purple-600/90 text-white'
+        }`}>
+          {isVideo ? '视' : isFirstFrame ? '首' : `参${idx}`}
+        </span>
+      </div>
+      <button
+        onClick={onRemove}
+        className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-gray-800 border border-gray-700 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600 hover:border-red-600 z-10"
+      ><CloseIcon className="w-3 h-3 text-white" /></button>
+    </div>
+  );
+}
+
+export default function HappyHorsePage() {
+  useUserTimezone();
+  const navigate = useNavigate();
+  const { state, currentUser } = useApp();
+  const projectId = state.currentProject?.id ?? null;
+
+  const [mode, setMode] = useState<HappyhorseMode>('t2v');
+  const [prompt, setPrompt] = useState('');
+  const [resolution, setResolution] = useState<HappyhorseResolution>('720P');
+  const [ratio, setRatio] = useState<HappyhorseRatio>('16:9');
+  const [duration, setDuration] = useState<number>(5);
+  const [audioSetting, setAudioSetting] = useState<'auto' | 'origin'>('auto');
+  const [seed, setSeed] = useState<string>('');
+  const [media, setMedia] = useState<HappyhorseMediaItem[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [uploadPct, setUploadPct] = useState(0);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [pricing, setPricing] = useState<HappyhorsePricingItem[] | null>(null);
+  const [balance, setBalance] = useState<{ credits: number; unlimited: boolean; locked: number; available: number } | null>(null);
+  const imgInputRef = useRef<HTMLInputElement | null>(null);
+  const videoInputRef = useRef<HTMLInputElement | null>(null);
+  const editorRef = useRef<HTMLDivElement | null>(null);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  // video-edit：已上传待编辑视频的真实时长（秒），用于精确预估积分
+  const [editVideoDuration, setEditVideoDuration] = useState<number | null>(null);
+  // @ 提及面板：弹出位置 + 当前 @ 之后的过滤文本 + 高亮项
+  const [mentionPanel, setMentionPanel] = useState<{ top: number; left: number; filter: string; focusIdx: number } | null>(null);
+  const mentionAnchorNodeRef = useRef<Node | null>(null);
+  const mentionAnchorOffsetRef = useRef<number>(0);
+
+  const [tasks, setTasks] = useState<HappyhorseTask[]>([]);
+  const [tasksLoading, setTasksLoading] = useState(false);
+  const [tasksTotal, setTasksTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 12;
+  const [previewVideo, setPreviewVideo] = useState<{ url: string; prompt: string; error?: string | null } | null>(null);
+
+  // 加载计费表
+  useEffect(() => {
+    getHappyhorsePricing().then(setPricing).catch(() => setPricing([]));
+  }, []);
+
+  // 余额轮询
+  useEffect(() => {
+    if (!currentUser) return;
+    let alive = true;
+    const tick = () => getCreditBalance().then((b) => { if (alive) setBalance(b); }).catch(() => {});
+    tick();
+    const t = setInterval(tick, 5000);
+    return () => { alive = false; clearInterval(t); };
+  }, [currentUser]);
+
+  async function loadTasks(p = 1) {
+    if (!projectId) return;
+    setTasksLoading(true);
+    try {
+      const data = await listMyHappyhorseTasks(projectId, p, PAGE_SIZE);
+      setTasks(data.items);
+      setTasksTotal(data.total);
+      setPage(p);
+    } catch (e) {
+      console.error('[happyhorse] 加载任务列表失败', e);
+    } finally {
+      setTasksLoading(false);
+    }
+  }
+  useEffect(() => { loadTasks(1); /* eslint-disable-next-line */ }, [projectId]);
+
+  // 轮询进行中任务
+  useEffect(() => {
+    if (!tasks.some((t) => t.status === 'processing' || t.status === 'pending')) return;
+    const t = setInterval(() => loadTasks(page), 8000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line
+  }, [tasks, page, projectId]);
+
+  // 切换 mode 时清空 media（避免类型混淆）
+  // 复用历史任务时，setMode 会触发下面的 useEffect 把表单清空，
+  // 与同事件里的 setMedia/setPrompt(...) 撞车——用 ref flag 跳过这一次重置。
+  const skipModeResetRef = useRef(false);
+
+  // 切换 mode 时清空表单（复用流程中跳过）
+  useEffect(() => {
+    if (skipModeResetRef.current) { skipModeResetRef.current = false; return; }
+    setMedia([]);
+    setSubmitError(null);
+    setEditVideoDuration(null);
+    setPrompt('');
+  }, [mode]);
+
+  const showRatio = mode === 't2v' || mode === 'r2v';
+  const showDuration = mode !== 'video-edit';
+  const showAudioSetting = mode === 'video-edit';
+
+  // r2v 可用的提及项：每张参考图都对应一个 @N（N 为 1-based 序号）。
+  // chip 显示用文件原名；逻辑 tag (data-tag) 仍是 @N，用于光标和 [Image N] 转换。
+  const refImages = useMemo(
+    () => media.filter((m) => m.type === 'reference_image'),
+    [media]
+  );
+  const mentionItems = useMemo(
+    () => refImages.map((m, i) => ({
+      idx: i + 1,
+      tag: `@${i + 1}`,
+      url: m.url,
+      name: m.original_name || `图片 ${i + 1}`,
+    })),
+    [refImages]
+  );
+  const tagDisplayMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const mi of mentionItems) map.set(mi.tag, mi.name);
+    return map;
+  }, [mentionItems]);
+
+  function chipDisplayFor(tag: string): string {
+    return tagDisplayMap.get(tag) ?? tag;
+  }
+
+  // 给字符串做 HTML 属性安全转义（chip 显示名走 textContent 不需 DOM 转义，但 buildEditorHtml 是字符串拼接）
+  function escapeHtmlAttr(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  // ── contenteditable 编辑器：HTML 构造、文本抽取、光标 ────────────────────────
+
+  function buildEditorHtml(text: string): string {
+    const escaped = text
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/\n/g, '<br>');
+    // 把 @1 / @2 ... 渲染成 chip：data-tag 仍是 @N，但显示文本用文件原名
+    return escaped.replace(/@(\d+)/g, (_m, g1) => {
+      const tag = `@${g1}`;
+      const display = chipDisplayFor(tag);
+      return `​<span contenteditable="false" class="mention-chip" data-tag="${tag}">${escapeHtmlAttr(display)}</span>​`;
+    });
+  }
+
+  function extractEditorText(el: Node): string {
+    let t = '';
+    for (const n of Array.from(el.childNodes)) {
+      if (n.nodeType === Node.TEXT_NODE) {
+        t += (n.textContent ?? '').replace(/​/g, '');
+      } else if ((n as Element).tagName === 'BR') {
+        const prev = n.previousSibling as Element | null;
+        if (prev?.classList?.contains('mention-chip')) continue;
+        t += '\n';
+      } else if ((n as Element).classList?.contains('mention-chip')) {
+        // 逻辑文本永远使用 data-tag（@N），与显示文本无关
+        t += (n as Element).getAttribute('data-tag') ?? '';
+      } else {
+        t += extractEditorText(n);
+      }
+    }
+    return t;
+  }
+
+  /** chip 在「逻辑文本」中占用的字符数 = data-tag 的字符数 */
+  function chipLogicalLen(el: Element): number {
+    return (el.getAttribute('data-tag') || '').length;
+  }
+
+  function getCursorOffset(root: HTMLDivElement): number {
+    const sel = window.getSelection();
+    if (!sel?.rangeCount) return 0;
+    const range = sel.getRangeAt(0);
+    try {
+      const pre = document.createRange();
+      pre.setStart(root, 0);
+      pre.setEnd(range.startContainer, range.startOffset);
+      const tmp = document.createElement('div');
+      tmp.appendChild(pre.cloneContents());
+      return extractEditorText(tmp).length;
+    } catch { return 0; }
+  }
+
+  function getSelectionRange(root: HTMLDivElement): { start: number; end: number } {
+    const sel = window.getSelection();
+    if (!sel?.rangeCount) return { start: 0, end: 0 };
+    const range = sel.getRangeAt(0);
+    const offsetAt = (container: Node, off: number): number => {
+      try {
+        const pre = document.createRange();
+        pre.setStart(root, 0);
+        pre.setEnd(container, off);
+        const tmp = document.createElement('div');
+        tmp.appendChild(pre.cloneContents());
+        return extractEditorText(tmp).length;
+      } catch { return 0; }
+    };
+    const a = offsetAt(range.startContainer, range.startOffset);
+    const b = offsetAt(range.endContainer, range.endOffset);
+    return a <= b ? { start: a, end: b } : { start: b, end: a };
+  }
+
+  /** 直接重写编辑器 HTML，并保证 chip 后总有零宽空格落点 */
+  function setEditorHtml(html: string) {
+    const el = editorRef.current;
+    if (!el) return;
+    el.innerHTML = html;
+    cleanChipBrs(el);
+    const last = el.lastChild;
+    if (last?.nodeType === Node.ELEMENT_NODE && (last as Element).classList.contains('mention-chip')) {
+      el.appendChild(document.createTextNode('​'));
+    }
+  }
+
+  function setCursorOffset(root: HTMLDivElement, offset: number) {
+    const sel = window.getSelection();
+    if (!sel) return;
+    let cur = 0;
+    const walk = (node: Node): boolean => {
+      if ((node as Element).classList?.contains('mention-chip')) {
+        const chipLen = chipLogicalLen(node as Element);
+        if (cur + chipLen >= offset) {
+          const r = document.createRange();
+          r.setStartAfter(node);
+          r.collapse(true);
+          sel.removeAllRanges();
+          sel.addRange(r);
+          return true;
+        }
+        cur += chipLen;
+        return false;
+      }
+      if (node.nodeType === Node.TEXT_NODE) {
+        const raw = node.textContent ?? '';
+        const logLen = raw.replace(/​/g, '').length;
+        if (cur + logLen >= offset) {
+          let remaining = offset - cur;
+          let rawIdx = 0;
+          while (rawIdx < raw.length) {
+            if (raw[rawIdx] !== '​') {
+              if (remaining === 0) break;
+              remaining--;
+            }
+            rawIdx++;
+          }
+          const r = document.createRange();
+          r.setStart(node, rawIdx);
+          r.collapse(true);
+          sel.removeAllRanges();
+          sel.addRange(r);
+          return true;
+        }
+        cur += logLen;
+      } else {
+        for (const c of Array.from(node.childNodes)) {
+          if (walk(c)) return true;
+        }
+      }
+      return false;
+    };
+    if (!walk(root)) {
+      const r = document.createRange();
+      r.selectNodeContents(root);
+      r.collapse(false);
+      sel.removeAllRanges();
+      sel.addRange(r);
+    }
+  }
+
+  function cleanChipBrs(el: HTMLElement) {
+    el.querySelectorAll('.mention-chip + br').forEach((br) => br.remove());
+  }
+
+  // r2v 模式下，当 mentionItems（即各 @N 的显示名）变化时，同步刷新已挂载 chip 的 textContent
+  useEffect(() => {
+    if (mode !== 'r2v') return;
+    const el = editorRef.current;
+    if (!el) return;
+    el.querySelectorAll<HTMLElement>('.mention-chip[data-tag]').forEach((chip) => {
+      const tag = chip.getAttribute('data-tag') || '';
+      const display = chipDisplayFor(tag);
+      if (chip.textContent !== display) chip.textContent = display;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tagDisplayMap, mode]);
+
+  // r2v 模式下，prompt 变化（程序触发，非用户输入）时同步重写编辑器 HTML
+  useLayoutEffect(() => {
+    if (mode !== 'r2v') return;
+    const el = editorRef.current;
+    if (!el) return;
+    if (extractEditorText(el) === prompt) return; // 用户正在输入，跳过避免抢光标
+    const cursor = getCursorOffset(el);
+    el.innerHTML = buildEditorHtml(prompt);
+    cleanChipBrs(el);
+    setCursorOffset(el, Math.min(cursor, prompt.length));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prompt, mode]);
+
+  // 选区跨越 chip 时，给 chip 加琥珀色高亮，其它文字轻微暗淡，让"复制时"也有 chip 视觉
+  // 与 SingleTaskPage 同款：监听 selectionchange，遍历 chip 用 Range.compareBoundaryPoints 判定相交
+  useEffect(() => {
+    if (mode !== 'r2v') return;
+    const handler = () => {
+      const el = editorRef.current;
+      if (!el) return;
+      const sel = window.getSelection();
+      const hasSelection = !!(sel && !sel.isCollapsed && sel.rangeCount &&
+        el.contains(sel.getRangeAt(0).commonAncestorContainer));
+      el.classList.toggle('has-selection', hasSelection);
+
+      const chips = el.querySelectorAll('.mention-chip');
+      chips.forEach((chip) => {
+        if (!hasSelection) { chip.classList.remove('mention-chip--selected'); return; }
+        const range = sel!.getRangeAt(0);
+        const chipRange = document.createRange();
+        chipRange.selectNode(chip);
+        const overlaps =
+          range.compareBoundaryPoints(Range.END_TO_START, chipRange) < 0 &&
+          range.compareBoundaryPoints(Range.START_TO_END, chipRange) > 0;
+        chip.classList.toggle('mention-chip--selected', overlaps);
+      });
+    };
+    document.addEventListener('selectionchange', handler);
+    return () => document.removeEventListener('selectionchange', handler);
+  }, [mode]);
+
+  // ── @ 提及面板 ────────────────────────────────────────────────────────────
+
+  function closeMentionPanel() {
+    setMentionPanel(null);
+    mentionAnchorNodeRef.current = null;
+  }
+
+  function insertMentionChip(tag: string) {
+    const el = editorRef.current;
+    if (!el) return;
+    // 删除 @ + 过滤文本，把光标放回 @ 处
+    const anchorNode = mentionAnchorNodeRef.current;
+    const anchorOff = mentionAnchorOffsetRef.current;
+    if (anchorNode && anchorNode.nodeType === Node.TEXT_NODE) {
+      const sel = window.getSelection();
+      if (sel?.rangeCount) {
+        const cur = sel.getRangeAt(0);
+        const r = document.createRange();
+        r.setStart(anchorNode, anchorOff);
+        r.setEnd(cur.endContainer, cur.endOffset);
+        r.deleteContents();
+      }
+    }
+    // 插入 chip：显示用文件原名，逻辑 tag 走 data-tag
+    const chip = document.createElement('span');
+    chip.setAttribute('contenteditable', 'false');
+    chip.className = 'mention-chip';
+    chip.setAttribute('data-tag', tag);
+    chip.textContent = chipDisplayFor(tag);
+    const zwsBefore = document.createTextNode('​');
+    const zwsAfter = document.createTextNode('​');
+    const sel = window.getSelection();
+    if (sel?.rangeCount) {
+      const r = sel.getRangeAt(0);
+      r.insertNode(zwsAfter);
+      r.insertNode(chip);
+      r.insertNode(zwsBefore);
+      r.setStartAfter(zwsAfter);
+      r.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(r);
+    }
+    cleanChipBrs(el);
+    setPrompt(extractEditorText(el));
+    closeMentionPanel();
+  }
+
+  function handleEditorInput() {
+    const el = editorRef.current;
+    if (!el) return;
+    cleanChipBrs(el);
+    const text = extractEditorText(el);
+    setPrompt(text);
+
+    // 检测光标前是否刚输入了 @，决定是否打开提及面板
+    if (mode !== 'r2v' || mentionItems.length === 0) {
+      closeMentionPanel();
+      return;
+    }
+    const sel = window.getSelection();
+    if (!sel?.rangeCount) { closeMentionPanel(); return; }
+    const range = sel.getRangeAt(0);
+    const node = range.startContainer;
+    const off = range.startOffset;
+    if (node.nodeType === Node.TEXT_NODE) {
+      const rawText = (node.textContent ?? '');
+      // 向左找最近的 @；如果光标前刚好是 @ 或 @+数字过滤串，弹面板
+      const left = rawText.slice(0, off);
+      const m = left.match(/@(\d*)$/);
+      if (m) {
+        const rect = range.getClientRects()[0];
+        const containerRect = el.getBoundingClientRect();
+        const filter = m[1];
+        const focusIdx = mentionItems.findIndex((mi) =>
+          !filter || String(mi.idx).startsWith(filter)
+        );
+        if (rect) {
+          setMentionPanel({
+            top: rect.bottom - containerRect.top + 4,
+            left: rect.left - containerRect.left - 4,
+            filter,
+            focusIdx: focusIdx === -1 ? 0 : focusIdx,
+          });
+        }
+        mentionAnchorNodeRef.current = node;
+        mentionAnchorOffsetRef.current = off - m[0].length;
+        return;
+      }
+    }
+    closeMentionPanel();
+  }
+
+  function handleEditorKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (mentionPanel) {
+      const filtered = mentionItems.filter((mi) =>
+        !mentionPanel.filter || String(mi.idx).startsWith(mentionPanel.filter)
+      );
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setMentionPanel((p) => p && ({ ...p, focusIdx: Math.min(filtered.length - 1, p.focusIdx + 1) }));
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setMentionPanel((p) => p && ({ ...p, focusIdx: Math.max(0, p.focusIdx - 1) }));
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        const target = filtered[mentionPanel.focusIdx];
+        if (target) {
+          e.preventDefault();
+          insertMentionChip(target.tag);
+          return;
+        }
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeMentionPanel();
+        return;
+      }
+    }
+    // 删除 chip 当作一个整体
+    if (e.key === 'Backspace') {
+      const sel = window.getSelection();
+      if (sel?.rangeCount && sel.isCollapsed) {
+        const r = sel.getRangeAt(0);
+        const node = r.startContainer;
+        const off = r.startOffset;
+        let prev: ChildNode | null = null;
+        if (node.nodeType === Node.TEXT_NODE) {
+          // 文本节点开头：找前一个兄弟（跳过零宽空格文本）
+          const raw = (node.textContent ?? '');
+          if (off === 0 || raw.slice(0, off).replace(/​/g, '').length === 0) {
+            let cand = node.previousSibling;
+            while (cand && cand.nodeType === Node.TEXT_NODE && (cand.textContent ?? '').replace(/​/g, '').length === 0) {
+              cand = cand.previousSibling;
+            }
+            prev = cand as ChildNode | null;
+          }
+        } else if (node === editorRef.current) {
+          prev = (node.childNodes[off - 1] as ChildNode | null) ?? null;
+        }
+        if (prev && (prev as Element).classList?.contains('mention-chip')) {
+          e.preventDefault();
+          prev.remove();
+          if (editorRef.current) {
+            cleanChipBrs(editorRef.current);
+            setPrompt(extractEditorText(editorRef.current));
+          }
+          return;
+        }
+      }
+    }
+  }
+
+  function handleEditorPaste(e: React.ClipboardEvent<HTMLDivElement>) {
+    e.preventDefault();
+    const el = editorRef.current;
+    if (!el) return;
+    const raw = e.clipboardData.getData('text/plain');
+    if (!raw) return;
+    // <ref>@N</ref> 是本编辑器自己复制出来的封装，剥壳后还原为纯 @N 文本，由 buildEditorHtml 重新 chip 化
+    const converted = raw.replace(/<ref>(@[^<\n]+)<\/ref>/g, '$1');
+    const { start, end } = getSelectionRange(el);
+    const currentText = extractEditorText(el);
+    const newText = currentText.slice(0, start) + converted + currentText.slice(end);
+    setEditorHtml(buildEditorHtml(newText));
+    setPrompt(newText);
+    const pos = start + converted.length;
+    setTimeout(() => { if (editorRef.current) setCursorOffset(editorRef.current, pos); }, 0);
+  }
+
+  /**
+   * 把当前选区序列化成「带 <ref> 标签的纯文本」：
+   *   <ref>@N</ref> 用于 chip；普通文本保持原样；<br> → \n。
+   * 这样跨编辑器粘贴（哪怕回到本编辑器）也能精确还原 chip。
+   */
+  function serializeSelectionAsRef(): string {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return '';
+    const range = sel.getRangeAt(0);
+    const fragment = range.cloneContents();
+    let out = '';
+    const walk = (node: Node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        out += (node.textContent ?? '').replace(/​/g, '');
+      } else if ((node as Element).tagName === 'BR') {
+        out += '\n';
+      } else if ((node as Element).classList?.contains('mention-chip')) {
+        out += `<ref>${(node as Element).getAttribute('data-tag') ?? ''}</ref>`;
+      } else {
+        node.childNodes.forEach(walk);
+      }
+    };
+    if (fragment.childNodes.length === 0) return range.toString();
+    fragment.childNodes.forEach(walk);
+    return out || range.toString();
+  }
+
+  function handleEditorCopy(e: React.ClipboardEvent<HTMLDivElement>) {
+    const text = serializeSelectionAsRef();
+    if (!text) return;
+    e.preventDefault();
+    e.clipboardData.setData('text/plain', text);
+  }
+
+  function handleEditorCut(e: React.ClipboardEvent<HTMLDivElement>) {
+    const text = serializeSelectionAsRef();
+    if (!text) return;
+    e.preventDefault();
+    e.clipboardData.setData('text/plain', text);
+    const sel = window.getSelection();
+    if (sel?.rangeCount) sel.getRangeAt(0).deleteContents();
+    if (editorRef.current) {
+      cleanChipBrs(editorRef.current);
+      setPrompt(extractEditorText(editorRef.current));
+    }
+  }
+
+
+  const estimate = useMemo(() => {
+    // video-edit 计费 = (输入秒数 + 输出秒数) × 单价。必须先上传视频拿到真实输入时长，否则不预估
+    // DashScope 规则：输入 ≤ 15s 时输出与输入等长；输入 > 15s 时上游截取前 15s，输出也为 15s
+    let dur: number | undefined;
+    if (mode === 'video-edit') {
+      if (!editVideoDuration || editVideoDuration <= 0) {
+        return { credits: 0, lockedCredits: 0, rate: 0 };
+      }
+      const effective = Math.min(15, editVideoDuration);
+      dur = effective * 2; // 输入 + 输出
+    } else {
+      dur = duration;
+    }
+    return estimateHappyhorseCredits(mode, resolution, dur, pricing);
+  }, [mode, resolution, duration, pricing, editVideoDuration]);
+
+  const creditInsufficient = !!balance && !balance.unlimited && estimate.lockedCredits > balance.available;
+
+  // ── 上传 ─────────────────────────────────────────────────
+  async function handleUploadImage(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    const limit = FILE_LIMITS.image;
+    // i2v 仅 1 张首帧；r2v 1~9 张参考图；video-edit 0~5 张参考图
+    const maxImages = mode === 'i2v' ? 1 : mode === 'video-edit' ? 5 : 9;
+    const existing = media.filter((m) => m.type === 'first_frame' || m.type === 'reference_image').length;
+    if (existing + files.length > maxImages) {
+      setSubmitError(`图片最多 ${maxImages} 张`);
+      return;
+    }
+    setUploading(true); setUploadPct(0); setSubmitError(null);
+    try {
+      const newOnes: HappyhorseMediaItem[] = [];
+      for (const file of Array.from(files)) {
+        if (file.size > limit.maxSize) throw new Error(`图片不能超过 ${limit.sizeLabel}`);
+        const out = await uploadToOss(file, 'image', (pct) => setUploadPct(pct));
+        newOnes.push({
+          type: mode === 'i2v' ? 'first_frame' : 'reference_image',
+          url: out.url,
+          original_name: file.name,
+        });
+      }
+      setMedia((prev) => [...prev, ...newOnes]);
+    } catch (e: any) {
+      setSubmitError(e.message || '上传失败');
+    } finally {
+      setUploading(false); setUploadPct(0);
+    }
+  }
+
+  async function handleUploadVideo(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    const file = files[0];
+    if (file.size > 100 * 1024 * 1024) { setSubmitError('视频不能超过 100MB'); return; }
+    setUploading(true); setUploadPct(0); setSubmitError(null);
+    // 在上传前/上传中并行 probe 视频时长（Object URL，单端）
+    const blobUrl = URL.createObjectURL(file);
+    const probe = document.createElement('video');
+    probe.preload = 'metadata';
+    probe.muted = true;
+    const durProm = new Promise<number | null>((resolve) => {
+      probe.addEventListener('loadedmetadata', () => {
+        const d = probe.duration;
+        resolve(Number.isFinite(d) && d > 0 ? d : null);
+      }, { once: true });
+      probe.addEventListener('error', () => resolve(null), { once: true });
+    });
+    probe.src = blobUrl;
+    try {
+      const out = await uploadToOss(file, 'video', (pct) => setUploadPct(pct));
+      const realDur = await durProm;
+      URL.revokeObjectURL(blobUrl);
+      setEditVideoDuration(realDur);
+      setMedia((prev) => [
+        { type: 'video', url: out.url, original_name: file.name },
+        ...prev.filter((x) => x.type !== 'video'),
+      ]);
+    } catch (e: any) {
+      URL.revokeObjectURL(blobUrl);
+      setSubmitError(e.message || '视频上传失败');
+    } finally {
+      setUploading(false); setUploadPct(0);
+    }
+  }
+
+  function removeMedia(idx: number) {
+    // r2v：删除某张图片前，先把 prompt 里的 @N 同步重排（@<idx+1> 删除，@>idx+1 各减 1）
+    if (mode === 'r2v' && media[idx]?.type === 'reference_image') {
+      const removedTagNum = imageIndexInRefList(idx) + 1; // 1-based among reference images
+      const refTotal = media.filter((m) => m.type === 'reference_image').length;
+      const reindex: Record<number, number | null> = {};
+      for (let k = 1; k <= refTotal; k++) {
+        reindex[k] = k === removedTagNum ? null : (k > removedTagNum ? k - 1 : k);
+      }
+      remapPromptChipTags(reindex);
+    }
+    // video-edit：删除视频时同步清掉时长，让预估回到「未知」状态
+    if (media[idx]?.type === 'video') setEditVideoDuration(null);
+    setMedia((prev) => prev.filter((_, i) => i !== idx));
+  }
+
+  function moveMedia(from: number, to: number) {
+    if (from === to) return;
+    if (from < 0 || from >= media.length || to < 0 || to >= media.length) return;
+    // r2v：交换图片顺序也要同步重排 prompt 里的 @N
+    if (mode === 'r2v') {
+      const refIndices = media
+        .map((m, i) => (m.type === 'reference_image' ? i : -1))
+        .filter((i) => i >= 0);
+      const fromRef = refIndices.indexOf(from);
+      const toRef = refIndices.indexOf(to);
+      if (fromRef !== -1 && toRef !== -1) {
+        // 计算新的 1-based 位置映射：把数组里第 fromRef 项搬到 toRef
+        const newOrder = refIndices.slice();
+        const [moved] = newOrder.splice(fromRef, 1);
+        newOrder.splice(toRef, 0, moved);
+        // newOrder[i] = 原位置；reindex[原 1-based] = 新 1-based
+        const reindex: Record<number, number | null> = {};
+        newOrder.forEach((origIdx, newIdx) => {
+          const origRefRank = refIndices.indexOf(origIdx) + 1;
+          reindex[origRefRank] = newIdx + 1;
+        });
+        remapPromptChipTags(reindex);
+      }
+    }
+    setMedia((prev) => {
+      const next = prev.slice();
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
+  }
+
+  /** 把 media 数组里某条 reference_image 在「参考图列表」内的 0-based 序号取出 */
+  function imageIndexInRefList(idxInMedia: number): number {
+    let rank = 0;
+    for (let k = 0; k < idxInMedia; k++) {
+      if (media[k].type === 'reference_image') rank++;
+    }
+    return rank;
+  }
+
+  /**
+   * r2v 模式下，把编辑器和 prompt 里的 chipTag 重新映射。
+   * 输入：{ 旧 1-based 序号 -> 新 1-based 序号 | null（被删除） }
+   */
+  function remapPromptChipTags(reindex: Record<number, number | null>) {
+    const transform = (tag: string): string | null => {
+      const num = parseInt(tag.replace(/^@/, ''), 10);
+      if (!Number.isFinite(num)) return tag;
+      const target = reindex[num];
+      if (target === null) return null; // 被删除
+      if (target === undefined) return tag;
+      return `@${target}`;
+    };
+    // 更新 plain text prompt
+    setPrompt((prev) => prev.replace(/@(\d+)/g, (_m, g1) => {
+      const t = transform('@' + g1);
+      return t === null ? '' : t;
+    }));
+    // 更新 contenteditable DOM（如已挂载）
+    const el = editorRef.current;
+    if (el) {
+      el.querySelectorAll<HTMLElement>('.mention-chip[data-tag]').forEach((chip) => {
+        const t = transform(chip.getAttribute('data-tag') || '');
+        if (t === null) chip.remove();
+        else if (t !== chip.getAttribute('data-tag')) {
+          chip.setAttribute('data-tag', t);
+          // 显示文本走文件原名（在新一轮 mentionItems 计算后再用 useEffect 兜底刷新）
+          chip.textContent = chipDisplayFor(t);
+        }
+      });
+    }
+  }
+
+  // ── 提交 ─────────────────────────────────────────────────
+  async function handleSubmit() {
+    if (!projectId) { setSubmitError('请先选择工作组'); return; }
+    if (mode !== 'i2v' && !prompt.trim()) { setSubmitError('请输入提示词'); return; }
+    if (mode === 'i2v' && !media.some((m) => m.type === 'first_frame')) { setSubmitError('请上传首帧图片'); return; }
+    if (mode === 'r2v' && media.filter((m) => m.type === 'reference_image').length < 1) { setSubmitError('请至少上传 1 张参考图'); return; }
+    if (mode === 'video-edit' && !media.some((m) => m.type === 'video')) { setSubmitError('请上传待编辑的视频'); return; }
+
+    setSubmitting(true); setSubmitError(null);
+    try {
+      const seedNum = seed.trim() ? parseInt(seed.trim(), 10) : undefined;
+      // r2v：把 @N → [Image N]（N 仅取 1~refImages.length 的合法序号）
+      let finalPrompt = prompt.trim();
+      if (mode === 'r2v') {
+        const refTotal = refImages.length;
+        finalPrompt = finalPrompt.replace(/@(\d+)/g, (m, g1) => {
+          const n = parseInt(g1, 10);
+          return n >= 1 && n <= refTotal ? `[Image ${n}]` : m;
+        });
+      }
+      await submitHappyhorseTask({
+        projectId,
+        mode,
+        prompt: finalPrompt,
+        resolution,
+        ratio: showRatio ? ratio : undefined,
+        duration: showDuration ? duration : undefined,
+        media: media.length ? media : undefined,
+        watermark: false, // 强制不加水印
+        audioSetting: mode === 'video-edit' ? audioSetting : undefined,
+        seed: Number.isFinite(seedNum) ? seedNum : undefined,
+        // video-edit 必须把已 probe 的视频时长上传，否则后端没法精确预扣
+        inputVideoDurationSec: mode === 'video-edit' && editVideoDuration && editVideoDuration > 0
+          ? editVideoDuration
+          : undefined,
+      });
+      setPrompt(''); setMedia([]); setSeed(''); setEditVideoDuration(null);
+      await loadTasks(1);
+    } catch (e: any) {
+      setSubmitError(e.message || '提交失败');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function handleReset() {
+    setPrompt(''); setMedia([]); setSeed(''); setSubmitError(null);
+  }
+
+  // ── 任务操作 ─────────────────────────────────────────────
+  // 直接从 DashScope OSS URL 下载（24h 有效）。fetch 成阻塞流后转 blob 再触发 a[download]，
+  // 这样能强制带上我们指定的文件名（跨域 URL 配合 <a download> 浏览器会忽略文件名，blob 不受限）。
+  async function handleDownload(t: HappyhorseTask) {
+    if (!t.video_url) return;
+    try {
+      const resp = await fetch(t.video_url);
+      if (!resp.ok) throw new Error(`下载失败 HTTP ${resp.status}`);
+      const blob = await resp.blob();
+      const promptPreview = (t.prompt || '').slice(0, 30).replace(/[\\/:*?"<>|]/g, '_');
+      const filename = `happyhorse_${t.id}_${promptPreview || t.mode}.mp4`;
+      const objUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // 给浏览器一点时间开始下载再 revoke
+      setTimeout(() => URL.revokeObjectURL(objUrl), 1000);
+    } catch (e: any) {
+      alert(`下载失败：${e.message || '未知错误'}（视频链接可能已过期，请重新生成）`);
+    }
+  }
+
+  /**
+   * 复用历史任务：把模式、参数、媒体、prompt 一次性还原到表单。
+   * 媒体直接复用历史 OSS / DashScope 临时 URL（不重新上传）。
+   * r2v 的 [Image N] 自动转回 @N，由编辑器 useLayoutEffect 重新 chip 化。
+   * video-edit 的视频时长无法二次 probe 历史 URL（CORS / dashscope 链接 24h 失效），
+   *   优先取任务记录里的 result_input_duration，无则置空并提示。
+   */
+  function handleReuse(t: HappyhorseTask) {
+    // 标记本次 mode 切换不要触发表单清空（我们马上要塞历史值进去）
+    skipModeResetRef.current = true;
+
+    // 1. 模式 + 参数
+    setMode(t.mode);
+    setResolution(t.resolution);
+    if (t.ratio) setRatio(t.ratio);
+    if (t.duration) setDuration(t.duration);
+    if (t.audio_setting === 'auto' || t.audio_setting === 'origin') setAudioSetting(t.audio_setting);
+    setSeed(t.seed != null ? String(t.seed) : '');
+
+    // 2. 媒体（直接复用任务持久化的 url）
+    const restoredMedia: HappyhorseMediaItem[] = (t.media || []).map((m) => ({
+      type: m.type,
+      url: m.url,
+      original_name: m.original_name || null,
+    }));
+    setMedia(restoredMedia);
+
+    // 3. video-edit：尝试恢复视频时长用于精确预扣
+    if (t.mode === 'video-edit') {
+      const dur = Number(t.result_input_duration);
+      setEditVideoDuration(Number.isFinite(dur) && dur > 0 ? dur : null);
+    } else {
+      setEditVideoDuration(null);
+    }
+
+    // 4. prompt：r2v 把 [Image N] 还原为 @N，让 mention chip 自动重建；其它模式直接回填
+    let restoredPrompt = t.prompt || '';
+    if (t.mode === 'r2v') {
+      restoredPrompt = restoredPrompt.replace(/\[Image (\d+)\]/g, '@$1');
+    }
+    setPrompt(restoredPrompt);
+
+    setSubmitError(null);
+    // 兜底：若 mode 没变化（[mode] effect 不会跑），flag 在下个 tick 主动清掉，避免污染下一次真切换
+    setTimeout(() => { skipModeResetRef.current = false; }, 0);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  // ── 渲染 ─────────────────────────────────────────────────
+  const totalPages = Math.max(1, Math.ceil(tasksTotal / PAGE_SIZE));
+  const canGenerate = !submitting && !uploading && !!projectId && !creditInsufficient;
+  const currentTab = MODE_TABS.find((m) => m.mode === mode)!;
+
+  return (
+    <div className="h-screen flex flex-col md:flex-row overflow-hidden bg-[#0f111a] text-white">
+      {/* Mobile Header */}
+      <div className="md:hidden sticky top-0 z-40 bg-[#0f111a]/95 backdrop-blur-sm px-4 py-3 flex items-center justify-between border-b border-gray-800">
+        <h1 className="text-lg font-bold">HappyHorse · {currentTab.label}</h1>
+        <button onClick={() => navigate('/settings')} className="btn-ghost">
+          <GearIcon className="w-4 h-4" />
+        </button>
+      </div>
+
+      {/* Left Panel */}
+      <div className="flex-1 md:w-[520px] md:flex-none md:border-r border-gray-800 overflow-y-auto custom-scrollbar p-4 md:p-6 bg-[#0f111a]">
+        <div className="hidden md:flex flex-col gap-1 mb-4">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-xl font-bold truncate flex items-center gap-2">
+              <SparkleIcon className="w-5 h-5 text-pink-400" />
+              HappyHorse
+              <span className="text-xs font-normal text-gray-500">阿里云百炼 DashScope</span>
+            </h2>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <button onClick={() => navigate('/settings')} className="btn-ghost" title="设置">
+                <GearIcon className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+          {state.currentProject && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs px-2.5 py-1 rounded-xl bg-purple-500/20 border border-purple-500/30 text-purple-300 font-medium truncate max-w-[300px]">
+                {state.currentProject.name}
+              </span>
+            </div>
+          )}
+        </div>
+
+        <div className="space-y-4">
+          {/* Mode Tabs */}
+          <div className="bg-[#1c1f2e] rounded-2xl border border-gray-800 p-4">
+            <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-3">生成模式</label>
+            <div className="grid grid-cols-2 gap-2">
+              {MODE_TABS.map((m) => (
+                <button
+                  key={m.mode}
+                  onClick={() => setMode(m.mode)}
+                  className={`px-3 py-2.5 rounded-xl text-sm border transition-all text-left ${
+                    mode === m.mode
+                      ? 'border-pink-500 bg-pink-500/10 text-pink-300'
+                      : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
+                  }`}
+                >
+                  <div className="font-medium">{m.label}</div>
+                </button>
+              ))}
+            </div>
+            <p className="text-[10px] text-gray-500 mt-2">{currentTab.desc}</p>
+          </div>
+
+          {/* 媒体上传 */}
+          {mode !== 't2v' && (
+            <div className="bg-[#1c1f2e] rounded-2xl border border-gray-800 p-4 space-y-3">
+              <label className="text-sm font-bold text-gray-300">
+                {mode === 'i2v' && '首帧图片（必填，1 张）'}
+                {mode === 'r2v' && '参考图（1~9 张，prompt 中输入 @ 引用图片；可拖动调整顺序）'}
+                {mode === 'video-edit' && '待编辑视频 + 参考图（视频必填，参考图 0~5 张）'}
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {media.map((m, i) => {
+                  // r2v 模式下，参考图可以拖动调整顺序（顺序影响 @N 编号）
+                  const draggable = mode === 'r2v' && m.type === 'reference_image';
+                  return (
+                    <div
+                      key={i}
+                      draggable={draggable}
+                      onDragStart={draggable ? (e) => {
+                        setDragIndex(i);
+                        e.dataTransfer.effectAllowed = 'move';
+                      } : undefined}
+                      onDragOver={draggable ? (e) => {
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = 'move';
+                      } : undefined}
+                      onDrop={draggable ? (e) => {
+                        e.preventDefault();
+                        if (dragIndex !== null && dragIndex !== i) moveMedia(dragIndex, i);
+                        setDragIndex(null);
+                      } : undefined}
+                      onDragEnd={draggable ? () => setDragIndex(null) : undefined}
+                      className={`transition-opacity ${draggable ? 'cursor-grab active:cursor-grabbing' : ''} ${dragIndex === i ? 'opacity-40' : ''}`}
+                      title={draggable ? '拖动以调整 @ 编号顺序' : undefined}
+                    >
+                      <MediaThumb m={m} idx={imageIndexInRefList(i) + 1} onRemove={() => removeMedia(i)} />
+                    </div>
+                  );
+                })}
+                {/* 图片上传按钮 */}
+                {(() => {
+                  const imgCount = media.filter((m) => m.type !== 'video').length;
+                  const maxImg = mode === 'i2v' ? 1 : mode === 'video-edit' ? 5 : 9;
+                  if (imgCount >= maxImg) return null;
+                  return (
+                    <label className={`flex items-center justify-center gap-1.5 w-20 h-20 border border-dashed border-gray-700 rounded-xl text-xs text-gray-500 ${uploading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-pink-500/50 hover:bg-[#25293d]'} transition-all`}>
+                      <PlusIcon className="w-3.5 h-3.5" />
+                      <span>图片</span>
+                      <input
+                        ref={imgInputRef} type="file" accept={FILE_LIMITS.image.accept}
+                        multiple={mode !== 'i2v'} className="hidden" disabled={uploading}
+                        onChange={(e) => { void handleUploadImage(e.target.files); e.target.value = ''; }}
+                      />
+                    </label>
+                  );
+                })()}
+                {mode === 'video-edit' && !media.some((m) => m.type === 'video') && (
+                  <label className={`flex items-center justify-center gap-1.5 w-20 h-20 border border-dashed border-pink-700 rounded-xl text-xs text-pink-500 ${uploading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-pink-400 hover:bg-[#25293d]'} transition-all`}>
+                    <PlusIcon className="w-3.5 h-3.5" />
+                    <span>视频</span>
+                    <input
+                      ref={videoInputRef} type="file" accept="video/mp4,video/quicktime" className="hidden" disabled={uploading}
+                      onChange={(e) => { void handleUploadVideo(e.target.files); e.target.value = ''; }}
+                    />
+                  </label>
+                )}
+              </div>
+              {uploading && (
+                <div className="text-xs text-gray-500">上传中... {uploadPct}%</div>
+              )}
+              <p className="text-[10px] text-gray-500">
+                图片：JPEG/PNG/WEBP，单张 ≤30MB；视频：MP4/MOV，时长 3~60s，≤100MB
+              </p>
+            </div>
+          )}
+
+          {/* Prompt */}
+          <div className="bg-[#1c1f2e] rounded-2xl border border-gray-800 p-4">
+            <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-3">
+              提示词 {mode === 'i2v' && <span className="text-gray-500 normal-case">（可选）</span>}
+              {mode === 'r2v' && <span className="text-gray-500 normal-case">（输入 @ 引用参考图）</span>}
+            </label>
+            {mode === 'r2v' ? (
+              <div className="relative">
+                <div
+                  ref={editorRef}
+                  contentEditable
+                  suppressContentEditableWarning
+                  data-placeholder="示例：让 @1 中的女子穿上 @2 的旗袍，在 @3 的花园里漫步..."
+                  onInput={handleEditorInput}
+                  onKeyDown={handleEditorKeyDown}
+                  onPaste={handleEditorPaste}
+                  onCopy={handleEditorCopy}
+                  onCut={handleEditorCut}
+                  className="prompt-editor w-full min-h-[120px] bg-[#0f111a] border border-gray-700 rounded-xl p-3 text-sm text-white focus:border-pink-500 outline-none whitespace-pre-wrap break-words"
+                />
+                {mentionPanel && mentionItems.length > 0 && (
+                  <div
+                    className="absolute z-30 bg-[#1c1f2e] border border-gray-700 rounded-xl shadow-xl p-1 max-h-60 overflow-y-auto custom-scrollbar w-[260px]"
+                    style={{ top: mentionPanel.top, left: mentionPanel.left }}
+                    onMouseDown={(e) => e.preventDefault()}
+                  >
+                    {mentionItems
+                      .filter((mi) => !mentionPanel.filter || String(mi.idx).startsWith(mentionPanel.filter))
+                      .map((mi, i) => (
+                        <button
+                          key={mi.tag}
+                          type="button"
+                          onClick={() => insertMentionChip(mi.tag)}
+                          className={`flex items-center gap-2 w-full px-2 py-1.5 rounded-lg text-left text-sm transition-colors ${
+                            i === mentionPanel.focusIdx ? 'bg-pink-500/20 text-pink-200' : 'text-gray-300 hover:bg-gray-800'
+                          }`}
+                        >
+                          <img src={mi.url} alt="" className="w-8 h-8 object-cover rounded border border-gray-700" />
+                          <span className="font-mono text-pink-300">{mi.tag}</span>
+                          <span className="truncate text-xs text-gray-400">{mi.name}</span>
+                        </button>
+                      ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <textarea
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                rows={5}
+                maxLength={5000}
+                className="w-full bg-[#0f111a] border border-gray-700 rounded-xl p-3 text-sm text-white focus:border-pink-500 outline-none resize-none"
+                placeholder="描述你想生成的视频内容..."
+              />
+            )}
+            <div className="text-[10px] text-gray-500 mt-1 text-right">{prompt.length} / 5000</div>
+          </div>
+
+          {/* 参数 */}
+          <div className="bg-[#1c1f2e] rounded-2xl border border-gray-800 p-4 space-y-4">
+            {/* Resolution */}
+            <div>
+              <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-3">分辨率</label>
+              <div className="flex gap-2">
+                {RESOLUTIONS.map((r) => (
+                  <button
+                    key={r}
+                    onClick={() => setResolution(r)}
+                    className={`px-3 py-2 rounded-xl text-sm font-medium border transition-all ${
+                      resolution === r ? 'border-pink-500 bg-pink-500/10 text-pink-300' : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
+                    }`}
+                  >{r}</button>
+                ))}
+              </div>
+            </div>
+
+            {/* Ratio */}
+            {showRatio && (
+              <div>
+                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-3">画幅</label>
+                <div className="flex flex-wrap gap-2">
+                  {RATIO_OPTIONS.map((r) => (
+                    <button
+                      key={r}
+                      onClick={() => setRatio(r)}
+                      className={`px-3 py-2 rounded-xl text-sm font-medium border transition-all ${
+                        ratio === r ? 'border-pink-500 bg-pink-500/10 text-pink-300' : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
+                      }`}
+                    >{r}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Duration */}
+            {showDuration && (
+              <div>
+                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-3">视频时长</label>
+                <div className="flex flex-wrap gap-2">
+                  {DURATION_OPTIONS.map((d) => (
+                    <button
+                      key={d}
+                      onClick={() => setDuration(d)}
+                      className={`px-3 py-2 rounded-xl text-sm font-medium border transition-all ${
+                        duration === d ? 'border-pink-500 bg-pink-500/10 text-pink-300' : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
+                      }`}
+                    >{d}秒</button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Audio setting (video-edit only) */}
+            {showAudioSetting && (
+              <div>
+                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-3">声音</label>
+                <div className="flex gap-2">
+                  {(['auto', 'origin'] as const).map((v) => (
+                    <button
+                      key={v}
+                      onClick={() => setAudioSetting(v)}
+                      className={`px-3 py-2 rounded-xl text-sm font-medium border transition-all ${
+                        audioSetting === v ? 'border-pink-500 bg-pink-500/10 text-pink-300' : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
+                      }`}
+                    >{v === 'auto' ? '自动' : '保留原声'}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Seed */}
+            <div>
+              <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-3">Seed（可选）</label>
+              <input
+                type="text" value={seed}
+                onChange={(e) => setSeed(e.target.value.replace(/\D/g, ''))}
+                placeholder="留空随机"
+                className="w-full bg-[#0f111a] border border-gray-700 rounded-xl px-3 py-2 text-sm text-white focus:border-pink-500 outline-none"
+              />
+            </div>
+          </div>
+
+          {/* Generate */}
+          <div className="pb-6 md:pb-4">
+            {(submitting || uploading) && (
+              <div className="mb-4">
+                <div className="text-xs text-gray-400">
+                  {uploading ? `正在上传素材到 OSS... ${uploadPct}%` : '提交中...'}
+                </div>
+              </div>
+            )}
+            <div className="flex gap-3">
+              <button
+                onClick={handleSubmit}
+                disabled={!canGenerate}
+                className={`flex-1 font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2 ${
+                  creditInsufficient
+                    ? 'bg-amber-600 hover:bg-amber-500 text-white shadow-lg shadow-amber-900/20'
+                    : 'bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 disabled:from-gray-700 disabled:to-gray-700 disabled:text-gray-500 text-white shadow-lg shadow-pink-900/20'
+                }`}
+              >
+                {submitting ? (
+                  <><span className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />生成中...</>
+                ) : uploading ? (
+                  <><span className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />上传中...</>
+                ) : creditInsufficient ? (
+                  <>⚠️ 可用积分不足（可用 {balance!.available}，需 {estimate.lockedCredits}）</>
+                ) : (
+                  <><SparkleIcon className="w-4 h-4" />生成视频</>
+                )}
+              </button>
+              <button
+                onClick={handleReset}
+                disabled={submitting || uploading}
+                className="px-6 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-600 text-white font-bold py-3 rounded-xl transition-all"
+              >重置</button>
+            </div>
+
+            {/* 积分余额 + 实时预估 */}
+            {currentUser && (
+              <div className="mt-2 flex items-center justify-between text-xs text-gray-500">
+                <span>
+                  {balance?.unlimited ? (
+                    <span className="text-amber-400 font-medium">无限额度</span>
+                  ) : balance ? (
+                    <>
+                      余额 <span className={`font-semibold ${balance.available <= 3 ? 'text-red-400' : 'text-gray-300'}`}>{balance.available}</span> 积分
+                      {balance.locked > 0 && (
+                        <span className="ml-2 text-amber-400">（锁定 {balance.locked}）</span>
+                      )}
+                    </>
+                  ) : (
+                    <>余额 <span className="font-semibold text-gray-300">{currentUser.credits ?? 0}</span> 积分</>
+                  )}
+                </span>
+                {mode === 'video-edit' && (!editVideoDuration || editVideoDuration <= 0) ? (
+                  <span className="text-amber-400">请先上传视频后再预估积分</span>
+                ) : estimate.credits > 0 ? (
+                  <span>
+                    本次预计消耗 <span className="text-pink-300 font-semibold">{estimate.credits}</span> 积分
+                    <span className="ml-2 text-gray-500">（锁定 {estimate.lockedCredits}）</span>
+                  </span>
+                ) : (
+                  <span>{pricing === null ? '加载计费中...' : '请选择参数'}</span>
+                )}
+              </div>
+            )}
+            {mode === 'video-edit' && estimate.credits > 0 && editVideoDuration && editVideoDuration > 0 && (
+              <div className="mt-1 text-[10px] text-gray-500">
+                视频编辑计费 = 输入 {Math.min(15, Math.ceil(editVideoDuration))}s + 输出 {Math.min(15, Math.ceil(editVideoDuration))}s（≤15s 输出与输入等长）
+              </div>
+            )}
+            {submitError && <div className="mt-3 text-sm text-red-400">{submitError}</div>}
+          </div>
+        </div>
+      </div>
+
+      {/* Right Panel - History */}
+      <div className="flex-1 bg-[#090a0f] overflow-y-auto flex flex-col">
+        <div className="px-4 pt-4 pb-2 flex items-center justify-between">
+          <h2 className="text-sm font-bold text-gray-400 uppercase tracking-wider">HappyHorse 历史记录（{tasksTotal}）</h2>
+          <button onClick={() => loadTasks(page)} className="text-xs text-gray-500 hover:text-white">刷新</button>
+        </div>
+
+        {tasksLoading && tasks.length === 0 ? (
+          <div className="flex-1 flex items-center justify-center text-gray-600 text-sm">
+            <span className="animate-spin h-4 w-4 border-2 border-pink-400 border-t-transparent rounded-full mr-2" />加载中...
+          </div>
+        ) : tasks.length === 0 ? (
+          <div className="flex-1 flex items-center justify-center text-gray-600 text-sm">暂无生成记录</div>
+        ) : (
+          <div className="px-4 pb-4 space-y-3">
+            {tasks.map((t) => {
+              const badge = STATUS_BADGE[t.status];
+              const playUrl = t.video_url;
+              const canPreview = !!playUrl || (t.status === 'error' && !!t.error_message);
+              const openPreview = () => {
+                if (!canPreview) return;
+                setPreviewVideo({
+                  url: playUrl || '',
+                  prompt: t.prompt || '',
+                  error: t.status === 'error' && t.error_message ? t.error_message : null,
+                });
+              };
+              return (
+                <div key={t.id} className="bg-[#1c1f2e] border border-gray-800 hover:border-gray-700 rounded-2xl overflow-hidden transition-all">
+                  <div className="flex gap-3 p-3 items-start">
+                    {/* Thumbnail */}
+                    <div
+                      className={`w-[25vh] h-[25vh] min-w-[120px] min-h-[120px] flex-shrink-0 rounded-xl overflow-hidden bg-[#0f111a] flex items-center justify-center relative group ${canPreview ? 'cursor-pointer' : ''}`}
+                      onClick={openPreview}
+                    >
+                      {t.status === 'done' && playUrl ? (
+                        <>
+                          <video
+                            src={playUrl}
+                            muted
+                            className="w-full h-full object-cover"
+                            preload="metadata"
+                            onMouseEnter={(e) => (e.currentTarget as HTMLVideoElement).play()}
+                            onMouseLeave={(e) => { (e.currentTarget as HTMLVideoElement).pause(); (e.currentTarget as HTMLVideoElement).currentTime = 0; }}
+                          />
+                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                            <svg className="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                          </div>
+                        </>
+                      ) : t.status === 'processing' || t.status === 'pending' ? (
+                        <span className="text-xs text-blue-400 text-center px-1 flex flex-col items-center gap-1">
+                          <span className="animate-spin h-4 w-4 border-2 border-blue-400 border-t-transparent rounded-full" />
+                          {badge.text}
+                        </span>
+                      ) : t.status === 'error' ? (
+                        <span className="text-xs text-red-400 text-center px-1">失败</span>
+                      ) : (
+                        <span className="text-xs text-gray-500 text-center px-1">{badge.text}</span>
+                      )}
+                    </div>
+
+                    {/* Info */}
+                    <div className="flex-1 min-w-0 flex flex-col gap-1.5">
+                      <div className="flex items-center gap-2 text-[10px]">
+                        <span className={`px-2 py-0.5 rounded border ${badge.cls}`}>{badge.text}</span>
+                        <span className="text-gray-500">#{t.id}</span>
+                        <span className="text-pink-400">{MODE_TABS.find((m) => m.mode === t.mode)?.label}</span>
+                      </div>
+                      <p className="text-xs text-gray-300 line-clamp-2 leading-relaxed">{t.prompt || '（无提示词）'}</p>
+                      {t.status === 'error' && t.error_message && (
+                        <p className="text-xs text-red-400 line-clamp-3 leading-relaxed bg-red-950/30 rounded-lg px-2 py-1">{t.error_message}</p>
+                      )}
+
+                      {/* 输入素材缩略 */}
+                      {t.media && t.media.length > 0 && (
+                        <div className="flex gap-1 flex-wrap">
+                          {t.media.slice(0, 6).map((m, i) => (
+                            m.type === 'video' ? (
+                              <div key={i} className="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-base flex-shrink-0">🎬</div>
+                            ) : (
+                              <img key={i} src={m.url} className="w-8 h-8 rounded-lg object-cover border border-gray-700 flex-shrink-0" onError={(e) => (e.currentTarget.style.display = 'none')} />
+                            )
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Bottom row: date (left) + params+actions (right) —— 与 SingleTaskPage 同款 */}
+                      <div className="flex items-end justify-between gap-2 mt-auto">
+                        <span className="text-[10px] text-gray-600 flex-shrink-0">{formatShortDateTime(t.created_at)}</span>
+                        <div className="flex flex-col items-end gap-1.5">
+                          <div className="flex flex-wrap justify-end gap-1">
+                            <span className="text-[9px] px-1 py-0.5 rounded bg-pink-500/10 text-pink-300 border border-pink-500/20 leading-none">
+                              {MODE_TABS.find((m) => m.mode === t.mode)?.label}
+                            </span>
+                            {t.resolution && <span className="text-[9px] px-1 py-0.5 rounded bg-gray-700/60 text-gray-400 leading-none">{t.resolution}</span>}
+                            {t.ratio && <span className="text-[9px] px-1 py-0.5 rounded bg-gray-700/60 text-gray-400 leading-none">{t.ratio}</span>}
+                            {t.duration && <span className="text-[9px] px-1 py-0.5 rounded bg-gray-700/60 text-gray-400 leading-none">{t.duration}s</span>}
+                          </div>
+                          <div className="flex gap-2">
+                            {canPreview && (
+                              <button
+                                onClick={openPreview}
+                                className="text-[11px] px-2 py-1 rounded-xl border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition-all"
+                              >
+                                {playUrl ? '预览' : '报错'}
+                              </button>
+                            )}
+                            {t.status === 'done' && t.video_url && (
+                              <button
+                                onClick={() => handleDownload(t)}
+                                className="text-[11px] px-2 py-1 rounded-xl border border-pink-500/40 text-pink-300 hover:bg-pink-500/10 hover:border-pink-400 transition-all"
+                              >下载</button>
+                            )}
+                            <button
+                              onClick={() => handleReuse(t)}
+                              className="text-[11px] px-2 py-1 rounded-xl border border-purple-500/40 text-purple-400 hover:bg-purple-500/10 transition-all"
+                            >复用</button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {totalPages > 1 && (
+          <div className="flex items-center justify-center gap-2 py-4">
+            <button disabled={page <= 1} onClick={() => loadTasks(page - 1)} className="px-3 py-1.5 rounded bg-[#1c1f2e] text-gray-300 disabled:opacity-40 text-sm">上一页</button>
+            <span className="text-sm text-gray-400">第 {page} / {totalPages} 页</span>
+            <button disabled={page >= totalPages} onClick={() => loadTasks(page + 1)} className="px-3 py-1.5 rounded bg-[#1c1f2e] text-gray-300 disabled:opacity-40 text-sm">下一页</button>
+          </div>
+        )}
+      </div>
+
+      {/* 视频预览弹窗 —— 与 SingleTaskPage 同款 */}
+      {previewVideo && (
+        <div
+          className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setPreviewVideo(null)}
+        >
+          <div
+            className={`relative flex flex-col gap-3 ${previewVideo.url ? 'w-full max-w-5xl' : 'w-full max-w-xl'}`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={() => setPreviewVideo(null)}
+              className="absolute -top-9 right-0 text-gray-400 hover:text-white transition-colors text-sm flex items-center gap-1"
+            >关闭 ✕</button>
+
+            {previewVideo.url && (
+              <video
+                src={previewVideo.url}
+                controls
+                autoPlay
+                className="w-full rounded-2xl max-h-[72vh] bg-black"
+              />
+            )}
+
+            {(previewVideo.prompt || previewVideo.error) && (
+              <div className={`grid gap-3 ${previewVideo.prompt && previewVideo.error ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                {previewVideo.prompt && (
+                  <div className="bg-[#0f111a]/90 border border-gray-700 rounded-xl px-4 py-3">
+                    <div className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1.5">提示词</div>
+                    <p className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap break-words max-h-28 overflow-y-auto custom-scrollbar">{previewVideo.prompt}</p>
+                  </div>
+                )}
+                {previewVideo.error && (
+                  <div className="bg-red-950/50 border border-red-700/40 rounded-xl px-4 py-3">
+                    <div className="text-[10px] font-bold text-red-400 uppercase tracking-wider mb-1.5">报错信息</div>
+                    <p className="text-sm text-red-300 leading-relaxed whitespace-pre-wrap break-words max-h-28 overflow-y-auto custom-scrollbar">{previewVideo.error}</p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

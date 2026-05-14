@@ -27,12 +27,17 @@ import * as mediaKitService from './services/mediaKitService.js';
 import * as enhancementWorker from './services/enhancementWorker.js';
 import * as enhancementPricingService from './services/enhancementPricingService.js';
 import * as audioGenerationService from './services/audioGenerationService.js';
+import * as happyhorseService from './services/happyhorseService.js';
+import * as happyhorsePricingService from './services/happyhorsePricingService.js';
+import * as happyhorseWorker from './services/happyhorseWorker.js';
 import { readFileSync } from 'fs';
 
 // 初始化数据库
 initDatabase();
 // 启动画质增强后台轮询
 enhancementWorker.start();
+// 启动 HappyHorse 后台轮询
+happyhorseWorker.start();
 
 // 启动时：若环境变量中有火山引擎 AK/SK，写入 system_config（Docker 部署首次配置兜底）
 try {
@@ -3929,6 +3934,339 @@ app.get('/api/video-enhancements/list', authenticate, (req, res) => {
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+// ============================================================
+// HappyHorse 视频生成（阿里云百炼 DashScope）
+// 4 个子模式共用 tasks_happyhorse 表 + 一个异步 worker
+// ============================================================
+
+const HAPPYHORSE_MODE_MODELS = {
+  't2v': 'happyhorse-1.0-t2v',
+  'i2v': 'happyhorse-1.0-i2v',
+  'r2v': 'happyhorse-1.0-r2v',
+  'video-edit': 'happyhorse-1.0-video-edit',
+};
+const HAPPYHORSE_RESOLUTIONS = ['720P', '1080P'];
+const HAPPYHORSE_RATIOS = ['16:9', '9:16', '1:1', '4:3', '3:4', '4:5', '5:4'];
+
+function happyhorseRowToDto(row) {
+  if (!row) return null;
+  let media = [];
+  try { media = row.media_json ? JSON.parse(row.media_json) : []; } catch { media = []; }
+  const { media_json, ...rest } = row;
+  return { ...rest, media };
+}
+
+function authorizeHappyhorseRow(row, req) {
+  if (!row) return { ok: false, status: 404, error: '任务不存在' };
+  const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
+  if (!isAdmin && row.user_id !== req.user.id) {
+    if (!projectService.isProjectMember(row.project_id, req.user.id)) {
+      return { ok: false, status: 403, error: '无权访问该任务' };
+    }
+  }
+  return { ok: true };
+}
+
+// GET /api/happyhorse/pricing - 公开（已登录）拿计费表
+app.get('/api/happyhorse/pricing', authenticate, (req, res) => {
+  try {
+    res.json({ success: true, data: { pricing: happyhorsePricingService.getPricingTable() } });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/happyhorse-tasks - 提交任务
+app.post('/api/happyhorse-tasks', authenticate, async (req, res) => {
+  const db = getDatabase();
+  try {
+    if (!permissionService.hasPermission(req.user.id, 'generate_video_happyhorse')) {
+      return res.status(403).json({ error: '当前账号未开通 HappyHorse 视频生成权限，请联系管理员' });
+    }
+
+    const {
+      projectId, mode, prompt, resolution,
+      ratio, duration, media, audioSetting, seed,
+      inputVideoDurationSec,
+    } = req.body || {};
+
+    const m = String(mode || '').toLowerCase();
+    if (!HAPPYHORSE_MODE_MODELS[m]) {
+      return res.status(400).json({ error: '无效的 mode，应为 t2v / i2v / r2v / video-edit 之一' });
+    }
+    const pid = parseInt(projectId, 10);
+    if (!Number.isFinite(pid) || pid <= 0) return res.status(400).json({ error: '必须指定所属工作组（projectId）' });
+
+    const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
+    const project = projectService.getProjectById(pid, req.user.id, isAdmin);
+    if (!project) return res.status(403).json({ error: '工作组不存在或您不是该工作组成员' });
+
+    const promptStr = String(prompt || '').trim();
+    if (!promptStr && m !== 'i2v') return res.status(400).json({ error: '请输入文本提示词' });
+    if (promptStr.length > 5000) return res.status(400).json({ error: '提示词过长（≤5000 字符）' });
+
+    const resolutionUp = String(resolution || '').toUpperCase();
+    if (!HAPPYHORSE_RESOLUTIONS.includes(resolutionUp)) {
+      return res.status(400).json({ error: '无效的 resolution，应为 720P / 1080P' });
+    }
+
+    let normalizedRatio = null;
+    if (m === 't2v' || m === 'r2v') {
+      const r = String(ratio || '16:9');
+      if (!HAPPYHORSE_RATIOS.includes(r)) return res.status(400).json({ error: '无效的 ratio' });
+      normalizedRatio = r;
+    }
+
+    let normalizedDuration = null;
+    if (m !== 'video-edit') {
+      const d = parseInt(duration ?? 5, 10);
+      if (!Number.isFinite(d) || d < 3 || d > 15) {
+        return res.status(400).json({ error: 'duration 应为 3~15 之间的整数' });
+      }
+      normalizedDuration = d;
+    }
+
+    // 校验 / 规范化 media
+    const mediaArr = Array.isArray(media) ? media : [];
+    function pick(item) {
+      if (!item || typeof item !== 'object') return null;
+      const type = String(item.type || '').toLowerCase();
+      const url = String(item.url || '').trim();
+      if (!url) return null;
+      return { type, url, original_name: item.original_name || item.originalName || null };
+    }
+    const cleaned = mediaArr.map(pick).filter(Boolean);
+
+    let apiInputMedia = null;
+    if (m === 't2v') {
+      if (cleaned.length > 0) return res.status(400).json({ error: '文生视频不支持上传媒体素材' });
+    } else if (m === 'i2v') {
+      const first = cleaned.find((x) => x.type === 'first_frame') || cleaned[0];
+      if (!first) return res.status(400).json({ error: '图生视频需上传 1 张首帧图片' });
+      apiInputMedia = [{ type: 'first_frame', url: first.url }];
+    } else if (m === 'r2v') {
+      const refs = cleaned.filter((x) => x.type === 'reference_image' || x.type === '');
+      if (refs.length < 1 || refs.length > 9) {
+        return res.status(400).json({ error: '参考生视频需 1~9 张参考图' });
+      }
+      apiInputMedia = refs.map((x) => ({ type: 'reference_image', url: x.url }));
+    } else if (m === 'video-edit') {
+      const vid = cleaned.find((x) => x.type === 'video');
+      if (!vid) return res.status(400).json({ error: '视频编辑需上传 1 个待编辑视频' });
+      const refs = cleaned.filter((x) => x.type === 'reference_image');
+      if (refs.length > 5) return res.status(400).json({ error: '视频编辑参考图最多 5 张' });
+      apiInputMedia = [{ type: 'video', url: vid.url }, ...refs.map((x) => ({ type: 'reference_image', url: x.url }))];
+    }
+
+    // 估算积分。
+    //   - t2v / i2v / r2v：按用户选择的输出 duration
+    //   - video-edit：若前端 probe 出了真实输入视频时长，按 effective×2 精确预扣；否则 30s 上限兜底
+    const hintInputDur = Number(inputVideoDurationSec);
+    const est = happyhorsePricingService.estimate({
+      mode: m,
+      resolution: resolutionUp,
+      durationSec: m === 'video-edit' ? undefined : normalizedDuration,
+      inputVideoDurationSec: m === 'video-edit' && Number.isFinite(hintInputDur) && hintInputDur > 0
+        ? hintInputDur
+        : undefined,
+    });
+    if (!est.creditsPerSecond) {
+      return res.status(400).json({ error: '该模式/分辨率未配置计费单价' });
+    }
+    const lockedCredits = est.lockedCredits;
+
+    // API Key
+    const apiKeyRow = db.prepare("SELECT value FROM system_config WHERE key = 'happyhorse_api_key'").get();
+    const apiKey = apiKeyRow?.value || '';
+    if (!apiKey) return res.status(503).json({ error: 'HappyHorse API Key 未配置，请联系管理员' });
+
+    const mediaJson = cleaned.length > 0 ? JSON.stringify(cleaned) : null;
+    // 强制不加水印（产品决策）
+    const wm = 0;
+    const audioSettingStr = (m === 'video-edit' && (audioSetting === 'origin' || audioSetting === 'auto')) ? audioSetting : null;
+    const seedNum = (seed !== undefined && seed !== null && seed !== '') ? parseInt(seed, 10) : null;
+
+    // 预插入
+    const ins = db.prepare(
+      `INSERT INTO tasks_happyhorse
+         (user_id, project_id, mode, model, prompt, ratio, duration, resolution, media_json,
+          watermark, audio_setting, seed, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+    ).run(
+      req.user.id, pid, m, HAPPYHORSE_MODE_MODELS[m], promptStr, normalizedRatio,
+      normalizedDuration, resolutionUp, mediaJson, wm, audioSettingStr, Number.isFinite(seedNum) ? seedNum : null,
+    );
+    const happyhorseTaskId = ins.lastInsertRowid;
+
+    // 锁定积分
+    try {
+      creditLockService.lockForHappyhorse({
+        userId: req.user.id,
+        happyhorseTaskId,
+        credits: lockedCredits,
+        meta: {
+          mode: m, model: HAPPYHORSE_MODE_MODELS[m],
+          resolution: resolutionUp, ratio: normalizedRatio, duration: normalizedDuration,
+          estimated_credits: est.credits, credits_per_second: est.creditsPerSecond,
+        },
+      });
+    } catch (e) {
+      db.prepare('DELETE FROM tasks_happyhorse WHERE id = ?').run(happyhorseTaskId);
+      return res.status(402).json({ error: e.message });
+    }
+
+    // 调 DashScope
+    const apiInput = { prompt: promptStr };
+    if (apiInputMedia) apiInput.media = apiInputMedia;
+    const apiParams = { resolution: resolutionUp, watermark: wm === 1 };
+    if (normalizedRatio) apiParams.ratio = normalizedRatio;
+    if (normalizedDuration) apiParams.duration = normalizedDuration;
+    if (audioSettingStr) apiParams.audio_setting = audioSettingStr;
+    if (Number.isFinite(seedNum)) apiParams.seed = seedNum;
+
+    let result;
+    try {
+      result = await happyhorseService.submitTask({
+        apiKey,
+        model: HAPPYHORSE_MODE_MODELS[m],
+        input: apiInput,
+        parameters: apiParams,
+      });
+    } catch (e) {
+      creditLockService.releaseForHappyhorse({ happyhorseTaskId, reason: 'DashScope 提交失败：' + e.message });
+      db.prepare(`UPDATE tasks_happyhorse SET status='error', error_message=?, completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+        .run(e.message, happyhorseTaskId);
+      return res.status(502).json({ error: 'HappyHorse 提交失败：' + e.message });
+    }
+
+    db.prepare(
+      `UPDATE tasks_happyhorse
+       SET dashscope_task_id=?, request_id=?, status='processing', submitted_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+       WHERE id=?`
+    ).run(result.task_id, result.request_id || null, happyhorseTaskId);
+
+    const row = db.prepare('SELECT * FROM tasks_happyhorse WHERE id = ?').get(happyhorseTaskId);
+    res.json({ success: true, data: happyhorseRowToDto(row), estimatedCredits: est.credits, lockedCredits });
+  } catch (error) {
+    console.error('[happyhorse] 提交失败:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/happyhorse-tasks - 列出当前用户/工作组可见的任务（分页）
+app.get('/api/happyhorse-tasks', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const pageSize = Math.max(1, Math.min(100, parseInt(req.query.pageSize) || 20));
+    const offset = (page - 1) * pageSize;
+    const projectId = parseInt(req.query.projectId, 10);
+    const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
+
+    const filters = ['deleted_at IS NULL'];
+    const params = [];
+    if (Number.isFinite(projectId) && projectId > 0) {
+      filters.push('project_id = ?');
+      params.push(projectId);
+    }
+    if (!isAdmin) {
+      // 用户：自己创建的，或在同一 project 内的所有成员可见
+      filters.push(`(user_id = ? OR EXISTS (
+        SELECT 1 FROM project_members pm WHERE pm.project_id = tasks_happyhorse.project_id AND pm.user_id = ?
+      ))`);
+      params.push(req.user.id, req.user.id);
+    }
+    const where = filters.join(' AND ');
+    const total = db.prepare(`SELECT COUNT(*) AS n FROM tasks_happyhorse WHERE ${where}`).get(...params).n;
+    const rows = db.prepare(
+      `SELECT * FROM tasks_happyhorse WHERE ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`
+    ).all(...params, pageSize, offset);
+    res.json({ success: true, data: { items: rows.map(happyhorseRowToDto), total, page, pageSize } });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/happyhorse-tasks/:id - 单条详情
+app.get('/api/happyhorse-tasks/:id', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const row = db.prepare('SELECT * FROM tasks_happyhorse WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
+    const auth = authorizeHappyhorseRow(row, req);
+    if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
+    res.json({ success: true, data: happyhorseRowToDto(row) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /api/happyhorse-tasks/:id - 软删
+app.delete('/api/happyhorse-tasks/:id', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const row = db.prepare('SELECT * FROM tasks_happyhorse WHERE id = ?').get(req.params.id);
+    const auth = authorizeHappyhorseRow(row, req);
+    if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
+    db.prepare('UPDATE tasks_happyhorse SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?').run(req.params.id);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 注：HappyHorse 视频统一走「浏览器直连 DashScope OSS URL」下载（24h 有效），
+// 不在服务器本地落盘 —— 避免硬盘膨胀。前端 fetch + Blob + a[download] 触发即可。
+
+// POST /api/happyhorse-tasks/:id/mark-downloaded - 标记 HappyHorse 任务已下载（持久化）
+// 与视频/图片/音频/增强一致：仅写时间戳，不校验下载手段
+app.post('/api/happyhorse-tasks/:id/mark-downloaded', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const row = db.prepare('SELECT * FROM tasks_happyhorse WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
+    const auth = authorizeHappyhorseRow(row, req);
+    if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
+    db.prepare(`UPDATE tasks_happyhorse SET downloaded_at = CURRENT_TIMESTAMP WHERE id = ?`).run(req.params.id);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 管理员：HappyHorse API Key 读/写
+app.get('/api/admin/happyhorse-key', authenticate, requireAdmin, (req, res) => {
+  try {
+    const db = getDatabase();
+    const row = db.prepare("SELECT value FROM system_config WHERE key = 'happyhorse_api_key'").get();
+    const v = row?.value || '';
+    const masked = v ? `${v.slice(0, 4)}****${v.slice(-4)}` : '';
+    res.json({ success: true, data: { configured: !!v, masked } });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.put('/api/admin/happyhorse-key', authenticate, requireAdmin, (req, res) => {
+  try {
+    const apiKey = String(req.body?.apiKey || '').trim();
+    const db = getDatabase();
+    db.prepare(
+      `INSERT INTO system_config (key, value, description)
+       VALUES ('happyhorse_api_key', ?, 'HappyHorse (阿里云百炼 DashScope) API Key')
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`
+    ).run(apiKey);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 管理员：HappyHorse 计费读/写
+app.get('/api/admin/happyhorse-pricing', authenticate, requireAdmin, (req, res) => {
+  try {
+    res.json({ success: true, data: { pricing: happyhorsePricingService.getPricingTable() } });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.put('/api/admin/happyhorse-pricing', authenticate, requireAdmin, (req, res) => {
+  try {
+    const items = Array.isArray(req.body?.pricing) ? req.body.pricing : [];
+    for (const it of items) {
+      happyhorsePricingService.setPricing({
+        mode: it.mode,
+        resolution: it.resolution,
+        creditsPerSecond: it.credits_per_second ?? it.creditsPerSecond,
+      });
+    }
+    res.json({ success: true, data: { pricing: happyhorsePricingService.getPricingTable() } });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // ============================================================

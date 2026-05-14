@@ -11,6 +11,7 @@ import SingleTaskPage from './pages/SingleTaskPage';
 import ImageGenPage from './pages/ImageGenPage';
 import AudioGenPage from './pages/AudioGenPage';
 import EnhancementPage from './pages/EnhancementPage';
+import HappyHorsePage from './pages/HappyHorsePage';
 import SettingsPage from './pages/Settings';
 import DownloadManagementPage from './pages/DownloadManagement';
 import ProjectWorkspacePage from './pages/ProjectWorkspacePage';
@@ -246,6 +247,17 @@ function AppContent() {
             <ProtectedRoute currentUser={currentUser}>
               <MainLayout currentUser={currentUser} onLogout={handleLogout}>
                 <EnhancementPage />
+              </MainLayout>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/happyhorse"
+          element={
+            <ProtectedRoute currentUser={currentUser}>
+              <MainLayout currentUser={currentUser} onLogout={handleLogout}>
+                <HappyHorsePage />
               </MainLayout>
             </ProtectedRoute>
           }
