@@ -4,6 +4,7 @@ import { AppProvider } from './context/AppContext';
 import { useApp } from './context/AppContext';
 import Sidebar from './components/Sidebar';
 import NoProjectGate from './components/NoProjectGate';
+import ProfileCompletionGate from './components/ProfileCompletionGate';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import AdminPage from './pages/AdminPage';
@@ -62,22 +63,30 @@ function ProtectedRoute({
 function MainLayout({
   currentUser,
   onLogout,
+  onUserUpdated,
   children,
 }: {
   currentUser: User | null;
   onLogout: () => void;
+  onUserUpdated: (u: User) => void;
   children: React.ReactNode;
 }) {
   const { state } = useApp();
+  const needsProfile = !!currentUser
+    && (!currentUser.name?.trim() || !currentUser.department?.trim());
   const needsProject = !state.currentProject;
 
   return (
     <div className="min-h-screen bg-[#0f111a]">
-      <Sidebar currentUser={currentUser} onLogout={onLogout} />
+      <Sidebar currentUser={currentUser} onLogout={onLogout} onUserUpdated={onUserUpdated} />
       <main className="lg:pl-80 pt-16 lg:pt-0 min-h-screen">
         {children}
       </main>
-      {needsProject && <NoProjectGate />}
+      {/* 优先级：未填资料 > 未建/选项目；二者互斥渲染，避免 NoProjectGate 露出来 */}
+      {needsProfile && currentUser && (
+        <ProfileCompletionGate user={currentUser} onSaved={onUserUpdated} />
+      )}
+      {!needsProfile && needsProject && <NoProjectGate />}
     </div>
   );
 }
@@ -183,7 +192,7 @@ function AppContent() {
           path="/"
           element={
             <ProtectedRoute currentUser={currentUser}>
-              <MainLayout currentUser={currentUser} onLogout={handleLogout}>
+              <MainLayout currentUser={currentUser} onLogout={handleLogout} onUserUpdated={setCurrentUser}>
                 <SingleTaskPage />
               </MainLayout>
             </ProtectedRoute>
@@ -193,7 +202,7 @@ function AppContent() {
           path="/download"
           element={
             <ProtectedRoute currentUser={currentUser}>
-              <MainLayout currentUser={currentUser} onLogout={handleLogout}>
+              <MainLayout currentUser={currentUser} onLogout={handleLogout} onUserUpdated={setCurrentUser}>
                 <DownloadManagementPage />
               </MainLayout>
             </ProtectedRoute>
@@ -203,7 +212,7 @@ function AppContent() {
           path="/settings"
           element={
             <ProtectedRoute currentUser={currentUser}>
-              <MainLayout currentUser={currentUser} onLogout={handleLogout}>
+              <MainLayout currentUser={currentUser} onLogout={handleLogout} onUserUpdated={setCurrentUser}>
                 <SettingsPage />
               </MainLayout>
             </ProtectedRoute>
@@ -213,7 +222,7 @@ function AppContent() {
           path="/admin"
           element={
             <ProtectedRoute requireAdmin currentUser={currentUser}>
-              <MainLayout currentUser={currentUser} onLogout={handleLogout}>
+              <MainLayout currentUser={currentUser} onLogout={handleLogout} onUserUpdated={setCurrentUser}>
                 <AdminPage />
               </MainLayout>
             </ProtectedRoute>
@@ -224,7 +233,7 @@ function AppContent() {
           path="/image-gen"
           element={
             <ProtectedRoute currentUser={currentUser}>
-              <MainLayout currentUser={currentUser} onLogout={handleLogout}>
+              <MainLayout currentUser={currentUser} onLogout={handleLogout} onUserUpdated={setCurrentUser}>
                 <ImageGenPage />
               </MainLayout>
             </ProtectedRoute>
@@ -235,7 +244,7 @@ function AppContent() {
           path="/audio-gen"
           element={
             <ProtectedRoute currentUser={currentUser}>
-              <MainLayout currentUser={currentUser} onLogout={handleLogout}>
+              <MainLayout currentUser={currentUser} onLogout={handleLogout} onUserUpdated={setCurrentUser}>
                 <AudioGenPage />
               </MainLayout>
             </ProtectedRoute>
@@ -245,7 +254,7 @@ function AppContent() {
           path="/enhancement"
           element={
             <ProtectedRoute currentUser={currentUser}>
-              <MainLayout currentUser={currentUser} onLogout={handleLogout}>
+              <MainLayout currentUser={currentUser} onLogout={handleLogout} onUserUpdated={setCurrentUser}>
                 <EnhancementPage />
               </MainLayout>
             </ProtectedRoute>
@@ -256,7 +265,7 @@ function AppContent() {
           path="/happyhorse"
           element={
             <ProtectedRoute currentUser={currentUser}>
-              <MainLayout currentUser={currentUser} onLogout={handleLogout}>
+              <MainLayout currentUser={currentUser} onLogout={handleLogout} onUserUpdated={setCurrentUser}>
                 <HappyHorsePage />
               </MainLayout>
             </ProtectedRoute>
@@ -267,7 +276,7 @@ function AppContent() {
           path="/assets"
           element={
             <ProtectedRoute currentUser={currentUser}>
-              <MainLayout currentUser={currentUser} onLogout={handleLogout}>
+              <MainLayout currentUser={currentUser} onLogout={handleLogout} onUserUpdated={setCurrentUser}>
                 <ProjectWorkspacePage />
               </MainLayout>
             </ProtectedRoute>

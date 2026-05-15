@@ -932,10 +932,59 @@ app.post('/api/upload/oss', authenticate, ossUpload.single('file'), async (req, 
 
     const url = `${OSS_URL_PREFIX}${key}`;
     console.log(`[OSS] 上传成功: ${key} (${(size / 1024).toFixed(1)}KB)`);
-    res.json({ success: true, url, key });
+
+    // 视频文件：服务端探测真实时长 / 分辨率（不下载，调用 OSS video/info 处理）
+    // 失败不阻断上传成功的返回，前端用 fallback 流程提示用户
+    let videoInfo = null;
+    if (mediaType === 'video') {
+      try {
+        const { probeVideoInfo } = await import('./services/ossVideoInfoService.js');
+        const info = await probeVideoInfo(url);
+        if (info.ok) {
+          videoInfo = {
+            durationSec: info.durationSec,
+            width: info.width,
+            height: info.height,
+            fps: info.fps,
+          };
+          console.log(`[OSS] 视频探测: ${info.durationSec}s ${info.width}x${info.height} @${info.fps}fps`);
+        } else {
+          console.warn(`[OSS] 视频探测失败: ${info.error}`);
+        }
+      } catch (e) {
+        console.warn('[OSS] 视频探测异常:', e.message);
+      }
+    }
+
+    res.json({ success: true, url, key, videoInfo });
   } catch (error) {
     console.error('[OSS] 上传失败:', error.message);
     res.status(500).json({ error: `OSS 上传失败: ${error.message}` });
+  }
+});
+
+// POST /api/oss/probe-video - 探测已存在的 OSS 视频元数据（不下载到服务器）
+// 用途：复用历史任务、表单回填等场景，需要重新拿到 durationSec 用于计费预估
+app.post('/api/oss/probe-video', authenticate, async (req, res) => {
+  try {
+    const url = String(req.body?.url || '').trim();
+    if (!url) return res.status(400).json({ error: '缺少 url 参数' });
+    const { probeVideoInfo } = await import('./services/ossVideoInfoService.js');
+    const info = await probeVideoInfo(url);
+    if (!info.ok) {
+      return res.status(400).json({ error: info.error || '视频探测失败' });
+    }
+    res.json({
+      success: true,
+      data: {
+        durationSec: info.durationSec,
+        width: info.width,
+        height: info.height,
+        fps: info.fps,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -2385,7 +2434,7 @@ app.get('/api/download/tasks/:id/file', authenticate, async (req, res) => {
 // GET /api/download/tasks - 获取下载任务列表
 app.get('/api/download/tasks', authenticate, (req, res) => {
   try {
-    const { status = 'all', type = 'all', page = 1, pageSize = 20, projectId } = req.query;
+    const { status = 'all', type = 'all', page = 1, pageSize = 20, projectId, includeHappyhorse } = req.query;
     const isAdmin = ['admin','super_admin'].includes(req.user.role);
     const result = videoDownloader.getDownloadTasks({
       status,
@@ -2395,6 +2444,8 @@ app.get('/api/download/tasks', authenticate, (req, res) => {
       userId: req.user.id,
       isAdmin,
       projectId: projectId ? Number(projectId) : null,
+      // 仅当显式 ?includeHappyhorse=1 时，把 HappyHorse 行合并到 video / all
+      includeHappyhorse: includeHappyhorse === '1' || includeHappyhorse === 'true',
     });
     res.json({ success: true, data: result });
   } catch (error) {
@@ -2683,13 +2734,84 @@ app.get('/api/auth/me', authenticate, async (req, res) => {
   }
 });
 
-// PUT /api/auth/me - 更新当前用户信息
+// PUT /api/auth/me - 更新当前用户信息（姓名 + 首次部门补填；二次改部门需走管理员）
 app.put('/api/auth/me', authenticate, async (req, res) => {
   try {
-    // 预留扩展功能
-    res.json({ success: true, data: { user: req.user } });
+    const { name, department } = req.body || {};
+    await authService.updateOwnProfile(req.user.id, { name, department });
+    // 重新拉一遍 getCurrentUser，把最新字段返回给前端
+    const sessionId = req.headers['x-session-id'];
+    const fresh = await authService.getCurrentUser(sessionId);
+    res.json({ success: true, data: { user: fresh || req.user } });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// GET /api/departments - 部门下拉数据源（模糊查询）
+app.get('/api/departments', authenticate, async (req, res) => {
+  try {
+    const { listDepartments } = await import('./services/departmentService.js');
+    const q = String(req.query.q || '');
+    const items = listDepartments(q, 50);
+    res.json({ success: true, data: { items } });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// PUT /api/admin/users/:id/profile - 管理员代填 / 修改任意用户的姓名 + 部门
+app.put('/api/admin/users/:id/profile', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const { name, department } = req.body || {};
+    await authService.updateUserProfileByAdmin(Number(req.params.id), { name, department });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// ── 管理员：部门字典 CRUD ─────────────────────────────────────────
+// GET /api/admin/departments - 列表（带每部门用户数）
+app.get('/api/admin/departments', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const { listDepartmentsWithCount } = await import('./services/departmentService.js');
+    res.json({ success: true, data: { items: listDepartmentsWithCount() } });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/admin/departments - 新建部门
+app.post('/api/admin/departments', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const { createDepartment } = await import('./services/departmentService.js');
+    const row = createDepartment(req.body?.name);
+    res.json({ success: true, data: row });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// PUT /api/admin/departments/:id - 改名部门
+app.put('/api/admin/departments/:id', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const { renameDepartment } = await import('./services/departmentService.js');
+    const row = renameDepartment(Number(req.params.id), req.body?.name);
+    res.json({ success: true, data: row });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// DELETE /api/admin/departments/:id - 删除部门（受 FK ON DELETE SET NULL 保护：用户被解绑而非删除）
+app.delete('/api/admin/departments/:id', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const { deleteDepartment } = await import('./services/departmentService.js');
+    const out = deleteDepartment(Number(req.params.id));
+    res.json({ success: true, data: out });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
   }
 });
 

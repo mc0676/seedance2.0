@@ -15,9 +15,20 @@ CREATE TABLE IF NOT EXISTS users (
   unlimited_credits INTEGER DEFAULT 0,
   daily_check_in INTEGER DEFAULT 0,
   last_check_in_at DATETIME,
+  name TEXT,                                     -- 用户姓名（首次登录需补填）
+  department_id INTEGER REFERENCES departments(id) ON DELETE SET NULL,  -- 部门外键（首次登录需补填；仅管理员可改）
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_users_department_id ON users(department_id);
+
+-- 部门字典表（模糊查询下拉的数据源；新建部门时 INSERT OR IGNORE 写入；users.department_id 引用此表）
+CREATE TABLE IF NOT EXISTS departments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT UNIQUE NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_departments_name ON departments(name);
 
 -- 会话表
 CREATE TABLE IF NOT EXISTS sessions (

@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { uploadToOss, FILE_LIMITS } from '../services/ossService';
+import { uploadToOss, FILE_LIMITS, probeOssVideo } from '../services/ossService';
 import { CloseIcon, PlusIcon, SparkleIcon, GearIcon } from '../components/Icons';
 import { formatShortDateTime, useUserTimezone } from '../utils/datetime';
 import { getCreditBalance } from '../services/pricingService';
@@ -35,17 +35,19 @@ const STATUS_BADGE: Record<HappyhorseTask['status'], { text: string; cls: string
 };
 
 function MediaThumb({
-  m, idx, onRemove,
-}: { m: HappyhorseMediaItem; idx: number; onRemove: () => void }) {
+  m, idx, onRemove, showName = false,
+}: { m: HappyhorseMediaItem; idx: number; onRemove: () => void; showName?: boolean }) {
   const isVideo = m.type === 'video';
   const isFirstFrame = m.type === 'first_frame';
   return (
-    <div className="relative group flex flex-col items-center gap-1">
+    <div className="relative group flex flex-col items-center gap-1 w-20">
       <div className="w-20 h-20 flex-shrink-0 relative rounded-xl border border-gray-700 bg-[#0d0f1a] overflow-hidden flex items-center justify-center">
         {isVideo ? (
           <div className="flex flex-col items-center gap-1 px-1 w-full">
             <span className="text-2xl">🎬</span>
-            <div className="text-[9px] text-gray-400 truncate w-full text-center px-1">{m.original_name || '视频'}</div>
+            {!showName && (
+              <div className="text-[9px] text-gray-400 truncate w-full text-center px-1">{m.original_name || '视频'}</div>
+            )}
           </div>
         ) : (
           <img src={m.url} alt="" className="w-full h-full object-cover pointer-events-none" />
@@ -58,6 +60,14 @@ function MediaThumb({
           {isVideo ? '视' : isFirstFrame ? '首' : `参${idx}`}
         </span>
       </div>
+      {showName && m.original_name && (
+        <div
+          className="text-[10px] text-gray-400 max-w-[5rem] truncate text-center leading-tight"
+          title={m.original_name}
+        >
+          {m.original_name}
+        </div>
+      )}
       <button
         onClick={onRemove}
         className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-gray-800 border border-gray-700 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600 hover:border-red-600 z-10"
@@ -89,7 +99,6 @@ export default function HappyHorsePage() {
   const imgInputRef = useRef<HTMLInputElement | null>(null);
   const videoInputRef = useRef<HTMLInputElement | null>(null);
   const editorRef = useRef<HTMLDivElement | null>(null);
-  const [dragIndex, setDragIndex] = useState<number | null>(null);
   // video-edit：已上传待编辑视频的真实时长（秒），用于精确预估积分
   const [editVideoDuration, setEditVideoDuration] = useState<number | null>(null);
   // @ 提及面板：弹出位置 + 当前 @ 之后的过滤文本 + 高亮项
@@ -160,22 +169,45 @@ export default function HappyHorsePage() {
   const showRatio = mode === 't2v' || mode === 'r2v';
   const showDuration = mode !== 'video-edit';
   const showAudioSetting = mode === 'video-edit';
+  // r2v + video-edit 都启用 contenteditable + @ 引用编辑器
+  const useMentionEditor = mode === 'r2v' || mode === 'video-edit';
 
-  // r2v 可用的提及项：每张参考图都对应一个 @N（N 为 1-based 序号）。
-  // chip 显示用文件原名；逻辑 tag (data-tag) 仍是 @N，用于光标和 [Image N] 转换。
+  // r2v / video-edit 可用的提及项：
+  //   r2v        → 每张参考图 @1 / @2 …
+  //   video-edit → 1 个 @Video（待编辑视频）+ 每张参考图 @1 / @2 …
+  // chip 显示用文件原名；逻辑 tag (data-tag) 用于光标 + 提交时的 [Image N] / [Video] 转换。
   const refImages = useMemo(
     () => media.filter((m) => m.type === 'reference_image'),
     [media]
   );
-  const mentionItems = useMemo(
-    () => refImages.map((m, i) => ({
-      idx: i + 1,
-      tag: `@${i + 1}`,
-      url: m.url,
-      name: m.original_name || `图片 ${i + 1}`,
-    })),
-    [refImages]
+  const editVideoItem = useMemo(
+    () => media.find((m) => m.type === 'video') || null,
+    [media]
   );
+  const VIDEO_MENTION_TAG = '@Video';
+  type MentionItem = { idx: number; tag: string; url: string; name: string; kind: 'video' | 'image' };
+  const mentionItems = useMemo<MentionItem[]>(() => {
+    const items: MentionItem[] = [];
+    if (mode === 'video-edit' && editVideoItem) {
+      items.push({
+        idx: 0,
+        tag: VIDEO_MENTION_TAG,
+        url: editVideoItem.url,
+        name: editVideoItem.original_name || '待编辑视频',
+        kind: 'video',
+      });
+    }
+    refImages.forEach((m, i) => {
+      items.push({
+        idx: i + 1,
+        tag: `@${i + 1}`,
+        url: m.url,
+        name: m.original_name || `图片 ${i + 1}`,
+        kind: 'image',
+      });
+    });
+    return items;
+  }, [mode, editVideoItem, refImages]);
   const tagDisplayMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const mi of mentionItems) map.set(mi.tag, mi.name);
@@ -184,6 +216,14 @@ export default function HappyHorsePage() {
 
   function chipDisplayFor(tag: string): string {
     return tagDisplayMap.get(tag) ?? tag;
+  }
+
+  /** @ 面板的过滤匹配：空过滤=全部命中；否则 tag 去掉 @ 后前缀匹配，或文件名子串包含 */
+  function mentionMatchesFilter(mi: MentionItem, filter: string): boolean {
+    if (!filter) return true;
+    const tagBody = mi.tag.replace(/^@/, '');
+    if (tagBody.startsWith(filter)) return true;
+    return mi.name.toLowerCase().includes(filter.toLowerCase());
   }
 
   // 给字符串做 HTML 属性安全转义（chip 显示名走 textContent 不需 DOM 转义，但 buildEditorHtml 是字符串拼接）
@@ -198,11 +238,19 @@ export default function HappyHorsePage() {
     const escaped = text
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       .replace(/\n/g, '<br>');
-    // 把 @1 / @2 ... 渲染成 chip：data-tag 仍是 @N，但显示文本用文件原名
-    return escaped.replace(/@(\d+)/g, (_m, g1) => {
-      const tag = `@${g1}`;
-      const display = chipDisplayFor(tag);
-      return `​<span contenteditable="false" class="mention-chip" data-tag="${tag}">${escapeHtmlAttr(display)}</span>​`;
+    // 已知 tag 集合：@N（数字）+ @Video（video-edit 模式下）。
+    // 用 alternation 把所有 tag 一次性匹配，避免 @Video 被 @\d+ 漏掉。
+    const knownTags = mentionItems.map((mi) => mi.tag);
+    const fixedTags = knownTags.filter((t) => !/^@\d+$/.test(t)); // 非数字 tag（如 @Video）
+    const patterns: string[] = [];
+    if (fixedTags.length > 0) {
+      patterns.push(fixedTags.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'));
+    }
+    patterns.push('@\\d+'); // 数字 tag 兜底（即使当前没有图片，也保留以便复用 / 粘贴）
+    const re = new RegExp(`(${patterns.join('|')})`, 'g');
+    return escaped.replace(re, (m) => {
+      const display = chipDisplayFor(m);
+      return `​<span contenteditable="false" class="mention-chip" data-tag="${escapeHtmlAttr(m)}">${escapeHtmlAttr(display)}</span>​`;
     });
   }
 
@@ -336,7 +384,7 @@ export default function HappyHorsePage() {
 
   // r2v 模式下，当 mentionItems（即各 @N 的显示名）变化时，同步刷新已挂载 chip 的 textContent
   useEffect(() => {
-    if (mode !== 'r2v') return;
+    if (!useMentionEditor) return;
     const el = editorRef.current;
     if (!el) return;
     el.querySelectorAll<HTMLElement>('.mention-chip[data-tag]').forEach((chip) => {
@@ -349,7 +397,7 @@ export default function HappyHorsePage() {
 
   // r2v 模式下，prompt 变化（程序触发，非用户输入）时同步重写编辑器 HTML
   useLayoutEffect(() => {
-    if (mode !== 'r2v') return;
+    if (!useMentionEditor) return;
     const el = editorRef.current;
     if (!el) return;
     if (extractEditorText(el) === prompt) return; // 用户正在输入，跳过避免抢光标
@@ -363,7 +411,7 @@ export default function HappyHorsePage() {
   // 选区跨越 chip 时，给 chip 加琥珀色高亮，其它文字轻微暗淡，让"复制时"也有 chip 视觉
   // 与 SingleTaskPage 同款：监听 selectionchange，遍历 chip 用 Range.compareBoundaryPoints 判定相交
   useEffect(() => {
-    if (mode !== 'r2v') return;
+    if (!useMentionEditor) return;
     const handler = () => {
       const el = editorRef.current;
       if (!el) return;
@@ -443,7 +491,7 @@ export default function HappyHorsePage() {
     setPrompt(text);
 
     // 检测光标前是否刚输入了 @，决定是否打开提及面板
-    if (mode !== 'r2v' || mentionItems.length === 0) {
+    if (!useMentionEditor || mentionItems.length === 0) {
       closeMentionPanel();
       return;
     }
@@ -454,16 +502,15 @@ export default function HappyHorsePage() {
     const off = range.startOffset;
     if (node.nodeType === Node.TEXT_NODE) {
       const rawText = (node.textContent ?? '');
-      // 向左找最近的 @；如果光标前刚好是 @ 或 @+数字过滤串，弹面板
+      // 向左找最近的 @；@ 后允许跟数字 / 中文 / 字母（不能含空白），用于匹配 @1 / @Video / @cat 等
       const left = rawText.slice(0, off);
-      const m = left.match(/@(\d*)$/);
+      const m = left.match(/@([^\s@]*)$/);
       if (m) {
         const rect = range.getClientRects()[0];
         const containerRect = el.getBoundingClientRect();
         const filter = m[1];
-        const focusIdx = mentionItems.findIndex((mi) =>
-          !filter || String(mi.idx).startsWith(filter)
-        );
+        const matches = (mi: MentionItem) => mentionMatchesFilter(mi, filter);
+        const focusIdx = mentionItems.findIndex(matches);
         if (rect) {
           setMentionPanel({
             top: rect.bottom - containerRect.top + 4,
@@ -482,9 +529,7 @@ export default function HappyHorsePage() {
 
   function handleEditorKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
     if (mentionPanel) {
-      const filtered = mentionItems.filter((mi) =>
-        !mentionPanel.filter || String(mi.idx).startsWith(mentionPanel.filter)
-      );
+      const filtered = mentionItems.filter((mi) => mentionMatchesFilter(mi, mentionPanel.filter));
       if (e.key === 'ArrowDown') {
         e.preventDefault();
         setMentionPanel((p) => p && ({ ...p, focusIdx: Math.min(filtered.length - 1, p.focusIdx + 1) }));
@@ -662,12 +707,12 @@ export default function HappyHorsePage() {
     const file = files[0];
     if (file.size > 100 * 1024 * 1024) { setSubmitError('视频不能超过 100MB'); return; }
     setUploading(true); setUploadPct(0); setSubmitError(null);
-    // 在上传前/上传中并行 probe 视频时长（Object URL，单端）
+    // 客户端 probe（兜底，某些视频文件浏览器拿不到元数据；后端 probe 才是权威）
     const blobUrl = URL.createObjectURL(file);
     const probe = document.createElement('video');
     probe.preload = 'metadata';
     probe.muted = true;
-    const durProm = new Promise<number | null>((resolve) => {
+    const localProbe = new Promise<number | null>((resolve) => {
       probe.addEventListener('loadedmetadata', () => {
         const d = probe.duration;
         resolve(Number.isFinite(d) && d > 0 ? d : null);
@@ -677,13 +722,19 @@ export default function HappyHorsePage() {
     probe.src = blobUrl;
     try {
       const out = await uploadToOss(file, 'video', (pct) => setUploadPct(pct));
-      const realDur = await durProm;
       URL.revokeObjectURL(blobUrl);
-      setEditVideoDuration(realDur);
+      // 1) 优先用服务端 OSS video/info 探测的时长
+      let duration: number | null = out.videoInfo?.durationSec ?? null;
+      // 2) 兜底用浏览器 probe 出的时长
+      if (!duration || duration <= 0) duration = await localProbe;
+      setEditVideoDuration(Number.isFinite(duration as number) && (duration as number) > 0 ? (duration as number) : null);
       setMedia((prev) => [
         { type: 'video', url: out.url, original_name: file.name },
         ...prev.filter((x) => x.type !== 'video'),
       ]);
+      if (!duration || duration <= 0) {
+        setSubmitError('视频时长无法识别，提交将按上限保守预扣，结算时多退少补');
+      }
     } catch (e: any) {
       URL.revokeObjectURL(blobUrl);
       setSubmitError(e.message || '视频上传失败');
@@ -693,8 +744,8 @@ export default function HappyHorsePage() {
   }
 
   function removeMedia(idx: number) {
-    // r2v：删除某张图片前，先把 prompt 里的 @N 同步重排（@<idx+1> 删除，@>idx+1 各减 1）
-    if (mode === 'r2v' && media[idx]?.type === 'reference_image') {
+    // r2v / video-edit：删除某张参考图前，把 prompt 里的 @N 同步重排（@<idx+1> 删除，@>idx+1 各减 1）
+    if ((mode === 'r2v' || mode === 'video-edit') && media[idx]?.type === 'reference_image') {
       const removedTagNum = imageIndexInRefList(idx) + 1; // 1-based among reference images
       const refTotal = media.filter((m) => m.type === 'reference_image').length;
       const reindex: Record<number, number | null> = {};
@@ -703,41 +754,19 @@ export default function HappyHorsePage() {
       }
       remapPromptChipTags(reindex);
     }
-    // video-edit：删除视频时同步清掉时长，让预估回到「未知」状态
-    if (media[idx]?.type === 'video') setEditVideoDuration(null);
-    setMedia((prev) => prev.filter((_, i) => i !== idx));
-  }
-
-  function moveMedia(from: number, to: number) {
-    if (from === to) return;
-    if (from < 0 || from >= media.length || to < 0 || to >= media.length) return;
-    // r2v：交换图片顺序也要同步重排 prompt 里的 @N
-    if (mode === 'r2v') {
-      const refIndices = media
-        .map((m, i) => (m.type === 'reference_image' ? i : -1))
-        .filter((i) => i >= 0);
-      const fromRef = refIndices.indexOf(from);
-      const toRef = refIndices.indexOf(to);
-      if (fromRef !== -1 && toRef !== -1) {
-        // 计算新的 1-based 位置映射：把数组里第 fromRef 项搬到 toRef
-        const newOrder = refIndices.slice();
-        const [moved] = newOrder.splice(fromRef, 1);
-        newOrder.splice(toRef, 0, moved);
-        // newOrder[i] = 原位置；reindex[原 1-based] = 新 1-based
-        const reindex: Record<number, number | null> = {};
-        newOrder.forEach((origIdx, newIdx) => {
-          const origRefRank = refIndices.indexOf(origIdx) + 1;
-          reindex[origRefRank] = newIdx + 1;
-        });
-        remapPromptChipTags(reindex);
+    // video-edit：删除待编辑视频时同步清掉时长 + 把 prompt 里的 @Video chip 去掉
+    if (media[idx]?.type === 'video') {
+      setEditVideoDuration(null);
+      if (mode === 'video-edit') {
+        // 同步删除 @Video chip / 文本
+        setPrompt((prev) => prev.split(VIDEO_MENTION_TAG).join(''));
+        const el = editorRef.current;
+        if (el) {
+          el.querySelectorAll<HTMLElement>(`.mention-chip[data-tag="${VIDEO_MENTION_TAG}"]`).forEach((chip) => chip.remove());
+        }
       }
     }
-    setMedia((prev) => {
-      const next = prev.slice();
-      const [moved] = next.splice(from, 1);
-      next.splice(to, 0, moved);
-      return next;
-    });
+    setMedia((prev) => prev.filter((_, i) => i !== idx));
   }
 
   /** 把 media 数组里某条 reference_image 在「参考图列表」内的 0-based 序号取出 */
@@ -789,18 +818,26 @@ export default function HappyHorsePage() {
     if (mode === 'i2v' && !media.some((m) => m.type === 'first_frame')) { setSubmitError('请上传首帧图片'); return; }
     if (mode === 'r2v' && media.filter((m) => m.type === 'reference_image').length < 1) { setSubmitError('请至少上传 1 张参考图'); return; }
     if (mode === 'video-edit' && !media.some((m) => m.type === 'video')) { setSubmitError('请上传待编辑的视频'); return; }
+    // video-edit：必须有可信的视频时长才能精确计费；OSS 探测失败 / 浏览器 probe 失败 / 视频已过期都属此情况
+    if (mode === 'video-edit' && (!editVideoDuration || editVideoDuration <= 0)) {
+      setSubmitError('无法识别视频时长，无法预估积分。请重新上传视频后再生成。');
+      return;
+    }
 
     setSubmitting(true); setSubmitError(null);
     try {
       const seedNum = seed.trim() ? parseInt(seed.trim(), 10) : undefined;
-      // r2v：把 @N → [Image N]（N 仅取 1~refImages.length 的合法序号）
+      // r2v / video-edit：把 @N → [Image N]、@Video → [Video]（仅匹配合法序号 / 有视频上传时）
       let finalPrompt = prompt.trim();
-      if (mode === 'r2v') {
+      if (mode === 'r2v' || mode === 'video-edit') {
         const refTotal = refImages.length;
         finalPrompt = finalPrompt.replace(/@(\d+)/g, (m, g1) => {
           const n = parseInt(g1, 10);
           return n >= 1 && n <= refTotal ? `[Image ${n}]` : m;
         });
+      }
+      if (mode === 'video-edit' && editVideoItem) {
+        finalPrompt = finalPrompt.split(VIDEO_MENTION_TAG).join('[Video]');
       }
       await submitHappyhorseTask({
         projectId,
@@ -884,17 +921,35 @@ export default function HappyHorsePage() {
     setMedia(restoredMedia);
 
     // 3. video-edit：尝试恢复视频时长用于精确预扣
+    //    优先用历史记录里的 result_input_duration；无值则异步调 OSS video/info 重新探测
     if (t.mode === 'video-edit') {
       const dur = Number(t.result_input_duration);
-      setEditVideoDuration(Number.isFinite(dur) && dur > 0 ? dur : null);
+      if (Number.isFinite(dur) && dur > 0) {
+        setEditVideoDuration(dur);
+      } else {
+        setEditVideoDuration(null);
+        const vid = restoredMedia.find((m) => m.type === 'video');
+        if (vid?.url) {
+          probeOssVideo(vid.url)
+            .then((info) => { if (info.durationSec > 0) setEditVideoDuration(info.durationSec); })
+            .catch((e) => {
+              setSubmitError(e.message?.includes('不存在') || e.message?.includes('过期')
+                ? '原视频已不在 OSS 中（可能已过期或被删除），请重新上传后再生成。'
+                : `视频信息探测失败：${e.message || '未知错误'}`);
+            });
+        }
+      }
     } else {
       setEditVideoDuration(null);
     }
 
-    // 4. prompt：r2v 把 [Image N] 还原为 @N，让 mention chip 自动重建；其它模式直接回填
+    // 4. prompt：r2v / video-edit 把 [Image N] / [Video] 还原为 @N / @Video，让 mention chip 自动重建；其它模式直接回填
     let restoredPrompt = t.prompt || '';
-    if (t.mode === 'r2v') {
+    if (t.mode === 'r2v' || t.mode === 'video-edit') {
       restoredPrompt = restoredPrompt.replace(/\[Image (\d+)\]/g, '@$1');
+    }
+    if (t.mode === 'video-edit') {
+      restoredPrompt = restoredPrompt.split('[Video]').join(VIDEO_MENTION_TAG);
     }
     setPrompt(restoredPrompt);
 
@@ -906,7 +961,11 @@ export default function HappyHorsePage() {
 
   // ── 渲染 ─────────────────────────────────────────────────
   const totalPages = Math.max(1, Math.ceil(tasksTotal / PAGE_SIZE));
-  const canGenerate = !submitting && !uploading && !!projectId && !creditInsufficient;
+  // video-edit 模式：上传了视频但时长不可知 → 提交时会落入 30s 上限兜底，可能超出余额，
+  // 而且就算余额够也会扣多。统一禁用提交，强制用户重新上传 / 重选媒体。
+  const hasEditVideo = mode === 'video-edit' && media.some((m) => m.type === 'video');
+  const videoEditDurationUnknown = hasEditVideo && (!editVideoDuration || editVideoDuration <= 0);
+  const canGenerate = !submitting && !uploading && !!projectId && !creditInsufficient && !videoEditDurationUnknown;
   const currentTab = MODE_TABS.find((m) => m.mode === mode)!;
 
   return (
@@ -974,35 +1033,19 @@ export default function HappyHorsePage() {
             <div className="bg-[#1c1f2e] rounded-2xl border border-gray-800 p-4 space-y-3">
               <label className="text-sm font-bold text-gray-300">
                 {mode === 'i2v' && '首帧图片（必填，1 张）'}
-                {mode === 'r2v' && '参考图（1~9 张，prompt 中输入 @ 引用图片；可拖动调整顺序）'}
-                {mode === 'video-edit' && '待编辑视频 + 参考图（视频必填，参考图 0~5 张）'}
+                {mode === 'r2v' && '参考图（1~9 张，输入 @ 引用）'}
+                {mode === 'video-edit' && '待编辑视频（1 个，必填）+ 参考图（0~5 张），prompt 中输入 @ 引用'}
               </label>
               <div className="flex flex-wrap gap-2">
                 {media.map((m, i) => {
-                  // r2v 模式下，参考图可以拖动调整顺序（顺序影响 @N 编号）
-                  const draggable = mode === 'r2v' && m.type === 'reference_image';
                   return (
-                    <div
-                      key={i}
-                      draggable={draggable}
-                      onDragStart={draggable ? (e) => {
-                        setDragIndex(i);
-                        e.dataTransfer.effectAllowed = 'move';
-                      } : undefined}
-                      onDragOver={draggable ? (e) => {
-                        e.preventDefault();
-                        e.dataTransfer.dropEffect = 'move';
-                      } : undefined}
-                      onDrop={draggable ? (e) => {
-                        e.preventDefault();
-                        if (dragIndex !== null && dragIndex !== i) moveMedia(dragIndex, i);
-                        setDragIndex(null);
-                      } : undefined}
-                      onDragEnd={draggable ? () => setDragIndex(null) : undefined}
-                      className={`transition-opacity ${draggable ? 'cursor-grab active:cursor-grabbing' : ''} ${dragIndex === i ? 'opacity-40' : ''}`}
-                      title={draggable ? '拖动以调整 @ 编号顺序' : undefined}
-                    >
-                      <MediaThumb m={m} idx={imageIndexInRefList(i) + 1} onRemove={() => removeMedia(i)} />
+                    <div key={i}>
+                      <MediaThumb
+                        m={m}
+                        idx={imageIndexInRefList(i) + 1}
+                        onRemove={() => removeMedia(i)}
+                        showName={mode === 'r2v' || mode === 'i2v' || mode === 'video-edit'}
+                      />
                     </div>
                   );
                 })}
@@ -1048,14 +1091,17 @@ export default function HappyHorsePage() {
             <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-3">
               提示词 {mode === 'i2v' && <span className="text-gray-500 normal-case">（可选）</span>}
               {mode === 'r2v' && <span className="text-gray-500 normal-case">（输入 @ 引用参考图）</span>}
+              {mode === 'video-edit' && <span className="text-gray-500 normal-case">（输入 @ 引用待编辑视频或参考图）</span>}
             </label>
-            {mode === 'r2v' ? (
+            {useMentionEditor ? (
               <div className="relative">
                 <div
                   ref={editorRef}
                   contentEditable
                   suppressContentEditableWarning
-                  data-placeholder="示例：让 @1 中的女子穿上 @2 的旗袍，在 @3 的花园里漫步..."
+                  data-placeholder={mode === 'video-edit'
+                    ? '示例：将 @Video 中的人物换成 @1 的服饰...'
+                    : '示例：让 @1 中的女子穿上 @2 的旗袍，在 @3 的花园里漫步...'}
                   onInput={handleEditorInput}
                   onKeyDown={handleEditorKeyDown}
                   onPaste={handleEditorPaste}
@@ -1070,7 +1116,7 @@ export default function HappyHorsePage() {
                     onMouseDown={(e) => e.preventDefault()}
                   >
                     {mentionItems
-                      .filter((mi) => !mentionPanel.filter || String(mi.idx).startsWith(mentionPanel.filter))
+                      .filter((mi) => mentionMatchesFilter(mi, mentionPanel.filter))
                       .map((mi, i) => (
                         <button
                           key={mi.tag}
@@ -1080,7 +1126,11 @@ export default function HappyHorsePage() {
                             i === mentionPanel.focusIdx ? 'bg-purple-500/20 text-purple-200' : 'text-gray-300 hover:bg-gray-800'
                           }`}
                         >
-                          <img src={mi.url} alt="" className="w-8 h-8 object-cover rounded border border-gray-700" />
+                          {mi.kind === 'video' ? (
+                            <div className="w-8 h-8 rounded border border-gray-700 bg-blue-500/10 flex items-center justify-center text-base flex-shrink-0">🎬</div>
+                          ) : (
+                            <img src={mi.url} alt="" className="w-8 h-8 object-cover rounded border border-gray-700" />
+                          )}
                           <span className="font-mono text-purple-300">{mi.tag}</span>
                           <span className="truncate text-xs text-gray-400">{mi.name}</span>
                         </button>
@@ -1210,6 +1260,8 @@ export default function HappyHorsePage() {
                   <><span className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />上传中...</>
                 ) : creditInsufficient ? (
                   <>⚠️ 可用积分不足（可用 {balance!.available}，需 {estimate.lockedCredits}）</>
+                ) : videoEditDurationUnknown ? (
+                  <>⚠️ 请重新上传视频</>
                 ) : (
                   <><SparkleIcon className="w-4 h-4" />生成视频</>
                 )}

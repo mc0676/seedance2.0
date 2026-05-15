@@ -205,11 +205,13 @@ export async function registerUser(email, password, emailCode) {
     VALUES (?, ?, ?)
   `).run(sessionId, newUserId, expiresAt.toISOString());
 
-  // 获取用户信息
+  // 获取用户信息（JOIN departments 拿到 name）
   const user = db.prepare(`
-    SELECT id, email, role, status, credits, created_at
-    FROM users
-    WHERE id = ?
+    SELECT u.id, u.email, u.role, u.status, u.credits, u.name, u.department_id,
+           d.name AS department_name, u.created_at
+    FROM users u
+    LEFT JOIN departments d ON d.id = u.department_id
+    WHERE u.id = ?
   `).get(newUserId);
 
   return {
@@ -220,6 +222,9 @@ export async function registerUser(email, password, emailCode) {
       role: user.role,
       status: user.status,
       credits: user.credits,
+      name: user.name,
+      department: user.department_name,
+      department_id: user.department_id,
       createdAt: user.created_at,
       permissions: getUserPermissions(user.id),
     }
@@ -237,11 +242,13 @@ export async function loginUser(email, password) {
     throw new Error('邮箱格式不正确');
   }
 
-  // 查找用户
+  // 查找用户（JOIN departments 拿 name）
   const user = db.prepare(`
-    SELECT id, email, password_hash, role, status, credits
-    FROM users
-    WHERE email = ?
+    SELECT u.id, u.email, u.password_hash, u.role, u.status, u.credits, u.name, u.department_id,
+           d.name AS department_name
+    FROM users u
+    LEFT JOIN departments d ON d.id = u.department_id
+    WHERE u.email = ?
   `).get(email);
 
   if (!user) {
@@ -277,6 +284,9 @@ export async function loginUser(email, password) {
       role: user.role,
       status: user.status,
       credits: user.credits,
+      name: user.name,
+      department: user.department_name,
+      department_id: user.department_id,
       permissions: getUserPermissions(user.id),
     }
   };
@@ -298,9 +308,11 @@ export async function getCurrentUser(sessionId) {
   const db = getDatabase();
 
   const session = db.prepare(`
-    SELECT s.*, u.id as user_id, u.email, u.role, u.status, u.credits, u.unlimited_credits
+    SELECT s.*, u.id as user_id, u.email, u.role, u.status, u.credits, u.unlimited_credits,
+           u.name, u.department_id, d.name AS department_name
     FROM sessions s
     JOIN users u ON s.user_id = u.id
+    LEFT JOIN departments d ON d.id = u.department_id
     WHERE s.session_id = ? AND s.expires_at > datetime('now')
   `).get(sessionId);
 
@@ -315,6 +327,9 @@ export async function getCurrentUser(sessionId) {
     status: session.status,
     credits: session.credits,
     unlimitedCredits: Boolean(session.unlimited_credits),
+    name: session.name,
+    department: session.department_name,
+    department_id: session.department_id,
     permissions: getUserPermissions(session.user_id),
   };
 }
@@ -605,30 +620,33 @@ export async function getUserList(page = 1, pageSize = 20, filters = {}) {
   const params = [];
 
   if (filters.role) {
-    whereClause += ' AND role = ?';
+    whereClause += ' AND u.role = ?';
     params.push(filters.role);
   }
 
   if (filters.status) {
-    whereClause += ' AND status = ?';
+    whereClause += ' AND u.status = ?';
     params.push(filters.status);
   }
 
   if (filters.email) {
-    whereClause += ' AND email LIKE ?';
+    whereClause += ' AND u.email LIKE ?';
     params.push(`%${filters.email}%`);
   }
 
   const users = db.prepare(`
-    SELECT id, email, role, status, credits, unlimited_credits, created_at, last_check_in_at
-    FROM users
+    SELECT u.id, u.email, u.role, u.status, u.credits, u.unlimited_credits, u.name,
+           u.department_id, d.name AS department,
+           u.created_at, u.last_check_in_at
+    FROM users u
+    LEFT JOIN departments d ON d.id = u.department_id
     WHERE ${whereClause}
-    ORDER BY created_at DESC
+    ORDER BY u.created_at DESC
     LIMIT ? OFFSET ?
   `).all(...params, pageSize, offset);
 
   const total = db.prepare(`
-    SELECT COUNT(*) as count FROM users WHERE ${whereClause}
+    SELECT COUNT(*) as count FROM users u WHERE ${whereClause}
   `).get(...params).count;
 
   return {
@@ -649,9 +667,12 @@ export async function getUserDetail(userId) {
   const db = getDatabase();
 
   const user = db.prepare(`
-    SELECT id, email, role, status, credits, unlimited_credits, created_at, updated_at, last_check_in_at
-    FROM users
-    WHERE id = ?
+    SELECT u.id, u.email, u.role, u.status, u.credits, u.unlimited_credits, u.name,
+           u.department_id, d.name AS department,
+           u.created_at, u.updated_at, u.last_check_in_at
+    FROM users u
+    LEFT JOIN departments d ON d.id = u.department_id
+    WHERE u.id = ?
   `).get(userId);
 
   if (!user) {
@@ -770,4 +791,109 @@ export async function getSystemStats() {
 export function resetMailTransporterCache() {
   cachedMailTransporter = null;
   cachedMailTransporterKey = '';
+}
+
+// ── 姓名 / 部门补填相关 ──────────────────────────────────────────
+
+function validateName(name) {
+  const trimmed = String(name || '').trim();
+  if (trimmed.length < 2 || trimmed.length > 20) {
+    throw new Error('姓名长度需在 2~20 个字符之间');
+  }
+  return trimmed;
+}
+
+function validateDepartment(name) {
+  const trimmed = String(name || '').trim();
+  if (!trimmed) throw new Error('部门不能为空');
+  if (trimmed.length > 60) throw new Error('部门名过长（≤60 字符）');
+  return trimmed;
+}
+
+/**
+ * 用户自助修改个人信息：
+ *   - name 字段：长度 2~20，允许重名
+ *   - department 字段：仅当用户当前 department_id 为 NULL 时允许写入；非空时再次写入若值不变则放过，
+ *     若试图修改则抛错（应走管理员通道）
+ * body 中字段未提供（undefined）则该字段不更新。
+ *
+ * 写完后返回最新的 `getCurrentUser` 结构（让前端立即拿到刷新后的状态）。
+ */
+export async function updateOwnProfile(userId, { name, department } = {}) {
+  const db = getDatabase();
+  const current = db.prepare(
+    `SELECT u.name, u.department_id, d.name AS department_name
+     FROM users u LEFT JOIN departments d ON d.id = u.department_id
+     WHERE u.id = ?`
+  ).get(userId);
+  if (!current) throw new Error('用户不存在');
+
+  const updates = [];
+  const params = [];
+
+  if (name !== undefined) {
+    updates.push('name = ?');
+    params.push(validateName(name));
+  }
+
+  if (department !== undefined) {
+    const newDept = validateDepartment(department);
+    const curDeptName = current.department_name ? String(current.department_name).trim() : '';
+    if (curDeptName && curDeptName !== newDept) {
+      throw new Error('部门修改请联系管理员');
+    }
+    // ensureDepartment 返回 {id, name}
+    const { ensureDepartment } = await import('./departmentService.js');
+    const row = ensureDepartment(newDept);
+    updates.push('department_id = ?');
+    params.push(row.id);
+  }
+
+  if (updates.length === 0) return; // 无变化
+
+  params.push(userId);
+  db.prepare(
+    `UPDATE users SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+  ).run(...params);
+}
+
+/**
+ * 管理员代填 / 修改某个用户的 name + department。
+ * 与 updateOwnProfile 的区别：管理员可以**强制覆盖**任意非空部门，没有自助限制。
+ * department 入参可以是 string（部门名）或 null/'' （清空）。
+ */
+export async function updateUserProfileByAdmin(targetUserId, { name, department } = {}) {
+  const db = getDatabase();
+  const exists = db.prepare(`SELECT id FROM users WHERE id = ?`).get(targetUserId);
+  if (!exists) throw new Error('用户不存在');
+
+  const updates = [];
+  const params = [];
+
+  if (name !== undefined) {
+    if (name === null || String(name).trim() === '') {
+      updates.push('name = NULL');
+    } else {
+      updates.push('name = ?');
+      params.push(validateName(name));
+    }
+  }
+
+  if (department !== undefined) {
+    if (department === null || String(department).trim() === '') {
+      updates.push('department_id = NULL');
+    } else {
+      const newDept = validateDepartment(department);
+      const { ensureDepartment } = await import('./departmentService.js');
+      const row = ensureDepartment(newDept);
+      updates.push('department_id = ?');
+      params.push(row.id);
+    }
+  }
+
+  if (updates.length === 0) return;
+  params.push(targetUserId);
+  db.prepare(
+    `UPDATE users SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+  ).run(...params);
 }

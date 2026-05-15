@@ -34,7 +34,16 @@ import {
   updateAudioGenConfig,
   type AudioGenConfig,
 } from '../services/authService';
-import { getAuthHeaders } from '../services/authService';
+import {
+  getAuthHeaders,
+  updateUserProfileByAdmin,
+  listDepartmentsAdmin,
+  createDepartmentAdmin,
+  renameDepartmentAdmin,
+  deleteDepartmentAdmin,
+  type AdminDepartment,
+} from '../services/authService';
+import DepartmentSelect from '../components/DepartmentSelect';
 import type { User, FeatureKey, ModelPricing } from '../types';
 import { UsersIcon, ShieldIcon, CheckIcon, SparkleIcon, PlusIcon } from '../components/Icons';
 
@@ -116,6 +125,148 @@ async function toggleUnlimitedCredits(userId: number, unlimited: boolean): Promi
   });
   const result = await res.json();
   if (!result.success) throw new Error(result.error || '更新失败');
+}
+
+/**
+ * 部门管理卡片：列表 + 新建 + 改名 + 删除。
+ *
+ * 任何 CRUD 后调 onChanged 让上层（如用户编辑模态里的 DepartmentSelect）刷新下拉。
+ * 删除部门会触发后端 ON DELETE SET NULL，关联用户被解绑后下次登录会被 Gate 拦截要求重选。
+ */
+function DepartmentManagementCard({ onChanged }: { onChanged: () => void }) {
+  const [items, setItems] = useState<AdminDepartment[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editingName, setEditingName] = useState('');
+
+  const reload = async () => {
+    setLoading(true);
+    try { setItems(await listDepartmentsAdmin()); }
+    catch (e) { alert(e instanceof Error ? e.message : '加载失败'); }
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => { void reload(); }, []);
+
+  const handleCreate = async () => {
+    const trimmed = newName.trim();
+    if (!trimmed) return;
+    setCreating(true);
+    try {
+      await createDepartmentAdmin(trimmed);
+      setNewName('');
+      await reload();
+      onChanged();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '新建失败');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const handleSaveRename = async (id: number) => {
+    const trimmed = editingName.trim();
+    if (!trimmed) return;
+    try {
+      await renameDepartmentAdmin(id, trimmed);
+      setEditingId(null);
+      setEditingName('');
+      await reload();
+      onChanged();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '重命名失败');
+    }
+  };
+
+  const handleDelete = async (d: AdminDepartment) => {
+    const tip = d.user_count > 0
+      ? `部门「${d.name}」当前有 ${d.user_count} 个用户。删除后这些用户的部门字段会被清空，下次登录需重新选择。\n确认删除？`
+      : `确认删除部门「${d.name}」？`;
+    if (!window.confirm(tip)) return;
+    try {
+      const out = await deleteDepartmentAdmin(d.id);
+      await reload();
+      onChanged();
+      if (out.affectedUsers > 0) alert(`已删除，影响 ${out.affectedUsers} 个用户`);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '删除失败');
+    }
+  };
+
+  return (
+    <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-8">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-xl font-semibold text-white">部门管理</h2>
+        <button onClick={() => void reload()} className="text-xs text-gray-400 hover:text-white">刷新</button>
+      </div>
+
+      {/* 新建 */}
+      <div className="flex gap-2 mb-4">
+        <input
+          value={newName}
+          maxLength={60}
+          onChange={(e) => setNewName(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') void handleCreate(); }}
+          placeholder="新部门名（≤60 字符）"
+          className="flex-1 px-3 py-2 bg-[#0f111a] border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-purple-500"
+        />
+        <button
+          onClick={handleCreate}
+          disabled={!newName.trim() || creating}
+          className="px-4 py-2 bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 disabled:opacity-40 rounded-lg text-sm font-medium"
+        >{creating ? '新建中…' : '新建部门'}</button>
+      </div>
+
+      {/* 列表 */}
+      {loading && items.length === 0 ? (
+        <div className="text-xs text-gray-500">加载中…</div>
+      ) : items.length === 0 ? (
+        <div className="text-xs text-gray-500">暂无部门，从上方新建吧</div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          {items.map((d) => (
+            <div key={d.id} className="flex items-center gap-2 bg-[#0f111a] rounded-xl px-3 py-2">
+              {editingId === d.id ? (
+                <>
+                  <input
+                    autoFocus
+                    value={editingName}
+                    maxLength={60}
+                    onChange={(e) => setEditingName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') void handleSaveRename(d.id); }}
+                    className="flex-1 min-w-0 px-2 py-1 bg-[#1c1f2e] border border-gray-700 rounded text-sm text-white focus:outline-none focus:border-purple-500"
+                  />
+                  <button onClick={() => void handleSaveRename(d.id)} className="px-2 py-1 bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 rounded text-xs">保存</button>
+                  <button onClick={() => { setEditingId(null); setEditingName(''); }} className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-200">取消</button>
+                </>
+              ) : (
+                <>
+                  <div className="flex-1 min-w-0 flex items-baseline gap-2">
+                    <span className="text-sm text-white truncate">{d.name}</span>
+                    <span className="text-[10px] text-gray-500 flex-shrink-0">{d.user_count} 人</span>
+                  </div>
+                  <button
+                    onClick={() => { setEditingId(d.id); setEditingName(d.name); }}
+                    className="px-2 py-1 text-xs text-gray-400 hover:text-white"
+                  >改名</button>
+                  <button
+                    onClick={() => void handleDelete(d)}
+                    className="px-2 py-1 text-xs text-red-400 hover:text-red-300"
+                  >删除</button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <p className="text-[10px] text-gray-500 mt-3">
+        提示：删除部门后，该部门下的所有用户会被解绑（部门字段置空），下次登录会被引导重新选择部门。
+      </p>
+    </div>
+  );
 }
 
 export default function AdminPage() {
@@ -395,6 +546,11 @@ export default function AdminPage() {
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [editCredits, setEditCredits] = useState('');
   const [editOperation, setEditOperation] = useState<'set' | 'add' | 'subtract'>('set');
+  // 编辑用户的姓名 / 部门（管理员代填）
+  const [editUserName, setEditUserName] = useState('');
+  const [editUserDepartment, setEditUserDepartment] = useState('');
+  // 部门管理 CRUD 后用这个 key 触发 DepartmentSelect 重新拉一遍下拉列表
+  const [departmentRefreshKey, setDepartmentRefreshKey] = useState(0);
 
   // 激活码管理
   const [codes, setCodes] = useState<ActivationCode[]>([]);
@@ -829,30 +985,48 @@ export default function AdminPage() {
     setEditCredits('');
     setShowUserModal(true);
     setUserPerms({});
+    setEditUserName((user.name || '').trim());
+    setEditUserDepartment((user.department || '').trim());
     handleLoadUserPerms(user.id);
   };
 
   const handleUpdateCredits = async () => {
     if (!selectedUser) return;
-    if (!editCredits) {
+
+    // 统一保存：姓名 / 部门 / 积分。任意一项有改动才调对应 API。
+    const trimmedName = editUserName.trim();
+    const trimmedDept = editUserDepartment.trim();
+    const origName = (selectedUser.name || '').trim();
+    const origDept = (selectedUser.department || '').trim();
+    const profileChanged = trimmedName !== origName || trimmedDept !== origDept;
+    const creditsChanged = !!editCredits;
+
+    if (!profileChanged && !creditsChanged) {
       setShowUserModal(false);
       return;
     }
 
     try {
-      const credits = parseInt(editCredits);
-      if (isNaN(credits) || credits < 0) {
-        alert('请输入有效的积分数量');
-        return;
+      if (profileChanged) {
+        await updateUserProfileByAdmin(selectedUser.id, {
+          name: trimmedName === '' ? null : trimmedName,
+          department: trimmedDept === '' ? null : trimmedDept,
+        });
       }
-
-      await updateUserCredits(selectedUser.id, credits, editOperation);
+      if (creditsChanged) {
+        const credits = parseInt(editCredits);
+        if (isNaN(credits) || credits < 0) {
+          alert('请输入有效的积分数量');
+          return;
+        }
+        await updateUserCredits(selectedUser.id, credits, editOperation);
+        loadStats();
+      }
       loadUsers(currentPage);
-      loadStats();
       setShowUserModal(false);
-      alert('积分已更新');
+      alert('已保存');
     } catch (err) {
-      alert(err instanceof Error ? err.message : '更新积分失败');
+      alert(err instanceof Error ? err.message : '保存失败');
     }
   };
 
@@ -1086,7 +1260,7 @@ export default function AdminPage() {
         </div>
 
         {/* 用户列表 */}
-        <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl overflow-hidden">
+        <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl overflow-hidden mb-8">
           <div className="p-6 border-b border-gray-800">
             <div className="flex items-center justify-between flex-wrap gap-4">
               <h2 className="text-xl font-semibold text-white">用户管理</h2>
@@ -1150,6 +1324,8 @@ export default function AdminPage() {
                     <tr>
                       <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">ID</th>
                       <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">邮箱</th>
+                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">姓名</th>
+                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">部门</th>
                       <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">角色</th>
                       <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">状态</th>
                       <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">积分</th>
@@ -1160,11 +1336,18 @@ export default function AdminPage() {
                   </thead>
                   <tbody className="divide-y divide-gray-800">
                     {(isSuperAdmin ? users : users).map((user) => {
-                      const canEdit = isSuperAdmin || user.role === 'user';
+                      // 普通管理员可以编辑普通用户 + 自己；系统管理员可编辑所有人。
+                      const canEdit = isSuperAdmin || user.role === 'user' || user.id === currentUser?.id;
                       return (
                       <tr key={user.id} className="hover:bg-[#0f111a]/50">
                         <td className="px-6 py-4 text-sm text-gray-400">#{user.id}</td>
                         <td className="px-6 py-4 text-sm text-white">{user.email}</td>
+                        <td className="px-6 py-4 text-sm text-gray-300">
+                          {user.name || <span className="text-amber-500/80 text-xs">未填</span>}
+                        </td>
+                        <td className="px-6 py-4 text-sm text-gray-300">
+                          {user.department || <span className="text-amber-500/80 text-xs">未填</span>}
+                        </td>
                         <td className="px-6 py-4 text-sm">
                           <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                             user.role === 'super_admin' ? 'bg-red-500/20 text-red-400' :
@@ -1203,12 +1386,15 @@ export default function AdminPage() {
                           <div className="flex items-center gap-2">
                             {canEdit ? (
                               <>
-                                <button
-                                  onClick={() => handleStatusChange(user.id, user.status === 'active' ? 'disabled' : 'active')}
-                                  className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${user.status === 'active' ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30' : 'bg-green-500/20 text-green-400 hover:bg-green-500/30'}`}
-                                >
-                                  {user.status === 'active' ? '禁用' : '启用'}
-                                </button>
+                                {/* 禁用 / 启用：不允许操作自己（自己禁自己 = 自锁） */}
+                                {user.id !== currentUser?.id && (
+                                  <button
+                                    onClick={() => handleStatusChange(user.id, user.status === 'active' ? 'disabled' : 'active')}
+                                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${user.status === 'active' ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30' : 'bg-green-500/20 text-green-400 hover:bg-green-500/30'}`}
+                                  >
+                                    {user.status === 'active' ? '禁用' : '启用'}
+                                  </button>
+                                )}
                                 {isSuperAdmin && user.id !== currentUser?.id && (
                                   <select
                                     value={user.role}
@@ -1273,6 +1459,9 @@ export default function AdminPage() {
             </>
           )}
         </div>
+
+        {/* 部门管理（紧邻用户列表） */}
+        <DepartmentManagementCard onChanged={() => setDepartmentRefreshKey((k) => k + 1)} />
 
         {/* 系统设置（仅系统管理员） */}
         {isSuperAdmin && (
@@ -2095,6 +2284,30 @@ export default function AdminPage() {
             <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 w-full max-w-md">
               <h3 className="text-xl font-semibold text-white mb-6">编辑用户 - {selectedUser.email}</h3>
               <div className="space-y-4">
+                {/* 姓名 + 部门：管理员代填 / 修正 */}
+                <div className="border border-amber-700/30 bg-amber-500/5 rounded-xl p-3 space-y-3">
+                  <label className="text-sm font-medium text-amber-300">姓名 / 部门</label>
+                  <div>
+                    <label className="block text-[11px] text-gray-400 mb-1">姓名（2~20 字符，留空可清除）</label>
+                    <input
+                      value={editUserName}
+                      maxLength={20}
+                      onChange={(e) => setEditUserName(e.target.value)}
+                      placeholder="例如：张三"
+                      className="w-full px-3 py-2 bg-[#0f111a] border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-purple-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] text-gray-400 mb-1">部门（如需新增请到下方「部门管理」）</label>
+                    <DepartmentSelect
+                      value={editUserDepartment}
+                      onChange={setEditUserDepartment}
+                      refreshKey={departmentRefreshKey}
+                    />
+                  </div>
+                  <p className="text-[10px] text-gray-500">点击下方「保存」按钮统一提交姓名、部门、积分等所有改动。</p>
+                </div>
+
                 <div>
                   <label className="block text-sm font-medium text-gray-300 mb-2">修改积分</label>
                   <div className="flex gap-2">

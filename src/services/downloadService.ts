@@ -68,7 +68,8 @@ export async function getDownloadTasks(
   type: string = 'all',
   page: number = 1,
   pageSize: number = 20,
-  projectId?: number | null
+  projectId?: number | null,
+  includeHappyhorse: boolean = false,
 ): Promise<DownloadTaskList> {
   const params = new URLSearchParams({
     status,
@@ -78,6 +79,9 @@ export async function getDownloadTasks(
   });
   if (projectId) {
     params.append('projectId', String(projectId));
+  }
+  if (includeHappyhorse) {
+    params.append('includeHappyhorse', '1');
   }
 
   const response = await fetch(`${API_BASE}/download/tasks?${params}`, {

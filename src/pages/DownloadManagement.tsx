@@ -82,15 +82,14 @@ export default function DownloadManagementPage() {
 
   const { tasks, total, page, pageSize, statusFilter, typeFilter, selectedRowKeys, isLoading, downloadingIds, previewTask } = state;
 
-  // 各源表（tasks / image_records / audio_generations）的 id 各自自增,易冲突。
-  // 用 model_type + id 作为行唯一键 + 显示 ID 类型前缀,避免歧义。
-  const rowKey = (t: DownloadTask) => `${t.model_subtype || t.model_type}:${t.id}`;
-  // V-HappyHorse → 让 HappyHorse 视频任务 ID 在大类(V)下可识别
+  // 各源表（tasks / image_records / audio_generations / tasks_happyhorse）的 id 各自自增,易冲突。
+  // HappyHorse 行在下载页被打成 model_type='video'（不作为独立种类），用 happyhorse_mode 字段做内部识别。
+  const isHappyhorse = (t: DownloadTask) => !!t.happyhorse_mode;
+  const rowKey = (t: DownloadTask) => `${isHappyhorse(t) ? 'happyhorse' : t.model_type}:${t.id}`;
+  // 视频生成 V-；HappyHorse 视频 V-H- 加以区分，避免两个 id 撞到同一前缀
   const TYPE_PREFIX: Record<string, string> = { video: 'V', image: 'I', audio: 'A', enhancement: 'E' };
   const displayId = (t: DownloadTask) => {
-    if (t.model_type === 'video' && t.model_subtype === 'happyhorse') {
-      return `V-H-${t.id.toString().padStart(6, '0')}`;
-    }
+    if (isHappyhorse(t)) return `V-H-${t.id.toString().padStart(6, '0')}`;
     return `${TYPE_PREFIX[t.model_type] || 'T'}-${t.id.toString().padStart(6, '0')}`;
   };
 
@@ -131,7 +130,7 @@ export default function DownloadManagementPage() {
   const loadTasks = useCallback(async () => {
     setState((prev) => ({ ...prev, isLoading: true }));
     try {
-      const result = await downloadService.getDownloadTasks(statusFilter, typeFilter, page, pageSize, currentProjectId);
+      const result = await downloadService.getDownloadTasks(statusFilter, typeFilter, page, pageSize, currentProjectId, true);
       setState((prev) => ({
         ...prev,
         tasks: result.tasks,
@@ -295,7 +294,7 @@ export default function DownloadManagementPage() {
       downloadService.markAudioGenerationDownloaded(task.id).then(() => loadTasks()).catch(rollback);
     } else if (task.model_type === 'enhancement') {
       downloadService.markEnhancementDownloaded(task.id).then(() => loadTasks()).catch(rollback);
-    } else if (task.model_subtype === 'happyhorse') {
+    } else if (isHappyhorse(task)) {
       downloadService.markHappyhorseDownloaded(task.id).then(() => loadTasks()).catch(rollback);
     }
     // video 由 handleBrowserDownload 内部已调 markDownloaded + loadTasks，这里不重复
@@ -341,7 +340,7 @@ export default function DownloadManagementPage() {
 
   const handleBrowserDownload = async (task: DownloadTask) => {
     const baseName = task.model_type === 'enhancement' ? 'enhanced'
-      : task.model_subtype === 'happyhorse' ? 'happyhorse'
+      : isHappyhorse(task) ? 'happyhorse'
       : 'task';
     const filename = `${baseName}_${task.id}_${(task.prompt || 'video').substring(0, 20).replace(/[^\w\u4e00-\u9fa5]/g, '_')}.mp4`;
     // 有远程 URL 直接走代理下载，无需先保存到服务器
@@ -350,7 +349,7 @@ export default function DownloadManagementPage() {
       // markDownloaded after triggering download (fire-and-forget refresh)
       if (task.model_type === 'enhancement') {
         downloadService.markEnhancementDownloaded(task.id).then(() => loadTasks()).catch(() => {});
-      } else if (task.model_subtype === 'happyhorse') {
+      } else if (isHappyhorse(task)) {
         downloadService.markHappyhorseDownloaded(task.id).then(() => loadTasks()).catch(() => {});
       } else {
         downloadService.markDownloaded(task.id).then(() => loadTasks()).catch(() => {});
@@ -670,7 +669,7 @@ export default function DownloadManagementPage() {
                         : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
                     }`}>
                       {task.model_type === 'video'
-                        ? (task.model_subtype === 'happyhorse'
+                        ? (isHappyhorse(task)
                             ? `视频·HappyHorse${task.happyhorse_mode_label ? '·' + task.happyhorse_mode_label : ''}`
                             : '视频')
                         : task.model_type === 'audio' ? '音频'
@@ -681,8 +680,8 @@ export default function DownloadManagementPage() {
                   <td className="px-4 py-3 text-sm">
                     {(() => {
                       // 视频走后端 download_status；图片/音频已持久化到 downloaded_at，但乐观集合 optimisticDownloaded
-                      // 在 loadTasks 完成前先把"已下载"立刻反映到 UI 上，刷新一下后真值生效，刷新后乐观值也无害。
-                      const overridden = task.model_type !== 'video' && optimisticDownloaded.has(k)
+                      // HappyHorse 行虽然 model_type='video'，但本质走 mark-downloaded 异步路径，与 video 不同，需要乐观更新
+                      const overridden = (task.model_type !== 'video' || isHappyhorse(task)) && optimisticDownloaded.has(k)
                         ? 'done'
                         : task.effective_download_status;
                       return (

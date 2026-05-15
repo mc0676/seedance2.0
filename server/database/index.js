@@ -362,6 +362,66 @@ export function initDatabase() {
     `);
   }
 
+  // 增量迁移：用户姓名 / 部门补填 Gate
+  // 1) departments 字典表（模糊查询下拉的数据源；首次填非已知部门时 INSERT OR IGNORE 自动写入）
+  // 2) users.name TEXT
+  // 3) users.department_id INTEGER REFERENCES departments(id)
+  //    历史曾短暂存在 users.department TEXT 列；如果检测到，把每行 TEXT 名字 INSERT OR IGNORE
+  //    进 departments 表 → 把 id 写回 department_id → 删除老 TEXT 列
+  {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS departments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_departments_name ON departments(name);
+    `);
+
+    const uCols = db.prepare("PRAGMA table_info(users)").all().map((c) => c.name);
+    if (!uCols.includes('name')) {
+      console.log('[database] 迁移：users 添加 name 列...');
+      db.exec(`ALTER TABLE users ADD COLUMN name TEXT`);
+    }
+    if (!uCols.includes('department_id')) {
+      console.log('[database] 迁移：users 添加 department_id 列...');
+      db.exec(`ALTER TABLE users ADD COLUMN department_id INTEGER REFERENCES departments(id) ON DELETE SET NULL`);
+    }
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_users_department_id ON users(department_id)`);
+
+    // 老旧 TEXT 列回填 + 删除
+    if (uCols.includes('department')) {
+      console.log('[database] 迁移：把 users.department TEXT 转换为 department_id 外键...');
+      const legacy = db.prepare(
+        `SELECT id, department FROM users WHERE department IS NOT NULL AND TRIM(department) <> '' AND department_id IS NULL`
+      ).all();
+      // 先 SELECT 再 INSERT，避免 INSERT OR IGNORE 在 AUTOINCREMENT 下消耗 id（造成跳号）
+      const findDept = db.prepare(`SELECT id FROM departments WHERE name = ?`);
+      const insertDept = db.prepare(`INSERT INTO departments (name) VALUES (?)`);
+      const updateUser = db.prepare(`UPDATE users SET department_id = ? WHERE id = ?`);
+      const tx = db.transaction(() => {
+        for (const u of legacy) {
+          const name = String(u.department).trim();
+          if (!name) continue;
+          let row = findDept.get(name);
+          if (!row) {
+            const r = insertDept.run(name);
+            row = { id: r.lastInsertRowid };
+          }
+          if (row?.id) updateUser.run(row.id, u.id);
+        }
+      });
+      tx();
+      // SQLite 3.35+ 支持 DROP COLUMN
+      try {
+        db.exec(`ALTER TABLE users DROP COLUMN department`);
+        console.log('[database] 迁移完成：users.department TEXT 列已删除');
+      } catch (e) {
+        console.warn('[database] 删除 users.department 失败（SQLite 版本过旧？保留列不影响新逻辑）:', e.message);
+      }
+    }
+  }
+
   console.log(`[database] 数据库初始化成功：${DB_PATH}`);
   return db;
 }

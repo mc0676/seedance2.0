@@ -197,6 +197,103 @@ export async function changePassword(oldPassword: string, newPassword: string): 
 }
 
 /**
+ * 更新自己的姓名 / 部门
+ *   - name: 长度 2~20，允许重名
+ *   - department: 字符串，提交时后端 INSERT OR IGNORE 进字典表；首次填后不可自助改
+ * 字段不传 → 该字段不更新。
+ */
+export async function updateMyProfile(payload: { name?: string; department?: string }): Promise<User> {
+  const response = await fetch(`${API_BASE}/auth/me`, {
+    method: 'PUT',
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json();
+  if (!response.ok || !data.success) {
+    throw new Error(data.error || '更新个人信息失败');
+  }
+  const user = data.data.user as User;
+  cacheUser(user);
+  return user;
+}
+
+/** 部门字典模糊查询（用于下拉候选） */
+export async function listDepartments(q: string = ''): Promise<Array<{ id: number; name: string }>> {
+  const params = new URLSearchParams();
+  if (q) params.set('q', q);
+  const response = await fetch(`${API_BASE}/departments?${params}`, {
+    headers: getAuthHeaders(),
+  });
+  const data = await response.json();
+  if (!response.ok || !data.success) {
+    throw new Error(data.error || '加载部门列表失败');
+  }
+  return data.data.items || [];
+}
+
+/** 管理员代填 / 修改某用户的姓名 + 部门 */
+export async function updateUserProfileByAdmin(
+  userId: number,
+  payload: { name?: string | null; department?: string | null },
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/admin/users/${userId}/profile`, {
+    method: 'PUT',
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json();
+  if (!response.ok || !data.success) {
+    throw new Error(data.error || '更新用户资料失败');
+  }
+}
+
+// ── 管理员：部门字典 CRUD ───────────────────────────────────────────
+export interface AdminDepartment {
+  id: number;
+  name: string;
+  created_at: string;
+  user_count: number;
+}
+
+export async function listDepartmentsAdmin(): Promise<AdminDepartment[]> {
+  const res = await fetch(`${API_BASE}/admin/departments`, { headers: getAuthHeaders() });
+  const data = await res.json();
+  if (!res.ok || !data.success) throw new Error(data.error || '加载部门列表失败');
+  return data.data.items || [];
+}
+
+export async function createDepartmentAdmin(name: string): Promise<{ id: number; name: string }> {
+  const res = await fetch(`${API_BASE}/admin/departments`, {
+    method: 'POST',
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ name }),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.success) throw new Error(data.error || '新建部门失败');
+  return data.data;
+}
+
+export async function renameDepartmentAdmin(id: number, name: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/admin/departments/${id}`, {
+    method: 'PUT',
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ name }),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.success) throw new Error(data.error || '重命名失败');
+}
+
+export async function deleteDepartmentAdmin(id: number): Promise<{ affectedUsers: number }> {
+  const res = await fetch(`${API_BASE}/admin/departments/${id}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.success) throw new Error(data.error || '删除失败');
+  return data.data;
+}
+
+/**
  * 每日签到
  */
 export async function checkIn(): Promise<{ creditsEarned: number }> {

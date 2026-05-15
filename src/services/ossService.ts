@@ -1,8 +1,17 @@
 import { getAuthHeaders } from './authService';
 
+export interface OssVideoInfo {
+  durationSec: number;
+  width?: number;
+  height?: number;
+  fps?: number;
+}
+
 export interface OssUploadResult {
   url: string;
   key: string;
+  /** 视频文件上传成功后，后端通过 OSS video/info 处理探测出的元数据；非视频或探测失败时为 null */
+  videoInfo?: OssVideoInfo | null;
 }
 
 /**
@@ -34,7 +43,7 @@ export function uploadToOss(
         try {
           const data = JSON.parse(xhr.responseText);
           if (data.success) {
-            resolve({ url: data.url, key: data.key });
+            resolve({ url: data.url, key: data.key, videoInfo: data.videoInfo || null });
           } else {
             reject(new Error(data.error || 'OSS 上传失败'));
           }
@@ -111,4 +120,22 @@ export function validateMediaCombination(
     return '音频必须配合图片或视频使用，不支持纯音频或文本+音频输入';
   }
   return null;
+}
+
+/**
+ * 重新探测一个已存在的 OSS 视频 URL 的元数据。
+ * 后端走 OSS video/info 处理，**不下载视频到服务器磁盘**，仅几百字节 JSON 流量。
+ * 失败抛错（OSS 过期、URL 不在我们桶下、对象不存在等）。
+ */
+export async function probeOssVideo(url: string): Promise<OssVideoInfo> {
+  const res = await fetch('/api/oss/probe-video', {
+    method: 'POST',
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ url }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.success) {
+    throw new Error(data.error || '视频信息探测失败');
+  }
+  return data.data as OssVideoInfo;
 }

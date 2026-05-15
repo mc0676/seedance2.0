@@ -18,10 +18,19 @@ export interface User {
   status: 'active' | 'disabled';
   credits: number;
   unlimitedCredits?: boolean;
+  /** 用户姓名（首次登录补填，2~20 字符） */
+  name?: string | null;
+  /** 用户部门（首次登录补填，从字典表挑选或新建；仅管理员可改） */
+  department?: string | null;
   createdAt?: string;
   updatedAt?: string;
   lastCheckInAt?: string;
   permissions?: Record<string, boolean>;
+}
+
+export interface Department {
+  id: number;
+  name: string;
 }
 
 export interface FeatureKey {
@@ -344,9 +353,7 @@ export interface DownloadTask {
   project_id?: number;
   project_name?: string;
   hasHistory: boolean;
-  model_type: 'image' | 'video' | 'audio' | 'enhancement';
-  /** 大类下的子类型，目前仅用于 video 下区分 HappyHorse */
-  model_subtype?: 'happyhorse';
+  model_type: 'image' | 'video' | 'audio' | 'enhancement' | 'happyhorse';
   effective_download_status: DownloadStatus;
   assets?: Array<{ assetType: string; uri: string; originalName?: string | null }>;
   credits_used?: number;

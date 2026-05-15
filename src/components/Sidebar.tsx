@@ -16,10 +16,13 @@ import {
 import type { User } from '../types';
 import { logout } from '../services/authService';
 import ProjectSelector from './ProjectSelector';
+import ProfileEditCard from './ProfileEditCard';
 
 interface SidebarProps {
   currentUser: User | null;
   onLogout: () => void;
+  /** 用户在个人信息卡中修改 name 后回调父组件更新全局状态 */
+  onUserUpdated?: (u: User) => void;
 }
 
 interface MenuItem {
@@ -31,11 +34,12 @@ interface MenuItem {
   accent?: string;
 }
 
-export default function Sidebar({ currentUser, onLogout }: SidebarProps) {
+export default function Sidebar({ currentUser, onLogout, onUserUpdated }: SidebarProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState(true);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
 
   const isActive = (path: string) => {
     if (path === '/') {
@@ -186,31 +190,45 @@ export default function Sidebar({ currentUser, onLogout }: SidebarProps) {
 
         {/* 底部用户信息 */}
         <div className="absolute bottom-0 left-0 right-0 p-3 border-t border-gray-800">
+          {profileOpen && currentUser && (
+            <ProfileEditCard
+              user={currentUser}
+              onClose={() => setProfileOpen(false)}
+              onSaved={(u) => { onUserUpdated?.(u); }}
+              onLogout={async () => { await logout(); onLogout(); navigate('/login'); }}
+            />
+          )}
           {expanded ? (
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center">
+            <button
+              onClick={() => setProfileOpen((v) => !v)}
+              className="w-full flex items-center justify-between rounded-lg hover:bg-gray-800/60 px-1 py-1 transition-colors"
+              title="个人信息"
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-9 h-9 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center flex-shrink-0">
                   <UserIcon className="w-5 h-5 text-white" />
                 </div>
-                <div className="min-w-0">
+                <div className="min-w-0 text-left">
                   <p className="text-sm font-medium text-white truncate">
-                    {currentUser?.email || '用户'}
+                    {currentUser?.name
+                      ? <>{currentUser.name} <span className="text-xs font-normal text-gray-500">{currentUser.email}</span></>
+                      : (currentUser?.email || '用户')}
                   </p>
-                  <p className="text-xs text-gray-500">
-                    {currentUser?.role === 'super_admin' ? '系统管理员' : currentUser?.role === 'admin' ? '管理员' : '普通用户'}
+                  <p className="text-xs text-gray-500 truncate">
+                    {currentUser?.department || (currentUser?.role === 'super_admin' ? '系统管理员' : currentUser?.role === 'admin' ? '管理员' : '普通用户')}
                   </p>
                 </div>
               </div>
-              <button
-                onClick={handleLogout}
-                className="p-2 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-all"
-                title="退出登录"
-              >
-                <LogoutIcon className="w-5 h-5" />
-              </button>
-            </div>
+            </button>
           ) : (
             <div className="flex flex-col items-center gap-2">
+              <button
+                onClick={() => setProfileOpen((v) => !v)}
+                className="w-9 h-9 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center"
+                title="个人信息"
+              >
+                <UserIcon className="w-5 h-5 text-white" />
+              </button>
               <button
                 onClick={handleLogout}
                 className="p-2 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-all"
