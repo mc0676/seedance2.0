@@ -171,6 +171,74 @@ export async function deleteAsset(id, projectName = 'default') {
 }
 
 // ============================================================
+// 素材组名字唯一化（同一工作组内不允许重名）
+// ============================================================
+
+/**
+ * 在指定项目内，给一个候选 name 计算可用的唯一名字。
+ * 若原名未被占用，原样返回；否则附加 `(2)`、`(3)` … 直到不撞。
+ *
+ * @param {number} projectId
+ * @param {string} desiredName  用户输入的原始名字（已 trim）
+ * @param {number} [excludeId]  若是改名场景，把自身 id 排除掉，避免「跟自己撞」
+ */
+export function resolveUniqueAssetGroupName(projectId, desiredName, excludeId = null) {
+  const db = getDatabase();
+  const base = String(desiredName || '').trim();
+  if (!base) return base;
+
+  const baseExists = db.prepare(
+    excludeId == null
+      ? `SELECT 1 FROM asset_groups WHERE project_id = ? AND name = ?`
+      : `SELECT 1 FROM asset_groups WHERE project_id = ? AND name = ? AND id != ?`
+  ).get(...(excludeId == null ? [projectId, base] : [projectId, base, excludeId]));
+
+  if (!baseExists) return base;
+
+  // 拉一次同前缀的所有名字，避免循环里 N 次 SQL
+  const likeRows = db.prepare(
+    `SELECT name FROM asset_groups WHERE project_id = ? AND name LIKE ? ${excludeId == null ? '' : 'AND id != ?'}`
+  ).all(...(excludeId == null ? [projectId, `${base} (%)`] : [projectId, `${base} (%)`, excludeId]));
+  const taken = new Set(likeRows.map((r) => r.name));
+
+  for (let i = 2; i < 9999; i++) {
+    const candidate = `${base} (${i})`;
+    if (!taken.has(candidate)) return candidate;
+  }
+  // 极端兜底：用时间戳
+  return `${base} (${Date.now()})`;
+}
+
+/**
+ * 一次性迁移：把现有同名素材组重命名为 `name (2)`、`name (3)` …
+ * 创建时间晚的被改名（保留第一份原名）。返回受影响行数。
+ */
+export function migrateDeduplicateAssetGroupNames() {
+  const db = getDatabase();
+  // 找出所有同项目同名的组（按 created_at 升序，保留最早那条原名）
+  const dups = db.prepare(
+    `SELECT project_id, name FROM asset_groups
+     GROUP BY project_id, name HAVING COUNT(*) > 1`
+  ).all();
+  if (dups.length === 0) return 0;
+  let changed = 0;
+  for (const { project_id: projectId, name } of dups) {
+    const rows = db.prepare(
+      `SELECT id FROM asset_groups WHERE project_id = ? AND name = ? ORDER BY created_at ASC, id ASC`
+    ).all(projectId, name);
+    // 跳过第一个（保留原名）；其余依次改成 name (2)、name (3)...
+    for (let i = 1; i < rows.length; i++) {
+      const unique = resolveUniqueAssetGroupName(projectId, name, rows[i].id);
+      if (unique !== name) {
+        db.prepare(`UPDATE asset_groups SET name = ? WHERE id = ?`).run(unique, rows[i].id);
+        changed++;
+      }
+    }
+  }
+  return changed;
+}
+
+// ============================================================
 // 项目资产库数据库操作
 // ============================================================
 
@@ -271,8 +339,12 @@ export async function listProjectAssetsLive(projectId, options = {}) {
   const db = getDatabase();
 
   // 获取当前项目所有 ARK 资产组
-  const groupRows = db.prepare('SELECT volc_group_id FROM asset_groups WHERE project_id = ?').all(projectId);
+  const groupRows = db.prepare(
+    'SELECT volc_group_id, name FROM asset_groups WHERE project_id = ?'
+  ).all(projectId);
   const volcGroupIds = groupRows.map((r) => r.volc_group_id).filter(Boolean);
+  // 本地权威组名映射（已通过 resolveUniqueAssetGroupName 去重）
+  const groupNameByVolcId = new Map(groupRows.map((r) => [r.volc_group_id, r.name]));
 
   // 无 ARK 资产组：降级为本地 DB
   if (volcGroupIds.length === 0) {
@@ -318,6 +390,8 @@ export async function listProjectAssetsLive(projectId, options = {}) {
       project_id: Number(projectId),
       volc_asset_id: it.Id,
       volc_group_id: it.GroupId || null,
+      // 组名取我们本地 asset_groups 表的权威值（已去重），找不到时退回火山返回的 GroupName 或空
+      group_name: (it.GroupId && groupNameByVolcId.get(it.GroupId)) || it.GroupName || null,
       name: local?.name || it.Name || it.Id,
       file_type: fileTypeMap[it.AssetType] || local?.file_type || 'image',
       file_url: it.URL || local?.file_url || null,

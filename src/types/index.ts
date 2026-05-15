@@ -509,6 +509,8 @@ export interface ProjectAsset {
   asset_group_id?: number;
   volc_asset_id?: string;
   volc_group_id?: string;   // ARK GroupId，用于前端分组
+  /** 该素材所属素材组在本地的权威名（已去重）；列表接口实时填充 */
+  group_name?: string | null;
   name: string;
   description?: string;
   file_type: 'image' | 'video' | 'audio';

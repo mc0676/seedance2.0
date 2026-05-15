@@ -96,6 +96,9 @@ export default function ProjectWorkspacePage() {
   const [newGroupDesc, setNewGroupDesc] = useState('');
   const [newGroupFile, setNewGroupFile] = useState<File | null>(null);
   const [newGroupPreview, setNewGroupPreview] = useState('');
+  // 撞名检测：调 /check-name 拿到建议名（已存在时附 (2)/(3) 后缀）
+  const [groupNameSuggestion, setGroupNameSuggestion] = useState<{ exists: boolean; suggestedName: string } | null>(null);
+  const [groupNameChecking, setGroupNameChecking] = useState(false);
   const [createGroupLoading, setCreateGroupLoading] = useState(false);
   const [createGroupStep, setCreateGroupStep] = useState('');
   const newGroupFileRef = useRef<HTMLInputElement>(null);
@@ -111,6 +114,10 @@ export default function ProjectWorkspacePage() {
   // 删除确认弹窗
   const [deleteGroupTarget, setDeleteGroupTarget] = useState<VolcAssetGroup | null>(null);
   const [deleteGroupLoading, setDeleteGroupLoading] = useState(false);
+  // 重命名素材组
+  const [renameGroupTarget, setRenameGroupTarget] = useState<VolcAssetGroup | null>(null);
+  const [renameGroupName, setRenameGroupName] = useState('');
+  const [renameGroupLoading, setRenameGroupLoading] = useState(false);
 
   // 轮询
   const volcPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -229,11 +236,36 @@ export default function ProjectWorkspacePage() {
     setShowAddAsset(false);
   };
 
+  // 创建素材组对话框：输入组名后 300ms 防抖调 /check-name，得到建议名（撞名时附 (2) 等后缀）
+  useEffect(() => {
+    if (!showCreateGroup) { setGroupNameSuggestion(null); return; }
+    const trimmed = newGroupName.trim();
+    if (!trimmed || !currentProject) { setGroupNameSuggestion(null); return; }
+    setGroupNameChecking(true);
+    const t = setTimeout(async () => {
+      try {
+        const r = await fetch(
+          `/api/volc-native/asset-groups/check-name?name=${encodeURIComponent(trimmed)}&projectId=${currentProject.id}`,
+          { headers: getAuthHeaders() },
+        );
+        const d = await r.json();
+        if (d?.success) {
+          setGroupNameSuggestion({ exists: !!d.data.exists, suggestedName: d.data.suggestedName });
+        }
+      } catch { /* 网络错就静默；提交时后端会再 resolve 一次 */ }
+      finally { setGroupNameChecking(false); }
+    }, 300);
+    return () => { clearTimeout(t); setGroupNameChecking(false); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [newGroupName, showCreateGroup, currentProject?.id]);
+
   // 创建素材组：CreateAssetGroup → CreateAsset（封面图）
   const handleCreateGroup = async () => {
     if (!currentProject) { alert('请先选择工作组'); return; }
     if (!newGroupName.trim()) { alert('请输入素材组名称'); return; }
     if (!newGroupFile) { alert('请选择一张封面图片'); return; }
+    // 优先用建议名（撞名时附 (2)/(3)...），用户能看到、提交时使用
+    const finalName = (groupNameSuggestion?.suggestedName || newGroupName).trim();
     setCreateGroupLoading(true);
     try {
       setCreateGroupStep('上传图片到 OSS...');
@@ -243,21 +275,24 @@ export default function ProjectWorkspacePage() {
       const r1 = await fetch('/api/volc-native/asset-groups', {
         method: 'POST',
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ name: newGroupName.trim(), description: newGroupDesc.trim(), projectId: currentProject.id }),
+        body: JSON.stringify({ name: finalName, description: newGroupDesc.trim(), projectId: currentProject.id }),
       });
       const d1 = await r1.json();
       if (!d1.success) throw new Error(d1.error || '创建素材组失败');
       const groupId: string = d1.data?.Id;
+      // 后端可能再次微调（极端并发情况），用 finalName 兜底
+      const persistedName: string = d1.data?.finalName || finalName;
 
       setCreateGroupStep('写入封面素材...');
       await fetch('/api/volc-native/assets', {
         method: 'POST',
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ groupId, url: ossUrl, assetType: 'Image', name: newGroupName.trim() }),
+        body: JSON.stringify({ groupId, url: ossUrl, assetType: 'Image', name: persistedName }),
       });
 
       setShowCreateGroup(false);
       setNewGroupName(''); setNewGroupDesc(''); setNewGroupFile(null); setNewGroupPreview('');
+      setGroupNameSuggestion(null);
       await loadVolcGroups(1);
     } catch (e) { alert(e instanceof Error ? e.message : '创建失败'); }
     finally { setCreateGroupLoading(false); setCreateGroupStep(''); }
@@ -439,9 +474,22 @@ export default function ProjectWorkspacePage() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {/* 左列：文字字段 */}
                 <div className="space-y-3">
-                  <input value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)}
-                    placeholder="组合名称 *"
-                    className="w-full bg-[#0f111a] border border-gray-700 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-purple-500 transition-colors" />
+                  <div>
+                    <input value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)}
+                      placeholder="组合名称 *"
+                      className={`w-full bg-[#0f111a] border rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none transition-colors ${
+                        groupNameSuggestion?.exists ? 'border-amber-500/60 focus:border-amber-400' : 'border-gray-700 focus:border-purple-500'
+                      }`} />
+                    {groupNameChecking && (
+                      <p className="mt-1 text-[11px] text-gray-500">检查同名中…</p>
+                    )}
+                    {!groupNameChecking && groupNameSuggestion?.exists && (
+                      <p className="mt-1 text-[11px] text-amber-400">
+                        当前工作组已有同名素材组，提交时将使用：
+                        <span className="font-mono text-amber-300 ml-1">{groupNameSuggestion.suggestedName}</span>
+                      </p>
+                    )}
+                  </div>
                   <input value={newGroupDesc} onChange={(e) => setNewGroupDesc(e.target.value)}
                     placeholder="描述（可选）"
                     className="w-full bg-[#0f111a] border border-gray-700 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-purple-500 transition-colors" />
@@ -596,8 +644,12 @@ export default function ProjectWorkspacePage() {
                         )}
                         <div className="mt-auto pt-1 flex items-center justify-between gap-2">
                           <span className="text-xs text-purple-400 group-hover:text-purple-300">查看素材 →</span>
-                          <button onClick={(e) => { e.stopPropagation(); setDeleteGroupTarget(g); }}
-                            className="px-2 py-1 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded-md text-xs transition-colors">删除</button>
+                          <div className="flex items-center gap-1.5">
+                            <button onClick={(e) => { e.stopPropagation(); setRenameGroupTarget(g); setRenameGroupName(g.Name || ''); }}
+                              className="px-2 py-1 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 rounded-md text-xs transition-colors">改名</button>
+                            <button onClick={(e) => { e.stopPropagation(); setDeleteGroupTarget(g); }}
+                              className="px-2 py-1 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded-md text-xs transition-colors">删除</button>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -756,6 +808,61 @@ export default function ProjectWorkspacePage() {
     {deleteGroupLoading && (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
         <div className="text-white text-sm">删除中...</div>
+      </div>
+    )}
+
+    {/* 重命名素材组弹窗 */}
+    {renameGroupTarget && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+        <div className="bg-[#1c1f2e] border border-gray-700 rounded-2xl shadow-2xl p-6 w-full max-w-md">
+          <h3 className="text-lg font-semibold text-white mb-4">重命名素材组</h3>
+          <p className="text-xs text-gray-500 mb-3">原名：<span className="text-gray-300">{renameGroupTarget.Name}</span></p>
+          <input
+            autoFocus
+            value={renameGroupName}
+            maxLength={60}
+            onChange={(e) => setRenameGroupName(e.target.value)}
+            placeholder="输入新名称"
+            className="w-full bg-[#0f111a] border border-gray-700 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500"
+          />
+          <p className="text-[10px] text-gray-500 mt-2">同工作组内重名时将自动加 (N) 后缀。</p>
+          <div className="mt-4 flex gap-2 justify-end">
+            <button
+              onClick={() => { setRenameGroupTarget(null); setRenameGroupName(''); }}
+              className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-white text-sm"
+            >取消</button>
+            <button
+              disabled={renameGroupLoading || !renameGroupName.trim() || renameGroupName.trim() === renameGroupTarget.Name}
+              onClick={async () => {
+                if (!currentProject || !renameGroupTarget) return;
+                setRenameGroupLoading(true);
+                try {
+                  const r = await fetch(
+                    `/api/volc-native/asset-groups/${encodeURIComponent(renameGroupTarget.Id)}/rename`,
+                    {
+                      method: 'PATCH',
+                      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+                      body: JSON.stringify({ name: renameGroupName.trim(), projectId: currentProject.id }),
+                    },
+                  );
+                  const d = await r.json();
+                  if (!r.ok || !d.success) throw new Error(d.error || '重命名失败');
+                  if (d.data?.suggested) {
+                    alert(`存在同名素材组，已自动改为：${d.data.name}`);
+                  }
+                  setRenameGroupTarget(null);
+                  setRenameGroupName('');
+                  await loadVolcGroups(volcGroupPage);
+                } catch (e) {
+                  alert(e instanceof Error ? e.message : '重命名失败');
+                } finally {
+                  setRenameGroupLoading(false);
+                }
+              }}
+              className="px-4 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 rounded-lg text-white text-sm font-medium"
+            >{renameGroupLoading ? '保存中…' : '保存'}</button>
+          </div>
+        </div>
       </div>
     )}
     </>

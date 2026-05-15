@@ -270,6 +270,9 @@ export default function SingleTaskPage() {
   // @ 小窗口键盘焦点索引（-1 = 无焦点）
   const [mentionFocusIdx, setMentionFocusIdx] = useState(-1);
   // 素材组面板键盘状态：当前聚焦的组索引 + 每组展开到第几个子素材
+  // 素材组面板里"当前选中的组"过滤器：null = 显示全部，否则只显示该 volc_group_id 下的素材。
+  // 这样当资产较多时，用户可以先点一个组 → 之后 @ 只在该组的素材里选，避免混杂。
+  const [activeAssetGroupKey, setActiveAssetGroupKey] = useState<string | null>(null);
   const [panelGroupIdx, setPanelGroupIdx] = useState(0);
   const [panelSubIdxMap, setPanelSubIdxMap] = useState<Record<string, number>>({});
   // DOM-position tracking for @ anchor (node + offset pointing to just before '@')
@@ -358,6 +361,21 @@ export default function SingleTaskPage() {
       (a[0].created_at || '').localeCompare(b[0].created_at || '')
     );
   }, [availableAssets]);
+
+   // 选中某组后，@ 面板可选项只来自该组；activeAssetGroupKey=null 表示「全部」
+  const mentionableAssets = useMemo(() => {
+    if (!activeAssetGroupKey) return availableAssets;
+    return availableAssets.filter((a) => (a.volc_group_id || `_single_${a.id}`) === activeAssetGroupKey);
+  }, [availableAssets, activeAssetGroupKey]);
+
+  // 切换工作组时重置组过滤；当前激活组在新列表里不存在也要回退到全部
+  useEffect(() => {
+    if (!activeAssetGroupKey) return;
+    const exists = assetGroups.some((grp) =>
+      (grp[0].volc_group_id || `_single_${grp[0].id}`) === activeAssetGroupKey
+    );
+    if (!exists) setActiveAssetGroupKey(null);
+  }, [assetGroups, activeAssetGroupKey]);
 
   // chipTag 直接用火山素材ID，全局唯一，不受排序影响
   function getAssetChipTag(asset: ProjectAsset, _assets?: ProjectAsset[]): string {
@@ -956,7 +974,7 @@ export default function SingleTaskPage() {
     if (showMention) {
       const flatItems: Array<{ type: 'upload'; idx: number } | { type: 'asset'; idx: number }> = [
         ...mentionItems.map((_, i) => ({ type: 'upload' as const, idx: i })),
-        ...availableAssets.map((_, i) => ({ type: 'asset' as const, idx: i })),
+        ...mentionableAssets.map((_, i) => ({ type: 'asset' as const, idx: i })),
       ];
       const total = flatItems.length;
       if (total > 0 && (e.key === 'ArrowDown' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowLeft' || e.key === 'Enter')) {
@@ -969,7 +987,7 @@ export default function SingleTaskPage() {
           const item = flatItems[mentionFocusIdx];
           if (item) {
             if (item.type === 'upload') insertMention(mentionItems[item.idx].tag);
-            else insertAssetMention(availableAssets[item.idx]);
+            else insertAssetMention(mentionableAssets[item.idx]);
           }
           setMentionFocusIdx(-1);
           setShowMention(false);
@@ -1677,6 +1695,36 @@ export default function SingleTaskPage() {
                 <label className="text-sm font-bold text-gray-300">素材组 <span className="text-amber-400">（{availableAssets.length}）</span>{assetSyncing && <span className="ml-1 text-[10px] text-gray-500 animate-pulse">同步中…</span>}</label>
                 <span className="text-[10px] text-gray-500">↑↓ 切换组内 · ←→ 切换组 · Enter 插入</span>
               </div>
+              {/* 组筛选 pill 行：点击某组后，@ 面板只列该组的素材，避免数据多时混杂 */}
+              {assetGroups.length > 1 && (
+                <div className="flex flex-wrap gap-1.5 mb-3">
+                  <button
+                    onClick={() => { setActiveAssetGroupKey(null); setPanelGroupIdx(0); }}
+                    className={`px-2.5 py-1 rounded-full text-[11px] transition-all ${
+                      activeAssetGroupKey === null
+                        ? 'bg-amber-500/30 text-amber-200 border border-amber-400'
+                        : 'bg-[#0d0f1a] text-gray-400 border border-gray-700 hover:border-amber-400/50'
+                    }`}
+                  >全部 · {availableAssets.length}</button>
+                  {assetGroups.map((grp, gIdx) => {
+                    const key = grp[0].volc_group_id || `_single_${grp[0].id}`;
+                    const label = grp[0].group_name || grp[0].name || '未命名';
+                    const active = activeAssetGroupKey === key;
+                    return (
+                      <button
+                        key={key}
+                        onClick={() => { setActiveAssetGroupKey(active ? null : key); setPanelGroupIdx(gIdx); }}
+                        title={label}
+                        className={`px-2.5 py-1 rounded-full text-[11px] transition-all max-w-[160px] truncate ${
+                          active
+                            ? 'bg-amber-500/30 text-amber-200 border border-amber-400'
+                            : 'bg-[#0d0f1a] text-gray-400 border border-gray-700 hover:border-amber-400/50'
+                        }`}
+                      >{label} · {grp.length}</button>
+                    );
+                  })}
+                </div>
+              )}
               <div
                 className="focus:outline-none"
                 tabIndex={0}
@@ -1712,7 +1760,10 @@ export default function SingleTaskPage() {
                 }}
               >
                 <div className="flex gap-3 overflow-x-auto pb-1 custom-scrollbar">
-                  {assetGroups.map((grp, gIdx) => {
+                  {(activeAssetGroupKey
+                    ? assetGroups.filter((g) => (g[0].volc_group_id || `_single_${g[0].id}`) === activeAssetGroupKey)
+                    : assetGroups
+                  ).map((grp, gIdx) => {
                     const key = grp[0].volc_group_id || `_single_${grp[0].id}`;
                     const subIdx = panelSubIdxMap[key] ?? 0;
                     const focused = gIdx === panelGroupIdx;
@@ -1780,13 +1831,18 @@ export default function SingleTaskPage() {
                 className="prompt-editor w-full text-sm focus:outline-none min-h-[100px] text-gray-200 leading-relaxed bg-[#0d0f1a] rounded-xl px-4 py-3"
                 suppressContentEditableWarning
               />
-              {showMention && (mentionItems.length > 0 || availableAssets.length > 0) && (
+              {showMention && (mentionItems.length > 0 || mentionableAssets.length > 0) && (
                 <div
                   ref={mentionPanelRef}
                   className="absolute left-0 bottom-full mb-2 w-full bg-[#0f111a] border border-purple-500/40 rounded-xl shadow-xl z-20 overflow-hidden"
                 >
                   <div className="px-3 py-2 text-[11px] text-gray-500 border-b border-gray-800 flex items-center justify-between">
-                    <span>选择引用素材</span>
+                    <span>
+                      选择引用素材
+                      {activeAssetGroupKey && (
+                        <span className="ml-2 text-amber-400/80">（已筛选当前素材组）</span>
+                      )}
+                    </span>
                     <span className="text-[10px]">↑↓←→ 导航 · Enter 选择</span>
                   </div>
                   <div className="flex flex-wrap gap-2 p-3 max-h-48 overflow-y-auto">
@@ -1811,14 +1867,14 @@ export default function SingleTaskPage() {
                         </button>
                       );
                     })}
-                    {availableAssets.length > 0 && (
+                    {mentionableAssets.length > 0 && (
                       <>
                         {mentionItems.length > 0 && (
                           <div className="w-full border-t border-gray-800 mt-1 pt-1 mb-1">
                             <span className="text-[10px] text-amber-400/70 px-1">素材组</span>
                           </div>
                         )}
-                        {availableAssets.map((asset, ai) => {
+                        {mentionableAssets.map((asset, ai) => {
                           const flatIdx = mentionItems.length + ai;
                           const isFocused = mentionFocusIdx === flatIdx;
                           const chipTag = getAssetChipTag(asset, availableAssets);

@@ -39,6 +39,14 @@ enhancementWorker.start();
 // 启动 HappyHorse 后台轮询
 happyhorseWorker.start();
 
+// 启动一次性：把存量同项目同名的素材组改名为 `xxx (2)` 等，确保同一工作组内素材组名唯一
+try {
+  const changed = assetService.migrateDeduplicateAssetGroupNames();
+  if (changed > 0) console.log(`[启动] 素材组名去重：${changed} 条被自动改名`);
+} catch (e) {
+  console.warn('[启动] 素材组名去重失败:', e.message);
+}
+
 // 启动时：若环境变量中有火山引擎 AK/SK，写入 system_config（Docker 部署首次配置兜底）
 try {
   const _db = getDatabase();
@@ -4930,7 +4938,12 @@ app.get('/api/volc-native/asset-groups', authenticate, async (req, res) => {
     if (projectId) {
       const project = projectService.getProjectById(projectId, req.user.id, isAdmin);
       if (!project) return res.status(404).json({ error: '项目不存在或无权访问' });
-      const boundRows = db.prepare('SELECT volc_group_id FROM asset_groups WHERE project_id = ?').all(projectId);
+      const boundRows = db.prepare(
+        'SELECT volc_group_id, name FROM asset_groups WHERE project_id = ?'
+      ).all(projectId);
+      // 本地 volc_group_id → 我们落库时已去重过的 name；展示时强制覆盖火山返回的 Name，
+      // 避免火山端原始 Name 仍是重复值导致前端看到两个一样的素材组。
+      const localNameByVolcId = new Map(boundRows.map((r) => [r.volc_group_id, r.name]));
       const volcGroupIds = boundRows.map(r => r.volc_group_id).filter(Boolean);
       if (volcGroupIds.length === 0) {
         return res.json({ success: true, data: { Items: [], TotalCount: 0 } });
@@ -4940,7 +4953,10 @@ app.get('/api/volc-native/asset-groups', authenticate, async (req, res) => {
         const details = await Promise.all(
           volcGroupIds.map(id => volcArkAssetRequest('GetAssetGroup', { Id: id }, db).catch(() => null))
         );
-        const items = details.filter(Boolean);
+        const items = details.filter(Boolean).map((it) => {
+          const local = localNameByVolcId.get(it.Id);
+          return local ? { ...it, Name: local } : it;
+        });
         return res.json({ success: true, data: { Items: items, TotalCount: items.length } });
       } catch (e) {
         return res.json({ success: true, data: { Items: [], TotalCount: 0 } });
@@ -4992,6 +5008,26 @@ app.get('/api/volc-native/asset', authenticate, async (req, res) => {
   }
 });
 
+// GET /api/volc-native/asset-groups/check-name?name=&projectId= — 查重接口
+// 返回 { exists, suggestedName } —— 名字已存在时给出 `name (N)` 形态的建议名
+app.get('/api/volc-native/asset-groups/check-name', authenticate, (req, res) => {
+  try {
+    const name = String(req.query.name || '').trim();
+    const projectId = Number(req.query.projectId);
+    if (!name) return res.status(400).json({ error: 'name 必填' });
+    if (!Number.isFinite(projectId) || projectId <= 0) {
+      return res.status(400).json({ error: 'projectId 必填' });
+    }
+    const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
+    const project = projectService.getProjectById(projectId, req.user.id, isAdmin);
+    if (!project) return res.status(404).json({ error: '工作组不存在或无权访问' });
+    const suggestedName = assetService.resolveUniqueAssetGroupName(projectId, name);
+    res.json({ success: true, data: { exists: suggestedName !== name, suggestedName } });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // POST /api/volc-native/asset-groups — CreateAssetGroup（普通用户）
 // 必须传 projectId，创建后会自动绑定到该项目（写入 asset_groups 表）
 app.post('/api/volc-native/asset-groups', authenticate, async (req, res) => {
@@ -5004,8 +5040,11 @@ app.post('/api/volc-native/asset-groups', authenticate, async (req, res) => {
     const project = projectService.getProjectById(projectId, req.user.id, isAdmin);
     if (!project) return res.status(404).json({ error: '工作组不存在或无权访问' });
 
+    // 同工作组内名字唯一：若撞名则自动加 (2)/(3)... 后缀；前端理应已展示建议名
+    const finalName = assetService.resolveUniqueAssetGroupName(projectId, String(name).trim());
+
     const result = await volcArkAssetRequest('CreateAssetGroup', {
-      Name: name, Description: description, GroupType: 'AIGC', ProjectName: projectName,
+      Name: finalName, Description: description, GroupType: 'AIGC', ProjectName: projectName,
     }, db);
 
     const volcGroupId = result?.Id;
@@ -5014,11 +5053,49 @@ app.post('/api/volc-native/asset-groups', authenticate, async (req, res) => {
       db.prepare(`
         INSERT OR REPLACE INTO asset_groups (project_id, volc_group_id, name, updated_at)
         VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-      `).run(projectId, volcGroupId, name);
+      `).run(projectId, volcGroupId, finalName);
     }
-    res.json({ success: true, data: result });
+    // 把最终生效的名字一并回给前端，方便它感知（即使前端没 check-name 也能拿到）
+    res.json({ success: true, data: { ...result, finalName } });
   } catch (e) {
     res.status(502).json({ error: e.message });
+  }
+});
+
+// PATCH /api/volc-native/asset-groups/:volcGroupId/rename — 重命名素材组（本地权威，火山不同步）
+// 入参: { name, projectId }；新名若撞名，自动加 (N) 后缀
+app.patch('/api/volc-native/asset-groups/:volcGroupId/rename', authenticate, (req, res) => {
+  try {
+    const volcGroupId = req.params.volcGroupId;
+    const projectId = Number(req.body?.projectId);
+    const rawName = String(req.body?.name || '').trim();
+    if (!volcGroupId) return res.status(400).json({ error: 'volcGroupId 必填' });
+    if (!rawName) return res.status(400).json({ error: 'name 必填' });
+    if (!Number.isFinite(projectId) || projectId <= 0) return res.status(400).json({ error: 'projectId 必填' });
+    const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
+    const project = projectService.getProjectById(projectId, req.user.id, isAdmin);
+    if (!project) return res.status(404).json({ error: '工作组不存在或无权访问' });
+
+    const db = getDatabase();
+    const row = db.prepare(
+      'SELECT id, name FROM asset_groups WHERE project_id = ? AND volc_group_id = ?'
+    ).get(projectId, volcGroupId);
+    if (!row) return res.status(404).json({ error: '该素材组未绑定到此工作组' });
+
+    // 自身名不变直接返回
+    if (row.name === rawName) {
+      return res.json({ success: true, data: { name: row.name, suggested: false } });
+    }
+
+    // 同项目内查重，撞名加 (N) 后缀；excludeId 排除自己
+    const finalName = assetService.resolveUniqueAssetGroupName(projectId, rawName, row.id);
+    db.prepare(
+      `UPDATE asset_groups SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+    ).run(finalName, row.id);
+
+    res.json({ success: true, data: { name: finalName, suggested: finalName !== rawName } });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
