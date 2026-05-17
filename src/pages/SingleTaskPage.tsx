@@ -1692,39 +1692,9 @@ export default function SingleTaskPage() {
           {state.currentProject && assetGroups.length > 0 && (
             <div className="bg-[#1c1f2e] rounded-2xl p-4 border border-gray-800">
               <div className="flex items-center justify-between mb-3">
-                <label className="text-sm font-bold text-gray-300">素材组 <span className="text-amber-400">（{availableAssets.length}）</span>{assetSyncing && <span className="ml-1 text-[10px] text-gray-500 animate-pulse">同步中…</span>}</label>
-                <span className="text-[10px] text-gray-500">↑↓ 切换组内 · ←→ 切换组 · Enter 插入</span>
+                <label className="text-sm font-bold text-gray-300">素材 <span className="text-amber-400">（{availableAssets.length}）</span>{assetSyncing && <span className="ml-1 text-[10px] text-gray-500 animate-pulse">同步中…</span>}</label>
+                <span className="text-[10px] text-gray-500">↑↓←→ 导航 · Enter 插入</span>
               </div>
-              {/* 组筛选 pill 行：点击某组后，@ 面板只列该组的素材，避免数据多时混杂 */}
-              {assetGroups.length > 1 && (
-                <div className="flex flex-wrap gap-1.5 mb-3">
-                  <button
-                    onClick={() => { setActiveAssetGroupKey(null); setPanelGroupIdx(0); }}
-                    className={`px-2.5 py-1 rounded-full text-[11px] transition-all ${
-                      activeAssetGroupKey === null
-                        ? 'bg-amber-500/30 text-amber-200 border border-amber-400'
-                        : 'bg-[#0d0f1a] text-gray-400 border border-gray-700 hover:border-amber-400/50'
-                    }`}
-                  >全部 · {availableAssets.length}</button>
-                  {assetGroups.map((grp, gIdx) => {
-                    const key = grp[0].volc_group_id || `_single_${grp[0].id}`;
-                    const label = grp[0].group_name || grp[0].name || '未命名';
-                    const active = activeAssetGroupKey === key;
-                    return (
-                      <button
-                        key={key}
-                        onClick={() => { setActiveAssetGroupKey(active ? null : key); setPanelGroupIdx(gIdx); }}
-                        title={label}
-                        className={`px-2.5 py-1 rounded-full text-[11px] transition-all max-w-[160px] truncate ${
-                          active
-                            ? 'bg-amber-500/30 text-amber-200 border border-amber-400'
-                            : 'bg-[#0d0f1a] text-gray-400 border border-gray-700 hover:border-amber-400/50'
-                        }`}
-                      >{label} · {grp.length}</button>
-                    );
-                  })}
-                </div>
-              )}
               <div
                 className="focus:outline-none"
                 tabIndex={0}
@@ -1760,10 +1730,7 @@ export default function SingleTaskPage() {
                 }}
               >
                 <div className="flex gap-3 overflow-x-auto pb-1 custom-scrollbar">
-                  {(activeAssetGroupKey
-                    ? assetGroups.filter((g) => (g[0].volc_group_id || `_single_${g[0].id}`) === activeAssetGroupKey)
-                    : assetGroups
-                  ).map((grp, gIdx) => {
+                  {assetGroups.map((grp, gIdx) => {
                     const key = grp[0].volc_group_id || `_single_${grp[0].id}`;
                     const subIdx = panelSubIdxMap[key] ?? 0;
                     const focused = gIdx === panelGroupIdx;
@@ -1837,12 +1804,7 @@ export default function SingleTaskPage() {
                   className="absolute left-0 bottom-full mb-2 w-full bg-[#0f111a] border border-purple-500/40 rounded-xl shadow-xl z-20 overflow-hidden"
                 >
                   <div className="px-3 py-2 text-[11px] text-gray-500 border-b border-gray-800 flex items-center justify-between">
-                    <span>
-                      选择引用素材
-                      {activeAssetGroupKey && (
-                        <span className="ml-2 text-amber-400/80">（已筛选当前素材组）</span>
-                      )}
-                    </span>
+                    <span>选择引用素材</span>
                     <span className="text-[10px]">↑↓←→ 导航 · Enter 选择</span>
                   </div>
                   <div className="flex flex-wrap gap-2 p-3 max-h-48 overflow-y-auto">

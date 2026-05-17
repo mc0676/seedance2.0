@@ -1941,6 +1941,36 @@ app.put('/api/projects/:id', authenticate, (req, res) => {
   }
 });
 
+// POST /api/projects/:id/rename - 重命名工作组
+app.post('/api/projects/:id/rename', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const isAdmin = ['admin','super_admin'].includes(req.user.role);
+    const project = projectService.getProjectById(req.params.id, req.user.id, isAdmin);
+    if (!project) {
+      return res.status(404).json({ error: '项目不存在或无权访问' });
+    }
+    if (!isAdmin && project.user_id !== req.user.id) {
+      return res.status(403).json({ error: '无权修改此项目' });
+    }
+    const { name } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: '名称不能为空' });
+    }
+    // 检查同一用户下是否已有同名项目
+    const dup = db.prepare(
+      'SELECT id FROM projects WHERE user_id = ? AND name = ? AND id != ? AND deleted_at IS NULL'
+    ).get(project.user_id, name.trim(), req.params.id);
+    if (dup) {
+      return res.status(409).json({ error: '同名工作组已存在' });
+    }
+    const updated = projectService.updateProject(req.params.id, { name: name.trim() });
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // DELETE /api/projects/:id - 删除项目
 app.delete('/api/projects/:id', authenticate, (req, res) => {
   try {
@@ -2961,6 +2991,215 @@ app.get('/api/admin/stats', authenticate, requireAdmin, async (req, res) => {
   try {
     const stats = await authService.getSystemStats();
     res.json({ success: true, data: stats });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ── 管理员：积分消耗分析面板 ────────────────────────────────────────
+
+// GET /api/admin/credits/daily-trend - 每日积分消耗趋势（读预聚合表，O(30行)）
+app.get('/api/admin/credits/daily-trend', authenticate, requireAdmin, (req, res) => {
+  try {
+    const db = getDatabase();
+    const days = Math.min(90, Math.max(7, parseInt(req.query.days) || 30));
+    const data = db.prepare(`
+      SELECT a.day,
+             a.consumed,
+             (SELECT COUNT(*) FROM analytics_daily_users u WHERE u.day = a.day) AS active_users,
+             a.total_calls
+      FROM analytics_daily a
+      WHERE a.day >= date('now', ? || ' days')
+      ORDER BY a.day ASC
+    `).all(`-${days}`);
+    res.json({ success: true, data });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/admin/credits/today-ranking - 当日消耗排行
+app.get('/api/admin/credits/today-ranking', authenticate, requireAdmin, (req, res) => {
+  try {
+    const db = getDatabase();
+    const rows = db.prepare(`
+      SELECT u.id, u.email, u.name,
+             COALESCE((SELECT d.name FROM departments d WHERE d.id = u.department_id), '') AS department,
+             SUM(ul.credits_cost) AS total_credits,
+             COUNT(*) AS call_count
+      FROM usage_logs ul
+      JOIN users u ON u.id = ul.user_id
+      WHERE date(ul.created_at) = date('now') AND ul.status = 'success'
+      GROUP BY u.id
+      ORDER BY total_credits DESC
+      LIMIT 50
+    `).all();
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/admin/credits/details - 消耗明细查询
+app.get('/api/admin/credits/details', authenticate, requireAdmin, (req, res) => {
+  try {
+    const db = getDatabase();
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize) || 20));
+    const offset = (page - 1) * pageSize;
+    const { userId, date, action, model } = req.query;
+
+    let where = 'WHERE 1=1';
+    const params = [];
+    if (userId) { where += ' AND ul.user_id = ?'; params.push(parseInt(userId)); }
+    if (date) { where += " AND date(ul.created_at) = ?"; params.push(date); }
+    if (action) { where += ' AND ul.action = ?'; params.push(action); }
+    if (model) { where += ' AND ul.model LIKE ?'; params.push(`%${model}%`); }
+
+    const total = db.prepare(`SELECT COUNT(*) as count FROM usage_logs ul ${where}`).get(...params).count;
+    const rows = db.prepare(`
+      SELECT ul.id, ul.user_id, ul.task_id, ul.model, ul.action, ul.credits_cost, ul.status,
+             ul.error_message, ul.created_at,
+             u.email, u.name,
+             COALESCE((SELECT d.name FROM departments d WHERE d.id = u.department_id), '') AS department
+      FROM usage_logs ul
+      JOIN users u ON u.id = ul.user_id
+      ${where}
+      ORDER BY ul.created_at DESC
+      LIMIT ? OFFSET ?
+    `).all(...params, pageSize, offset);
+
+    res.json({ success: true, data: { rows, pagination: { page, pageSize, total, totalPages: Math.ceil(total / pageSize) } } });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/admin/credits/group-summary - 按小组汇总消耗（支持下钻用户明细）
+app.get('/api/admin/credits/group-summary', authenticate, requireAdmin, (req, res) => {
+  try {
+    const db = getDatabase();
+    const { group, days } = req.query;
+    const ndays = Math.min(90, Math.max(1, parseInt(days) || 7));
+
+    if (group) {
+      // 下钻：指定小组的用户消耗明细
+      const rows = db.prepare(`
+        SELECT u.id, u.email, u.name,
+               SUM(ul.credits_cost) AS total_credits,
+               COUNT(*) AS call_count
+        FROM usage_logs ul
+        JOIN users u ON u.id = ul.user_id
+        JOIN departments d ON d.id = u.department_id
+        WHERE d.name = ? AND ul.created_at >= date('now', ? || ' days') AND ul.status = 'success'
+        GROUP BY u.id
+        ORDER BY total_credits DESC
+        LIMIT 100
+      `).all(group, `-${ndays}`);
+      res.json({ success: true, data: rows, group });
+    } else {
+      // 第一级：按小组汇总
+      const rows = db.prepare(`
+        SELECT COALESCE(d.name, '未设置') AS department,
+               COUNT(DISTINCT u.id) AS user_count,
+               SUM(ul.credits_cost) AS total_credits,
+               COUNT(*) AS call_count
+        FROM usage_logs ul
+        JOIN users u ON u.id = ul.user_id
+        LEFT JOIN departments d ON d.id = u.department_id
+        WHERE ul.created_at >= date('now', ? || ' days') AND ul.status = 'success'
+        GROUP BY d.name
+        ORDER BY total_credits DESC
+      `).all(`-${ndays}`);
+      res.json({ success: true, data: rows });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/admin/credits/project-consumption - 工作组资源消耗排行
+app.get('/api/admin/credits/project-consumption', authenticate, requireAdmin, (req, res) => {
+  try {
+    const db = getDatabase();
+    const days = Math.min(90, Math.max(7, parseInt(req.query.days) || 30));
+    const rows = db.prepare(`
+      SELECT p.id, p.name,
+             COUNT(DISTINCT ul.user_id) AS user_count,
+             SUM(ul.credits_cost) AS total_credits,
+             COUNT(*) AS task_count
+      FROM usage_logs ul
+      JOIN tasks t ON t.id = ul.task_id
+      JOIN projects p ON p.id = t.project_id
+      WHERE ul.created_at >= date('now', ? || ' days') AND ul.status = 'success'
+        AND t.deleted_at IS NULL AND p.id IS NOT NULL
+      GROUP BY p.id
+      ORDER BY total_credits DESC
+      LIMIT 30
+    `).all(`-${days}`);
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/admin/credits/failure-analysis - 失败分析
+app.get('/api/admin/credits/failure-analysis', authenticate, requireAdmin, (req, res) => {
+  try {
+    const db = getDatabase();
+    const days = Math.min(90, Math.max(1, parseInt(req.query.days) || 7));
+    const rows = db.prepare(`
+      SELECT ul.model, ul.action, ul.error_message,
+             COUNT(*) AS fail_count,
+             SUM(ul.credits_cost) AS wasted_credits
+      FROM usage_logs ul
+      WHERE ul.status = 'failed'
+        AND ul.created_at >= date('now', ? || ' days')
+      GROUP BY ul.model, ul.action, ul.error_message
+      ORDER BY fail_count DESC
+      LIMIT 30
+    `).all(`-${days}`);
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/admin/users/activity - 用户活跃度（读预聚合表 + 优化休眠查询）
+app.get('/api/admin/users/activity', authenticate, requireAdmin, (req, res) => {
+  try {
+    const db = getDatabase();
+    const days = Math.min(90, Math.max(7, parseInt(req.query.days) || 30));
+
+    // 每日活跃用户数（读预聚合表）
+    const dailyActive = db.prepare(`
+      SELECT day, COUNT(*) AS active_users
+      FROM analytics_daily_users
+      WHERE day >= date('now', ? || ' days')
+      GROUP BY day
+      ORDER BY day ASC
+    `).all(`-${days}`);
+
+    // 休眠用户：单次 LEFT JOIN 替代每行子查询
+    const dormant = db.prepare(`
+      SELECT u.id, u.email, u.name,
+             COALESCE(d.name, '') AS department,
+             COALESCE(last_active, u.created_at) AS last_active,
+             u.created_at
+      FROM users u
+      LEFT JOIN departments d ON d.id = u.department_id
+      LEFT JOIN (
+        SELECT user_id, MAX(created_at) AS last_active
+        FROM usage_logs
+        GROUP BY user_id
+      ) ul ON ul.user_id = u.id
+      WHERE u.status = 'active'
+        AND (ul.last_active IS NULL OR ul.last_active < date('now', ? || ' days'))
+      ORDER BY last_active ASC
+      LIMIT 100
+    `).all(`-${days}`);
+
+    res.json({ success: true, data: { dailyActive, dormant } });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

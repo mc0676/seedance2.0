@@ -160,7 +160,7 @@ export default function DownloadManagementPage() {
       if (showSummary) {
         alert(`刷新完成：已更新 ${result.refreshed} 个任务，${result.generating || 0} 个任务仍在生成中`);
       } else if (showCompletedNotice && result.refreshed > 0) {
-        alert(`有 ${result.refreshed} 个视频已生成完成！`);
+        alert(`有 ${result.refreshed} 个任务已生成完成！`);
       }
 
       return result;
@@ -426,6 +426,8 @@ export default function DownloadManagementPage() {
         await downloadService.deleteAudioGeneration(task.id);
       } else if (task.model_type === 'enhancement') {
         await downloadService.deleteEnhancement(task.id);
+      } else if (task.model_type === 'happyhorse') {
+        await downloadService.deleteHappyhorse(task.id);
       } else {
         await downloadService.deleteTask(task.id);
       }

@@ -197,7 +197,7 @@ export async function changePassword(oldPassword: string, newPassword: string): 
 }
 
 /**
- * 更新自己的姓名 / 部门
+ * 更新自己的姓名 / 小组
  *   - name: 长度 2~20，允许重名
  *   - department: 字符串，提交时后端 INSERT OR IGNORE 进字典表；首次填后不可自助改
  * 字段不传 → 该字段不更新。
@@ -217,7 +217,7 @@ export async function updateMyProfile(payload: { name?: string; department?: str
   return user;
 }
 
-/** 部门字典模糊查询（用于下拉候选） */
+/** 小组字典模糊查询（用于下拉候选） */
 export async function listDepartments(q: string = ''): Promise<Array<{ id: number; name: string }>> {
   const params = new URLSearchParams();
   if (q) params.set('q', q);
@@ -226,12 +226,12 @@ export async function listDepartments(q: string = ''): Promise<Array<{ id: numbe
   });
   const data = await response.json();
   if (!response.ok || !data.success) {
-    throw new Error(data.error || '加载部门列表失败');
+    throw new Error(data.error || '加载小组列表失败');
   }
   return data.data.items || [];
 }
 
-/** 管理员代填 / 修改某用户的姓名 + 部门 */
+/** 管理员代填 / 修改某用户的姓名 + 小组 */
 export async function updateUserProfileByAdmin(
   userId: number,
   payload: { name?: string | null; department?: string | null },
@@ -247,7 +247,7 @@ export async function updateUserProfileByAdmin(
   }
 }
 
-// ── 管理员：部门字典 CRUD ───────────────────────────────────────────
+// ── 管理员：小组字典 CRUD ───────────────────────────────────────────
 export interface AdminDepartment {
   id: number;
   name: string;
@@ -258,7 +258,7 @@ export interface AdminDepartment {
 export async function listDepartmentsAdmin(): Promise<AdminDepartment[]> {
   const res = await fetch(`${API_BASE}/admin/departments`, { headers: getAuthHeaders() });
   const data = await res.json();
-  if (!res.ok || !data.success) throw new Error(data.error || '加载部门列表失败');
+  if (!res.ok || !data.success) throw new Error(data.error || '加载小组列表失败');
   return data.data.items || [];
 }
 
@@ -269,7 +269,7 @@ export async function createDepartmentAdmin(name: string): Promise<{ id: number;
     body: JSON.stringify({ name }),
   });
   const data = await res.json();
-  if (!res.ok || !data.success) throw new Error(data.error || '新建部门失败');
+  if (!res.ok || !data.success) throw new Error(data.error || '新建小组失败');
   return data.data;
 }
 
@@ -807,3 +807,104 @@ export const deleteModelPricing = (modelKey: string) =>
   adminFetch<unknown>(`/admin/model-pricing/${encodeURIComponent(modelKey)}`, {
     method: 'DELETE',
   });
+
+// ── 管理员：积分消耗分析面板 ───────────────────────────────────────
+
+export interface DailyTrendItem {
+  day: string;
+  consumed: number;
+  active_users: number;
+  total_calls: number;
+}
+
+export interface TodayRankingItem {
+  id: number;
+  email: string;
+  name: string | null;
+  department: string;
+  total_credits: number;
+  call_count: number;
+}
+
+export interface CreditDetailItem {
+  id: number;
+  user_id: number;
+  task_id: number | null;
+  model: string;
+  action: string;
+  credits_cost: number;
+  status: string;
+  error_message: string | null;
+  created_at: string;
+  email: string;
+  name: string | null;
+  department: string;
+}
+
+export interface GroupSummaryItem {
+  department: string;
+  user_count: number;
+  total_credits: number;
+  call_count: number;
+}
+
+export interface ProjectConsumptionItem {
+  id: number;
+  name: string;
+  user_count: number;
+  total_credits: number;
+  task_count: number;
+}
+
+export interface FailureItem {
+  model: string;
+  action: string;
+  error_message: string | null;
+  fail_count: number;
+  wasted_credits: number;
+}
+
+export interface UserActivityData {
+  dailyActive: Array<{ day: string; active_users: number }>;
+  dormant: Array<{
+    id: number;
+    email: string;
+    name: string | null;
+    department: string;
+    last_active: string;
+    created_at: string;
+  }>;
+}
+
+export const fetchDailyTrend = (days = 30) =>
+  adminFetch<DailyTrendItem[]>(`/admin/credits/daily-trend?days=${days}`);
+
+export const fetchTodayRanking = () =>
+  adminFetch<TodayRankingItem[]>('/admin/credits/today-ranking');
+
+export const fetchCreditDetails = (params: { page?: number; pageSize?: number; userId?: number; date?: string; action?: string; model?: string } = {}) => {
+  const sp = new URLSearchParams();
+  if (params.page) sp.set('page', String(params.page));
+  if (params.pageSize) sp.set('pageSize', String(params.pageSize));
+  if (params.userId) sp.set('userId', String(params.userId));
+  if (params.date) sp.set('date', params.date);
+  if (params.action) sp.set('action', params.action);
+  if (params.model) sp.set('model', params.model);
+  return adminFetch<{ rows: CreditDetailItem[]; pagination: { page: number; pageSize: number; total: number; totalPages: number } }>(`/admin/credits/details?${sp.toString()}`);
+};
+
+export const fetchGroupSummary = (days = 7, group?: string) => {
+  const sp = new URLSearchParams();
+  sp.set('days', String(days));
+  if (group) sp.set('group', group);
+  return adminFetch<GroupSummaryItem[] | TodayRankingItem[]>(`/admin/credits/group-summary?${sp.toString()}`);
+};
+
+export const fetchProjectConsumption = (days = 30) =>
+  adminFetch<ProjectConsumptionItem[]>(`/admin/credits/project-consumption?days=${days}`);
+
+export const fetchFailureAnalysis = (days = 7) =>
+  adminFetch<FailureItem[]>(`/admin/credits/failure-analysis?days=${days}`);
+
+export const fetchUserActivity = (days = 30) =>
+  adminFetch<UserActivityData>(`/admin/users/activity?days=${days}`);

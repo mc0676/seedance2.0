@@ -1,4 +1,4 @@
-import { useState, useEffect, Fragment } from 'react';
+import { useState, useEffect, useRef, Fragment } from 'react';
 import { useApp } from '../context/AppContext';
 import { formatDateTime, formatDate, useUserTimezone } from '../utils/datetime';
 import {
@@ -44,6 +44,7 @@ import {
   type AdminDepartment,
 } from '../services/authService';
 import DepartmentSelect from '../components/DepartmentSelect';
+import AnalyticsPanels from '../components/AnalyticsPanels';
 import type { User, FeatureKey, ModelPricing } from '../types';
 import { UsersIcon, ShieldIcon, CheckIcon, SparkleIcon, PlusIcon } from '../components/Icons';
 
@@ -54,6 +55,26 @@ interface SystemStats {
   totalTasks: number;
   todayCheckIns: number;
   totalCreditsIssued: number;
+}
+
+function StyledCheckbox({ checked, indeterminate, onChange }: { checked: boolean; indeterminate?: boolean; onChange: () => void }) {
+  return (
+    <div onClick={onChange} className="cursor-pointer">
+      {indeterminate ? (
+        <div className="w-5 h-5 rounded-lg bg-purple-500/30 border-2 border-purple-400 flex items-center justify-center transition-all">
+          <div className="w-2.5 h-0.5 rounded-full bg-purple-400" />
+        </div>
+      ) : checked ? (
+        <div className="w-5 h-5 rounded-lg bg-gradient-to-br from-purple-500 to-indigo-500 flex items-center justify-center shadow-md shadow-purple-500/30 transition-all scale-110">
+          <svg viewBox="0 0 12 10" className="w-3 h-3" fill="none">
+            <path d="M1.5 5L4.5 8L10.5 1.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </div>
+      ) : (
+        <div className="w-5 h-5 rounded-lg border-2 border-dashed border-gray-600 bg-[#1c1f2e] hover:border-purple-400/60 transition-all" />
+      )}
+    </div>
+  );
 }
 
 interface ActivationCode {
@@ -128,10 +149,10 @@ async function toggleUnlimitedCredits(userId: number, unlimited: boolean): Promi
 }
 
 /**
- * 部门管理卡片：列表 + 新建 + 改名 + 删除。
+ * 小组管理卡片：列表 + 新建 + 改名 + 删除。
  *
  * 任何 CRUD 后调 onChanged 让上层（如用户编辑模态里的 DepartmentSelect）刷新下拉。
- * 删除部门会触发后端 ON DELETE SET NULL，关联用户被解绑后下次登录会被 Gate 拦截要求重选。
+ * 删除小组会触发后端 ON DELETE SET NULL，关联用户被解绑后下次登录会被 Gate 拦截要求重选。
  */
 function DepartmentManagementCard({ onChanged }: { onChanged: () => void }) {
   const [items, setItems] = useState<AdminDepartment[]>([]);
@@ -182,8 +203,8 @@ function DepartmentManagementCard({ onChanged }: { onChanged: () => void }) {
 
   const handleDelete = async (d: AdminDepartment) => {
     const tip = d.user_count > 0
-      ? `部门「${d.name}」当前有 ${d.user_count} 个用户。删除后这些用户的部门字段会被清空，下次登录需重新选择。\n确认删除？`
-      : `确认删除部门「${d.name}」？`;
+      ? `小组「${d.name}」当前有 ${d.user_count} 个用户。删除后这些用户的小组字段会被清空，下次登录需重新选择。\n确认删除？`
+      : `确认删除小组「${d.name}」？`;
     if (!window.confirm(tip)) return;
     try {
       const out = await deleteDepartmentAdmin(d.id);
@@ -198,7 +219,7 @@ function DepartmentManagementCard({ onChanged }: { onChanged: () => void }) {
   return (
     <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-8">
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xl font-semibold text-white">部门管理</h2>
+        <h2 className="text-xl font-semibold text-white">小组管理</h2>
         <button onClick={() => void reload()} className="text-xs text-gray-400 hover:text-white">刷新</button>
       </div>
 
@@ -209,21 +230,21 @@ function DepartmentManagementCard({ onChanged }: { onChanged: () => void }) {
           maxLength={60}
           onChange={(e) => setNewName(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') void handleCreate(); }}
-          placeholder="新部门名（≤60 字符）"
+          placeholder="新小组名（≤60 字符）"
           className="flex-1 px-3 py-2 bg-[#0f111a] border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-purple-500"
         />
         <button
           onClick={handleCreate}
           disabled={!newName.trim() || creating}
           className="px-4 py-2 bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 disabled:opacity-40 rounded-lg text-sm font-medium"
-        >{creating ? '新建中…' : '新建部门'}</button>
+        >{creating ? '新建中…' : '新建小组'}</button>
       </div>
 
       {/* 列表 */}
       {loading && items.length === 0 ? (
         <div className="text-xs text-gray-500">加载中…</div>
       ) : items.length === 0 ? (
-        <div className="text-xs text-gray-500">暂无部门，从上方新建吧</div>
+        <div className="text-xs text-gray-500">暂无小组，从上方新建吧</div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
           {items.map((d) => (
@@ -263,7 +284,7 @@ function DepartmentManagementCard({ onChanged }: { onChanged: () => void }) {
       )}
 
       <p className="text-[10px] text-gray-500 mt-3">
-        提示：删除部门后，该部门下的所有用户会被解绑（部门字段置空），下次登录会被引导重新选择部门。
+        提示：删除小组后，该小组下的所有用户会被解绑（小组字段置空），下次登录会被引导重新选择小组。
       </p>
     </div>
   );
@@ -546,10 +567,10 @@ export default function AdminPage() {
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [editCredits, setEditCredits] = useState('');
   const [editOperation, setEditOperation] = useState<'set' | 'add' | 'subtract'>('set');
-  // 编辑用户的姓名 / 部门（管理员代填）
+  // 编辑用户的姓名 / 小组（管理员代填）
   const [editUserName, setEditUserName] = useState('');
   const [editUserDepartment, setEditUserDepartment] = useState('');
-  // 部门管理 CRUD 后用这个 key 触发 DepartmentSelect 重新拉一遍下拉列表
+  // 小组管理 CRUD 后用这个 key 触发 DepartmentSelect 重新拉一遍下拉列表
   const [departmentRefreshKey, setDepartmentRefreshKey] = useState(0);
 
   // 激活码管理
@@ -558,6 +579,36 @@ export default function AdminPage() {
   const [editingCodeId, setEditingCodeId] = useState<number | null>(null);
   const [editingCodeData, setEditingCodeData] = useState({ maxUses: 1, note: '', creditsValue: 0 });
   const [selectedCodeIds, setSelectedCodeIds] = useState<number[]>([]);
+  const codeDragStartRef = useRef<number | null>(null);
+  const codeDragSelectingRef = useRef(false);
+
+  const handleCodeRowMouseDown = (index: number, id: number) => {
+    codeDragStartRef.current = index;
+    codeDragSelectingRef.current = !selectedCodeIds.includes(id);
+    setSelectedCodeIds((prev) =>
+      codeDragSelectingRef.current
+        ? [...new Set([...prev, id])]
+        : prev.filter((x) => x !== id)
+    );
+  };
+
+  const handleCodeRowMouseEnter = (index: number) => {
+    if (codeDragStartRef.current === null) return;
+    const start = Math.min(codeDragStartRef.current, index);
+    const end = Math.max(codeDragStartRef.current, index);
+    const rangeIds = codes.slice(start, end + 1).map((c) => c.id);
+    setSelectedCodeIds((prev) =>
+      codeDragSelectingRef.current
+        ? [...new Set([...prev, ...rangeIds])]
+        : prev.filter((x) => !rangeIds.includes(x))
+    );
+  };
+
+  useEffect(() => {
+    const stopDrag = () => { codeDragStartRef.current = null; };
+    document.addEventListener('mouseup', stopDrag);
+    return () => document.removeEventListener('mouseup', stopDrag);
+  }, []);
 
   // 系统配置
   const [registrationEnabled, setRegistrationEnabled] = useState(true);
@@ -603,11 +654,11 @@ export default function AdminPage() {
     } catch (err) { alert(err instanceof Error ? err.message : '删除失败'); }
   };
 
-  const handleSelectAllCodes = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.checked) {
-      setSelectedCodeIds(codes.map((c) => c.id));
-    } else {
+  const handleSelectAllCodes = () => {
+    if (selectedCodeIds.length === codes.length) {
       setSelectedCodeIds([]);
+    } else {
+      setSelectedCodeIds(codes.map((c) => c.id));
     }
   };
 
@@ -993,7 +1044,7 @@ export default function AdminPage() {
   const handleUpdateCredits = async () => {
     if (!selectedUser) return;
 
-    // 统一保存：姓名 / 部门 / 积分。任意一项有改动才调对应 API。
+    // 统一保存：姓名 / 小组 / 积分。任意一项有改动才调对应 API。
     const trimmedName = editUserName.trim();
     const trimmedDept = editUserDepartment.trim();
     const origName = (selectedUser.name || '').trim();
@@ -1074,6 +1125,7 @@ export default function AdminPage() {
     </div>
   );
 
+
   return (
     <div className="min-h-screen bg-[#0f111a] p-6">
       <div className="max-w-7xl mx-auto">
@@ -1095,6 +1147,8 @@ export default function AdminPage() {
           </div>
         )}
 
+        {/* ═══════════ 消耗分析面板 ═══════════ */}
+        <AnalyticsPanels />
 
         {/* 激活码管理 */}
         <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl overflow-hidden mb-8">
@@ -1163,7 +1217,11 @@ export default function AdminPage() {
                 <thead className="bg-[#0f111a]">
                   <tr>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase w-10">
-                      <input type="checkbox" onChange={handleSelectAllCodes} checked={selectedCodeIds.length === codes.length && codes.length > 0} className="rounded" />
+                      <StyledCheckbox
+                        checked={selectedCodeIds.length === codes.length && codes.length > 0}
+                        indeterminate={selectedCodeIds.length > 0 && selectedCodeIds.length < codes.length}
+                        onChange={handleSelectAllCodes}
+                      />
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase">激活码</th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase">积分变化</th>
@@ -1174,18 +1232,19 @@ export default function AdminPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-800">
-                  {codes.map((c) => (
-                    <tr key={c.id} className="hover:bg-[#0f111a]/50">
+                  {codes.map((c, idx) => (
+                    <tr key={c.id} className="hover:bg-[#0f111a]/50"
+                      onMouseDown={() => handleCodeRowMouseDown(idx, c.id)}
+                      onMouseEnter={() => handleCodeRowMouseEnter(idx)}
+                    >
                       <td className="px-6 py-4 text-sm">
-                        <input
-                          type="checkbox"
+                        <StyledCheckbox
                           checked={selectedCodeIds.includes(c.id)}
                           onChange={() => {
                             setSelectedCodeIds((prev) =>
                               prev.includes(c.id) ? prev.filter((id) => id !== c.id) : [...prev, c.id]
                             );
                           }}
-                          className="rounded"
                         />
                       </td>
                       <td className="px-6 py-4 text-sm font-mono text-white">{c.code}</td>
@@ -1325,7 +1384,7 @@ export default function AdminPage() {
                       <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">ID</th>
                       <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">邮箱</th>
                       <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">姓名</th>
-                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">部门</th>
+                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">小组</th>
                       <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">角色</th>
                       <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">状态</th>
                       <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">积分</th>
@@ -1460,7 +1519,7 @@ export default function AdminPage() {
           )}
         </div>
 
-        {/* 部门管理（紧邻用户列表） */}
+        {/* 小组管理（紧邻用户列表） */}
         <DepartmentManagementCard onChanged={() => setDepartmentRefreshKey((k) => k + 1)} />
 
         {/* 系统设置（仅系统管理员） */}
@@ -2284,9 +2343,9 @@ export default function AdminPage() {
             <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 w-full max-w-md">
               <h3 className="text-xl font-semibold text-white mb-6">编辑用户 - {selectedUser.email}</h3>
               <div className="space-y-4">
-                {/* 姓名 + 部门：管理员代填 / 修正 */}
+                {/* 姓名 + 小组：管理员代填 / 修正 */}
                 <div className="border border-amber-700/30 bg-amber-500/5 rounded-xl p-3 space-y-3">
-                  <label className="text-sm font-medium text-amber-300">姓名 / 部门</label>
+                  <label className="text-sm font-medium text-amber-300">姓名 / 小组</label>
                   <div>
                     <label className="block text-[11px] text-gray-400 mb-1">姓名（2~20 字符，留空可清除）</label>
                     <input
@@ -2298,14 +2357,14 @@ export default function AdminPage() {
                     />
                   </div>
                   <div>
-                    <label className="block text-[11px] text-gray-400 mb-1">部门（如需新增请到下方「部门管理」）</label>
+                    <label className="block text-[11px] text-gray-400 mb-1">小组（如需新增请到下方「小组管理」）</label>
                     <DepartmentSelect
                       value={editUserDepartment}
                       onChange={setEditUserDepartment}
                       refreshKey={departmentRefreshKey}
                     />
                   </div>
-                  <p className="text-[10px] text-gray-500">点击下方「保存」按钮统一提交姓名、部门、积分等所有改动。</p>
+                  <p className="text-[10px] text-gray-500">点击下方「保存」按钮统一提交姓名、小组、积分等所有改动。</p>
                 </div>
 
                 <div>

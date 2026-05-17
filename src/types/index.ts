@@ -20,7 +20,7 @@ export interface User {
   unlimitedCredits?: boolean;
   /** 用户姓名（首次登录补填，2~20 字符） */
   name?: string | null;
-  /** 用户部门（首次登录补填，从字典表挑选或新建；仅管理员可改） */
+  /** 用户小组（首次登录补填，从字典表挑选或新建；仅管理员可改） */
   department?: string | null;
   createdAt?: string;
   updatedAt?: string;

@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import nodemailer from 'nodemailer';
 import { getDatabase } from '../database/index.js';
 import { applyDefaultPermissions, getUserPermissions } from './permissionService.js';
+import { createProject } from './projectService.js';
 
 /**
  * 用户认证服务
@@ -204,6 +205,28 @@ export async function registerUser(email, password, emailCode) {
     INSERT INTO sessions (session_id, user_id, expires_at)
     VALUES (?, ?, ?)
   `).run(sessionId, newUserId, expiresAt.toISOString());
+
+  // 自动创建初始工作组：名称 = 邮箱#4位随机码（1-9,a-z），重名则换码
+  const CHARS = '123456789abcdefghijklmnopqrstuvwxyz';
+  function randomSuffix() {
+    let s = '';
+    for (let i = 0; i < 4; i++) s += CHARS[Math.floor(Math.random() * CHARS.length)];
+    return s;
+  }
+  let projectName;
+  let attempt = 0;
+  do {
+    projectName = `${email}#${randomSuffix()}`;
+    attempt++;
+    // 检查重名
+    const dup = db.prepare('SELECT id FROM projects WHERE name = ?').get(projectName);
+    if (!dup) break;
+  } while (attempt < 20);
+  if (attempt >= 20) {
+    // 极端情况：20次全重名，加时间戳兜底
+    projectName = `${email}#${Date.now().toString(36)}`;
+  }
+  createProject({ name: projectName, description: '默认工作组', settings: {}, user_id: newUserId });
 
   // 获取用户信息（JOIN departments 拿到 name）
   const user = db.prepare(`

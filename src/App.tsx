@@ -1,9 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AppProvider } from './context/AppContext';
-import { useApp } from './context/AppContext';
 import Sidebar from './components/Sidebar';
-import NoProjectGate from './components/NoProjectGate';
 import ProfileCompletionGate from './components/ProfileCompletionGate';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
@@ -71,10 +69,8 @@ function MainLayout({
   onUserUpdated: (u: User) => void;
   children: React.ReactNode;
 }) {
-  const { state } = useApp();
   const needsProfile = !!currentUser
     && (!currentUser.name?.trim() || !currentUser.department?.trim());
-  const needsProject = !state.currentProject;
 
   return (
     <div className="min-h-screen bg-[#0f111a]">
@@ -82,11 +78,10 @@ function MainLayout({
       <main className="lg:pl-80 pt-16 lg:pt-0 min-h-screen">
         {children}
       </main>
-      {/* 优先级：未填资料 > 未建/选项目；二者互斥渲染，避免 NoProjectGate 露出来 */}
+      {/* 未填资料时显示补填弹窗 */}
       {needsProfile && currentUser && (
         <ProfileCompletionGate user={currentUser} onSaved={onUserUpdated} />
       )}
-      {!needsProfile && needsProject && <NoProjectGate />}
     </div>
   );
 }

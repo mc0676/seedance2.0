@@ -56,7 +56,7 @@ export default function ProfileCompletionGate({ user, onSaved }: ProfileCompleti
           </div>
           <h2 className="text-xl font-semibold text-white mb-2">完善个人信息</h2>
           <p className="text-gray-400 text-sm">
-            首次使用本平台需补充姓名与部门，便于团队协作。<br />
+            首次使用本平台需补充姓名与小组，便于团队协作。<br />
             邮箱：<span className="text-gray-300">{user.email}</span>
           </p>
         </div>
@@ -74,15 +74,15 @@ export default function ProfileCompletionGate({ user, onSaved }: ProfileCompleti
             />
           </div>
           <div>
-            <label className="block text-sm text-gray-300 mb-1">部门 <span className="text-red-400">*</span></label>
+            <label className="block text-sm text-gray-300 mb-1">小组 <span className="text-red-400">*</span></label>
             <DepartmentCombobox
               value={department}
               onChange={setDepartment}
-              placeholder="搜索已有部门，或输入新部门按 Enter 创建"
+              placeholder="搜索已有小组，或输入新小组按 Enter 创建"
             />
             <p className="text-[10px] text-gray-500 mt-1">
-              提交后该部门将加入字典库供其他同事选用。<br />
-              <span className="text-amber-400/80">注意：部门一经提交，后续修改需联系管理员。</span>
+              提交后该小组将加入字典库供其他同事选用。<br />
+              <span className="text-amber-400/80">注意：小组一经提交，后续修改需联系管理员。</span>
             </p>
           </div>
 

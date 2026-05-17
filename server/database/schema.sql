@@ -174,6 +174,66 @@ CREATE INDEX IF NOT EXISTS idx_usage_logs_user_id ON usage_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_usage_logs_task_id ON usage_logs(task_id);
 CREATE INDEX IF NOT EXISTS idx_usage_logs_created_at ON usage_logs(created_at DESC);
 
+-- 消耗分析预聚合表（由触发器自动维护，免去实时 GROUP BY 全表扫描）
+CREATE TABLE IF NOT EXISTS analytics_daily (
+  day           TEXT PRIMARY KEY,   -- 'YYYY-MM-DD'
+  consumed      INTEGER DEFAULT 0,
+  total_calls   INTEGER DEFAULT 0,
+  failed_calls  INTEGER DEFAULT 0,
+  wasted_credits INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_analytics_daily_day ON analytics_daily(day DESC);
+
+-- 每日活跃用户辅助表（触发器维护唯一用户-日对）
+CREATE TABLE IF NOT EXISTS analytics_daily_users (
+  day     TEXT NOT NULL,
+  user_id INTEGER NOT NULL,
+  PRIMARY KEY (day, user_id)
+);
+
+-- usage_logs 写入触发器 → 自动增量更新预聚合
+CREATE TRIGGER IF NOT EXISTS trg_usage_logs_analytics
+AFTER INSERT ON usage_logs
+BEGIN
+  INSERT INTO analytics_daily (day, consumed, total_calls, failed_calls, wasted_credits)
+  VALUES (
+    date(NEW.created_at),
+    CASE WHEN NEW.status = 'success' THEN NEW.credits_cost ELSE 0 END,
+    1,
+    CASE WHEN NEW.status = 'failed' THEN 1 ELSE 0 END,
+    CASE WHEN NEW.status = 'failed' THEN NEW.credits_cost ELSE 0 END
+  )
+  ON CONFLICT(day) DO UPDATE SET
+    consumed      = consumed + CASE WHEN NEW.status = 'success' THEN NEW.credits_cost ELSE 0 END,
+    total_calls   = total_calls + 1,
+    failed_calls  = failed_calls + CASE WHEN NEW.status = 'failed' THEN 1 ELSE 0 END,
+    wasted_credits = wasted_credits + CASE WHEN NEW.status = 'failed' THEN NEW.credits_cost ELSE 0 END;
+
+  INSERT OR IGNORE INTO analytics_daily_users (day, user_id)
+  VALUES (date(NEW.created_at), NEW.user_id);
+END;
+
+-- 历史数据回填（已有数据一次性写入预聚合表）
+INSERT OR IGNORE INTO analytics_daily (day, consumed, total_calls, failed_calls, wasted_credits)
+SELECT
+  date(created_at) AS day,
+  SUM(CASE WHEN status = 'success' THEN credits_cost ELSE 0 END) AS consumed,
+  COUNT(*) AS total_calls,
+  SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_calls,
+  SUM(CASE WHEN status = 'failed' THEN credits_cost ELSE 0 END) AS wasted_credits
+FROM usage_logs
+GROUP BY day
+ON CONFLICT(day) DO UPDATE SET
+  consumed      = excluded.consumed,
+  total_calls   = excluded.total_calls,
+  failed_calls  = excluded.failed_calls,
+  wasted_credits = excluded.wasted_credits;
+
+-- 回填用户活跃度
+INSERT OR IGNORE INTO analytics_daily_users (day, user_id)
+SELECT DISTINCT date(created_at) AS day, user_id
+FROM usage_logs;
+
 -- 任务素材表
 CREATE TABLE IF NOT EXISTS task_assets (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

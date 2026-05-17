@@ -401,8 +401,31 @@ export default function ProjectWorkspacePage() {
     <div className="p-6 max-w-6xl mx-auto">
       {/* Header */}
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-white">工作组</h1>
-        <p className="text-gray-400 text-sm mt-1">{currentProject.name}</p>
+        <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">工作组</p>
+        <div className="flex items-center gap-3">
+          <h1 className="text-2xl font-bold text-white">{currentProject.name}</h1>
+          <button
+            className="text-gray-500 hover:text-white transition-colors"
+            title="重命名"
+            onClick={() => {
+              const newName = prompt('新名称', currentProject.name);
+              if (!newName || !newName.trim() || newName.trim() === currentProject.name) return;
+              fetch(`/api/projects/${currentProject.id}/rename`, {
+                method: 'POST',
+                headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ name: newName.trim() }),
+              })
+                .then((r) => r.json())
+                .then((d) => {
+                  if (!d.success) { alert(d.error); return; }
+                  window.location.reload();
+                })
+                .catch((e) => alert('重命名失败：' + (e as Error).message));
+            }}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          </button>
+        </div>
         {currentProject.description && <p className="text-gray-500 text-xs mt-0.5">{currentProject.description}</p>}
       </div>
 

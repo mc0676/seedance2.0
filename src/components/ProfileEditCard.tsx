@@ -126,11 +126,11 @@ export default function ProfileEditCard({ user, onClose, onSaved, onLogout }: Pr
         </div>
 
         <div>
-          <label className="block text-[11px] text-gray-400 mb-1">部门</label>
+          <label className="block text-[11px] text-gray-400 mb-1">小组</label>
           <div className="px-2.5 py-1.5 bg-gray-900/60 border border-gray-800 rounded text-sm text-gray-400">
             {user.department || <span className="text-gray-600">未设置</span>}
           </div>
-          <p className="text-[10px] text-amber-400/80 mt-1">部门修改请联系管理员</p>
+          <p className="text-[10px] text-amber-400/80 mt-1">小组修改请联系管理员</p>
         </div>
 
         {error && <p className="text-xs text-red-400">{error}</p>}

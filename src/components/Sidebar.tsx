@@ -81,7 +81,7 @@ export default function Sidebar({ currentUser, onLogout, onUserUpdated }: Sideba
     },
     {
       id: 'ASSETS',
-      label: '素材组管理',
+      label: '工作组与资产',
       path: '/assets',
       icon: SparkleIcon,
     },

@@ -254,6 +254,18 @@ export async function deleteEnhancement(id: number): Promise<void> {
   }
 }
 
+/** 删除 HappyHorse 记录 */
+export async function deleteHappyhorse(id: number): Promise<void> {
+  const response = await fetch(`${API_BASE}/happyhorse-tasks/${id}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  });
+  const result: ApiResponse<null> = await response.json();
+  if (!result.success) {
+    throw new Error(result.error || '删除 HappyHorse 记录失败');
+  }
+}
+
 /**
  * 刷新下载任务列表（获取已生成的视频）
  */

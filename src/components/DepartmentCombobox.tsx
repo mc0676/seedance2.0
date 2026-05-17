@@ -12,7 +12,7 @@ interface DepartmentComboboxProps {
 }
 
 /**
- * 部门字段的「模糊查询 + 自动新建」组合框。
+ * 小组字段的「模糊查询 + 自动新建」组合框。
  *
  * 行为：
  *  - 输入时 300ms 防抖 GET /api/departments?q=...
@@ -25,7 +25,7 @@ export default function DepartmentCombobox({
   value,
   onChange,
   disabled,
-  placeholder = '搜索部门名 / 输入新部门后选「+ 新建」',
+  placeholder = '搜索小组名 / 输入新小组后选「+ 新建」',
   autoFocus,
   inputClassName,
 }: DepartmentComboboxProps) {
@@ -127,7 +127,7 @@ export default function DepartmentCombobox({
             <div className="px-3 py-2 text-xs text-gray-500">加载中…</div>
           )}
           {!loading && flatList.length === 0 && (
-            <div className="px-3 py-2 text-xs text-gray-500">无匹配，请输入新部门名后按 Enter 新建</div>
+            <div className="px-3 py-2 text-xs text-gray-500">无匹配，请输入新小组名后按 Enter 新建</div>
           )}
           {!loading && flatList.map((row, i) => (
             <button
