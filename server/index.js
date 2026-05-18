@@ -1098,7 +1098,7 @@ app.post('/api/generate-image', authenticate, async (req, res) => {
     wuyinTaskId = submitData.data.id;
   } catch (e) {
     creditLockService.releaseForImage({ imageRecordId, reason: e.message });
-    db.prepare(`UPDATE image_records SET status='error' WHERE id=?`).run(imageRecordId);
+    db.prepare(`UPDATE image_records SET status='error', error_message=? WHERE id=?`).run(e.message, imageRecordId);
     return res.status(502).json({ error: '提交请求异常：' + e.message });
   }
 
@@ -1137,13 +1137,13 @@ app.post('/api/generate-image', authenticate, async (req, res) => {
     }
   } catch (e) {
     creditLockService.releaseForImage({ imageRecordId, reason: e.message });
-    db.prepare(`UPDATE image_records SET status='error' WHERE id=?`).run(imageRecordId);
+    db.prepare(`UPDATE image_records SET status='error', error_message=? WHERE id=?`).run(e.message, imageRecordId);
     return res.status(500).json({ error: '轮询异常：' + e.message });
   }
 
   if (!resultUrls) {
     creditLockService.releaseForImage({ imageRecordId, reason: '生成超时' });
-    db.prepare(`UPDATE image_records SET status='error' WHERE id=?`).run(imageRecordId);
+    db.prepare(`UPDATE image_records SET status='error', error_message=? WHERE id=?`).run('生成超时（轮询超时，超过5分钟未返回结果）', imageRecordId);
     return res.status(504).json({ error: '生成超时，请稍后再试' });
   }
 
