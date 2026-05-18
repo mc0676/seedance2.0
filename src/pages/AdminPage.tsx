@@ -45,6 +45,7 @@ import {
 } from '../services/authService';
 import DepartmentSelect from '../components/DepartmentSelect';
 import AnalyticsPanels from '../components/AnalyticsPanels';
+import CreditDistributionPanel from '../components/CreditDistributionPanel';
 import type { User, FeatureKey, ModelPricing } from '../types';
 import { UsersIcon, ShieldIcon, CheckIcon, SparkleIcon, PlusIcon } from '../components/Icons';
 
@@ -1149,6 +1150,9 @@ export default function AdminPage() {
 
         {/* ═══════════ 消耗分析面板 ═══════════ */}
         <AnalyticsPanels />
+
+        {/* 积分发放统计 */}
+        <CreditDistributionPanel />
 
         {/* 激活码管理 */}
         <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl overflow-hidden mb-8">

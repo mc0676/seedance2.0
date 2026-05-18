@@ -908,3 +908,82 @@ export const fetchFailureAnalysis = (days = 7) =>
 
 export const fetchUserActivity = (days = 30) =>
   adminFetch<UserActivityData>(`/admin/users/activity?days=${days}`);
+
+// ==================== 积分发放统计 ====================
+
+export interface DistributionLogItem {
+  id: number;
+  admin_id: number | null;
+  recipient_id: number;
+  credits_amount: number;
+  method: 'activation_code' | 'manual_set' | 'manual_add' | 'checkin';
+  note: string;
+  created_at: string;
+  admin_email: string;
+  admin_name: string;
+  recipient_email: string;
+  recipient_name: string;
+  recipient_department: string;
+}
+
+export interface DistributionSummary {
+  admins: Array<{
+    admin_id: number;
+    admin_email: string;
+    admin_name: string;
+    total_credits: number;
+    distribution_count: number;
+  }>;
+  totalCredits: number;
+  totalCount: number;
+}
+
+export const fetchCreditDistributions = (params: {
+  page?: number;
+  pageSize?: number;
+  startDate?: string;
+  endDate?: string;
+  adminId?: number;
+  method?: string;
+} = {}) => {
+  const sp = new URLSearchParams();
+  if (params.page) sp.set('page', String(params.page));
+  if (params.pageSize) sp.set('pageSize', String(params.pageSize));
+  if (params.startDate) sp.set('startDate', params.startDate);
+  if (params.endDate) sp.set('endDate', params.endDate);
+  if (params.adminId) sp.set('adminId', String(params.adminId));
+  if (params.method) sp.set('method', params.method);
+  return adminFetch<{ rows: DistributionLogItem[]; pagination: { page: number; pageSize: number; total: number; totalPages: number } }>(`/admin/credit-distributions?${sp.toString()}`);
+};
+
+export const fetchDistributionSummary = (params: {
+  startDate?: string;
+  endDate?: string;
+} = {}) => {
+  const sp = new URLSearchParams();
+  if (params.startDate) sp.set('startDate', params.startDate);
+  if (params.endDate) sp.set('endDate', params.endDate);
+  return adminFetch<DistributionSummary>(`/admin/credit-distributions/summary?${sp.toString()}`);
+};
+
+// ==================== 发分额度管理 ====================
+
+export interface AdminQuotaItem {
+  adminId: number;
+  adminEmail: string;
+  adminName: string;
+  adminDepartment: string;
+  totalQuota: number;   // 0 = 不限制
+  dailyQuota: number;   // 0 = 不限制
+  totalUsed: number;
+  todayUsed: number;
+}
+
+export const fetchAdminQuotas = () =>
+  adminFetch<AdminQuotaItem[]>('/admin/admin-quotas');
+
+export const updateAdminQuota = (adminId: number, payload: { totalQuota?: number; dailyQuota?: number }) =>
+  adminFetch<{ success: boolean }>(`/admin/admin-quotas/${adminId}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });

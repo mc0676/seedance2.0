@@ -424,13 +424,19 @@ export async function deductCredits(userId, amount) {
 /**
  * 充值积分
  */
-export async function rechargeCredits(userId, amount) {
+export async function rechargeCredits(userId, amount, adminId = null) {
   const db = getDatabase();
 
   db.prepare(`
     UPDATE users SET credits = credits + ?, updated_at = datetime('now')
     WHERE id = ?
   `).run(amount, userId);
+
+  // 记录积分发放日志
+  db.prepare(`
+    INSERT INTO credit_distribution_logs (admin_id, recipient_id, credits_amount, method, note)
+    VALUES (?, ?, ?, 'manual_add', ?)
+  `).run(adminId, userId, amount, '后台手动增加');
 
   const user = db.prepare(`SELECT credits FROM users WHERE id = ?`).get(userId);
   return { success: true, credits: user.credits };
@@ -470,6 +476,12 @@ export async function checkIn(userId) {
     UPDATE users SET credits = credits + ?, last_check_in_at = datetime('now')
     WHERE id = ?
   `).run(creditsEarned, userId);
+
+  // 记录积分发放日志
+  db.prepare(`
+    INSERT INTO credit_distribution_logs (admin_id, recipient_id, credits_amount, method, note)
+    VALUES (NULL, ?, ?, 'checkin', '每日签到')
+  `).run(userId, creditsEarned);
 
   return { success: true, creditsEarned };
 }
@@ -733,7 +745,7 @@ export async function updateUserStatus(userId, status) {
 /**
  * 管理员 - 修改用户积分
  */
-export async function updateUserCredits(userId, credits, operation = 'set') {
+export async function updateUserCredits(userId, credits, operation = 'set', adminId = null) {
   const db = getDatabase();
 
   const user = db.prepare(`SELECT credits FROM users WHERE id = ?`).get(userId);
@@ -760,6 +772,19 @@ export async function updateUserCredits(userId, credits, operation = 'set') {
     UPDATE users SET credits = ?, updated_at = datetime('now')
     WHERE id = ?
   `).run(newCredits, userId);
+
+  // 记录积分发放日志（仅记录增加积分的情况）
+  const increase = newCredits - user.credits;
+  if (increase > 0) {
+    const method = operation === 'add' ? 'manual_add' : 'manual_set';
+    const note = operation === 'add'
+      ? `后台手动增加 ${increase} 积分`
+      : `后台设置为 ${newCredits} 积分（增加 ${increase}）`;
+    db.prepare(`
+      INSERT INTO credit_distribution_logs (admin_id, recipient_id, credits_amount, method, note)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(adminId, userId, increase, method, note);
+  }
 
   return { success: true, credits: newCredits };
 }

@@ -15,6 +15,14 @@ export function redeemActivationCode(userId, code) {
       db.prepare(`UPDATE users SET credits = MAX(0, credits + ?) WHERE id = ?`).run(creditsValue, userId);
     }
     db.prepare(`UPDATE activation_codes SET used_count = used_count + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(record.id);
+
+    // 记录积分发放日志（仅记录正数发放，归属到创建该激活码的管理员）
+    if (creditsValue > 0) {
+      db.prepare(`
+        INSERT INTO credit_distribution_logs (admin_id, recipient_id, credits_amount, method, note)
+        VALUES (?, ?, ?, 'activation_code', ?)
+      `).run(record.created_by || null, userId, creditsValue, `激活码: ${trimmed}`);
+    }
   });
   transaction();
 }

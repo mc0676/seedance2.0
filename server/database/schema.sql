@@ -574,6 +574,29 @@ CREATE TABLE IF NOT EXISTS activation_codes (
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 积分发放日志表（管理员发分统计）
+CREATE TABLE IF NOT EXISTS credit_distribution_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  recipient_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  credits_amount INTEGER NOT NULL,
+  method TEXT NOT NULL CHECK (method IN ('activation_code', 'manual_set', 'manual_add', 'checkin')),
+  note TEXT DEFAULT '',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_credit_dist_logs_admin ON credit_distribution_logs(admin_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_credit_dist_logs_recip ON credit_distribution_logs(recipient_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_credit_dist_logs_time ON credit_distribution_logs(created_at DESC);
+
+-- 管理员发分额度表（按管理员单独设置限额，0=不限制）
+CREATE TABLE IF NOT EXISTS admin_quotas (
+  admin_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  total_quota INTEGER NOT NULL DEFAULT 0,
+  daily_quota INTEGER NOT NULL DEFAULT 0,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 -- 火山Key组表
 CREATE TABLE IF NOT EXISTS volc_key_groups (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

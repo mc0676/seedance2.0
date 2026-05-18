@@ -2945,6 +2945,58 @@ app.post('/api/credits/deduct', authenticate, requireAdmin, async (req, res) => 
   }
 });
 
+// ── 普通管理员发分额度检查（按管理员单独限额） ────────────────────────
+function checkAdminQuota(db, adminId, amount) {
+  const quota = db.prepare('SELECT total_quota, daily_quota FROM admin_quotas WHERE admin_id = ?').get(adminId);
+  const totalQuota = quota ? quota.total_quota : 0;
+  const dailyQuota = quota ? quota.daily_quota : 0;
+
+  if (totalQuota > 0) {
+    // 已实际发放
+    const totalUsed = db.prepare(`
+      SELECT COALESCE(SUM(credits_amount), 0) AS total
+      FROM credit_distribution_logs
+      WHERE admin_id = ?
+    `).get(adminId).total;
+
+    // 已创建但未兑完的激活码理论剩余额度
+    const pendingCodes = db.prepare(`
+      SELECT COALESCE(SUM(credits_value * (max_uses - used_count)), 0) AS total
+      FROM activation_codes
+      WHERE created_by = ? AND credits_value > 0 AND used_count < max_uses
+    `).get(adminId).total;
+
+    const committed = totalUsed + pendingCodes + amount;
+    if (committed > totalQuota) {
+      return `超出您的发分总额度（总额度 ${totalQuota}，已发 ${totalUsed}，待兑激活码 ${pendingCodes}，本次 ${amount}，合计 ${committed}）`;
+    }
+  }
+
+  if (dailyQuota > 0) {
+    // 今日实际发放
+    const todayUsed = db.prepare(`
+      SELECT COALESCE(SUM(credits_amount), 0) AS total
+      FROM credit_distribution_logs
+      WHERE admin_id = ? AND date(created_at) = date('now')
+    `).get(adminId).total;
+
+    // 今日创建的激活码剩余可兑额度
+    const todayCodes = db.prepare(`
+      SELECT COALESCE(SUM(credits_value * (max_uses - used_count)), 0) AS total
+      FROM activation_codes
+      WHERE created_by = ? AND credits_value > 0 AND used_count < max_uses
+        AND date(created_at) = date('now')
+    `).get(adminId).total;
+
+    const todayCommitted = todayUsed + todayCodes + amount;
+    if (todayCommitted > dailyQuota) {
+      return `超出您的每日发分额度（每日额度 ${dailyQuota}，今日已发 ${todayUsed}，今日待兑激活码 ${todayCodes}，本次 ${amount}，合计 ${todayCommitted}）`;
+    }
+  }
+
+  return null; // 通过
+}
+
 // POST /api/credits/add - 充值积分（管理员）
 app.post('/api/credits/add', authenticate, requireAdmin, async (req, res) => {
   try {
@@ -2954,8 +3006,15 @@ app.post('/api/credits/add', authenticate, requireAdmin, async (req, res) => {
       return res.status(400).json({ error: '积分数量无效' });
     }
 
+    // 普通管理员额度检查
+    if (req.user.role === 'admin') {
+      const db = getDatabase();
+      const err = checkAdminQuota(db, req.user.id, amount);
+      if (err) return res.status(400).json({ error: err });
+    }
+
     const targetUserId = userId || req.user.id;
-    const result = await authService.rechargeCredits(targetUserId, amount);
+    const result = await authService.rechargeCredits(targetUserId, amount, req.user.id);
     res.json({ success: true, data: result });
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -3165,6 +3224,218 @@ app.get('/api/admin/credits/failure-analysis', authenticate, requireAdmin, (req,
   }
 });
 
+// ── 管理员：积分发放统计 ────────────────────────────────────────
+
+// GET /api/admin/credit-distributions - 积分发放记录列表
+app.get('/api/admin/credit-distributions', authenticate, requireAdmin, (req, res) => {
+  try {
+    const db = getDatabase();
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize) || 20));
+    const offset = (page - 1) * pageSize;
+    const startDate = req.query.startDate || '';
+    const endDate = req.query.endDate || '';
+    const adminId = parseInt(req.query.adminId) || 0;
+    const method = req.query.method || '';
+
+    const conditions = [];
+    const params = [];
+
+    if (startDate) {
+      conditions.push("l.created_at >= ?");
+      params.push(startDate);
+    }
+    if (endDate) {
+      conditions.push("l.created_at <= ?");
+      params.push(endDate + ' 23:59:59');
+    }
+    if (adminId > 0) {
+      conditions.push("l.admin_id = ?");
+      params.push(adminId);
+    }
+    if (method) {
+      conditions.push("l.method = ?");
+      params.push(method);
+    }
+
+    const whereClause = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
+
+    const countRow = db.prepare(`
+      SELECT COUNT(*) AS total FROM credit_distribution_logs l ${whereClause}
+    `).get(...params);
+
+    const rows = db.prepare(`
+      SELECT l.*,
+             COALESCE(a.email, '系统') AS admin_email,
+             COALESCE(a.name, '') AS admin_name,
+             u.email AS recipient_email,
+             COALESCE(u.name, '') AS recipient_name,
+             COALESCE(d.name, '') AS recipient_department
+      FROM credit_distribution_logs l
+      LEFT JOIN users a ON a.id = l.admin_id
+      JOIN users u ON u.id = l.recipient_id
+      LEFT JOIN departments d ON d.id = u.department_id
+      ${whereClause}
+      ORDER BY l.created_at DESC
+      LIMIT ? OFFSET ?
+    `).all(...params, pageSize, offset);
+
+    res.json({
+      success: true,
+      data: {
+        rows,
+        pagination: {
+          page,
+          pageSize,
+          total: countRow.total,
+          totalPages: Math.ceil(countRow.total / pageSize),
+        },
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/admin/credit-distributions/summary - 按管理员汇总
+app.get('/api/admin/credit-distributions/summary', authenticate, requireAdmin, (req, res) => {
+  try {
+    const db = getDatabase();
+    const startDate = req.query.startDate || '';
+    const endDate = req.query.endDate || '';
+
+    const conditions = [];
+    const params = [];
+
+    if (startDate) {
+      conditions.push("l.created_at >= ?");
+      params.push(startDate);
+    }
+    if (endDate) {
+      conditions.push("l.created_at <= ?");
+      params.push(endDate + ' 23:59:59');
+    }
+
+    const whereClause = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
+
+    // 汇总只统计有管理员的记录（排除签到的 NULL admin_id）
+    const summaryConditions = conditions.length > 0
+      ? 'WHERE ' + conditions.join(' AND ') + ' AND l.admin_id IS NOT NULL'
+      : 'WHERE l.admin_id IS NOT NULL';
+
+    const rows = db.prepare(`
+      SELECT l.admin_id,
+             a.email AS admin_email,
+             COALESCE(a.name, '') AS admin_name,
+             SUM(l.credits_amount) AS total_credits,
+             COUNT(*) AS distribution_count
+      FROM credit_distribution_logs l
+      JOIN users a ON a.id = l.admin_id
+      ${summaryConditions}
+      GROUP BY l.admin_id
+      ORDER BY total_credits DESC
+    `).all(...params);
+
+    // 总计
+    const totalRow = db.prepare(`
+      SELECT COALESCE(SUM(credits_amount), 0) AS total_credits,
+             COUNT(*) AS total_count
+      FROM credit_distribution_logs l ${whereClause}
+    `).get(...params);
+
+    res.json({
+      success: true,
+      data: {
+        admins: rows,
+        totalCredits: totalRow.total_credits,
+        totalCount: totalRow.total_count,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ── 管理员：积分发放额度管理（按管理员单独设置） ─────────────────────
+
+// GET /api/admin/admin-quotas - 获取所有管理员的额度与使用情况（super_admin）
+app.get('/api/admin/admin-quotas', authenticate, requireSuperAdmin, (req, res) => {
+  try {
+    const db = getDatabase();
+
+    // 所有 role=admin 的用户（不含 super_admin）
+    const admins = db.prepare(`
+      SELECT u.id, u.email, COALESCE(u.name, '') AS name,
+             COALESCE(d.name, '') AS department
+      FROM users u
+      LEFT JOIN departments d ON d.id = u.department_id
+      WHERE u.role = 'admin'
+      ORDER BY u.id
+    `).all();
+
+    const rows = admins.map((a) => {
+      const quota = db.prepare('SELECT total_quota, daily_quota FROM admin_quotas WHERE admin_id = ?').get(a.id);
+      const totalUsed = db.prepare(`
+        SELECT COALESCE(SUM(credits_amount), 0) AS total
+        FROM credit_distribution_logs
+        WHERE admin_id = ?
+      `).get(a.id).total;
+      const todayUsed = db.prepare(`
+        SELECT COALESCE(SUM(credits_amount), 0) AS total
+        FROM credit_distribution_logs
+        WHERE admin_id = ? AND date(created_at) = date('now')
+      `).get(a.id).total;
+
+      return {
+        adminId: a.id,
+        adminEmail: a.email,
+        adminName: a.name,
+        adminDepartment: a.department,
+        totalQuota: quota ? quota.total_quota : 0,
+        dailyQuota: quota ? quota.daily_quota : 0,
+        totalUsed,
+        todayUsed,
+      };
+    });
+
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PUT /api/admin/admin-quotas/:adminId - 设置某管理员的额度（super_admin）
+app.put('/api/admin/admin-quotas/:adminId', authenticate, requireSuperAdmin, (req, res) => {
+  try {
+    const db = getDatabase();
+    const adminId = parseInt(req.params.adminId);
+    const { totalQuota, dailyQuota } = req.body;
+
+    // 确认目标用户存在且为 admin
+    const user = db.prepare('SELECT id, role FROM users WHERE id = ?').get(adminId);
+    if (!user) return res.status(404).json({ error: '用户不存在' });
+    if (user.role !== 'admin') return res.status(400).json({ error: '只能为普通管理员设置额度' });
+
+    const tq = totalQuota !== undefined ? Math.max(0, parseInt(totalQuota) || 0) : undefined;
+    const dq = dailyQuota !== undefined ? Math.max(0, parseInt(dailyQuota) || 0) : undefined;
+
+    if (tq !== undefined || dq !== undefined) {
+      db.prepare(`
+        INSERT INTO admin_quotas (admin_id, total_quota, daily_quota, updated_at)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(admin_id) DO UPDATE SET
+          total_quota = COALESCE(?, total_quota),
+          daily_quota = COALESCE(?, daily_quota),
+          updated_at = CURRENT_TIMESTAMP
+      `).run(adminId, tq ?? 0, dq ?? 0, tq, dq);
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // GET /api/admin/users/activity - 用户活跃度（读预聚合表 + 优化休眠查询）
 app.get('/api/admin/users/activity', authenticate, requireAdmin, (req, res) => {
   try {
@@ -3325,7 +3596,26 @@ app.put('/api/admin/users/:id/credits', authenticate, requireAdmin, async (req, 
     const userId = req.params.id;
     const { credits, operation = 'set' } = req.body;
 
-    await authService.updateUserCredits(userId, credits, operation);
+    // 普通管理员额度检查
+    if (req.user.role === 'admin') {
+      const db = getDatabase();
+      const user = db.prepare('SELECT credits FROM users WHERE id = ?').get(userId);
+      if (!user) return res.status(404).json({ error: '用户不存在' });
+
+      let increase = 0;
+      if (operation === 'add') {
+        increase = credits;
+      } else if (operation === 'set' && credits > user.credits) {
+        increase = credits - user.credits;
+      }
+
+      if (increase > 0) {
+        const err = checkAdminQuota(db, req.user.id, increase);
+        if (err) return res.status(400).json({ error: err });
+      }
+    }
+
+    await authService.updateUserCredits(userId, credits, operation, req.user.id);
     res.json({ success: true });
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -3358,6 +3648,17 @@ app.get('/api/admin/activation-codes', authenticate, requireAdmin, (req, res) =>
 // POST /api/admin/activation-codes - 创建激活码
 app.post('/api/admin/activation-codes', authenticate, requireAdmin, (req, res) => {
   try {
+    const { creditsValue, maxUses } = req.body;
+    const cv = parseInt(creditsValue) || 0;
+    const mu = parseInt(maxUses) || 1;
+
+    // 普通管理员额度检查：正数积分 * 份数 = 最大潜在发放量
+    if (req.user.role === 'admin' && cv > 0) {
+      const db = getDatabase();
+      const err = checkAdminQuota(db, req.user.id, cv * mu);
+      if (err) return res.status(400).json({ error: err });
+    }
+
     const code = jimengSessionService.createActivationCode({ ...req.body, createdBy: req.user.id });
     res.json({ success: true, data: code });
   } catch (error) {

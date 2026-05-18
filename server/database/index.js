@@ -495,6 +495,51 @@ export function initDatabase() {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_usage_logs_status_created ON usage_logs(status, created_at DESC)`);
   }
 
+  // 增量迁移：积分发放日志表（管理员发分统计）
+  {
+    const hasDistLogs = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='credit_distribution_logs'")
+      .get();
+    if (!hasDistLogs) {
+      console.log('[database] 迁移：创建 credit_distribution_logs 表...');
+      db.exec(`
+        CREATE TABLE credit_distribution_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+          recipient_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          credits_amount INTEGER NOT NULL,
+          method TEXT NOT NULL CHECK (method IN ('activation_code', 'manual_set', 'manual_add', 'checkin')),
+          note TEXT DEFAULT '',
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX idx_credit_dist_logs_admin ON credit_distribution_logs(admin_id, created_at DESC);
+        CREATE INDEX idx_credit_dist_logs_recip ON credit_distribution_logs(recipient_id, created_at DESC);
+        CREATE INDEX idx_credit_dist_logs_time ON credit_distribution_logs(created_at DESC);
+      `);
+      console.log('[database] 迁移完成：credit_distribution_logs 表已创建');
+    }
+  }
+
+  // 增量迁移：管理员发分额度表（按管理员单独设置限额）
+  {
+    const hasAdminQuotas = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='admin_quotas'")
+      .get();
+    if (!hasAdminQuotas) {
+      console.log('[database] 迁移：创建 admin_quotas 表...');
+      db.exec(`
+        CREATE TABLE admin_quotas (
+          admin_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+          total_quota INTEGER NOT NULL DEFAULT 0,
+          daily_quota INTEGER NOT NULL DEFAULT 0,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+      console.log('[database] 迁移完成：admin_quotas 表已创建');
+    }
+  }
+
   console.log(`[database] 数据库初始化成功：${DB_PATH}`);
   return db;
 }
