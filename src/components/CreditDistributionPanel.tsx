@@ -25,7 +25,7 @@ const METHOD_COLORS: Record<string, string> = {
   checkin: 'bg-purple-500/20 text-purple-400',
 };
 
-const PAGE_SIZE = 15;
+const PAGE_SIZE = 10;
 
 function getDefaultStartDate() {
   const d = new Date();

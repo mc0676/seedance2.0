@@ -70,6 +70,7 @@ export async function getDownloadTasks(
   pageSize: number = 20,
   projectId?: number | null,
   includeHappyhorse: boolean = false,
+  skipDownloadableFilter: boolean = false,
 ): Promise<DownloadTaskList> {
   const params = new URLSearchParams({
     status,
@@ -82,6 +83,9 @@ export async function getDownloadTasks(
   }
   if (includeHappyhorse) {
     params.append('includeHappyhorse', '1');
+  }
+  if (skipDownloadableFilter) {
+    params.append('skipDownloadableFilter', '1');
   }
 
   const response = await fetch(`${API_BASE}/download/tasks?${params}`, {
@@ -264,6 +268,58 @@ export async function deleteHappyhorse(id: number): Promise<void> {
   if (!result.success) {
     throw new Error(result.error || '删除 HappyHorse 记录失败');
   }
+}
+
+// ========== 历史记录删除（scope=history → 后端置 deleted_at） ==========
+
+/** 从历史记录中删除视频任务 */
+export async function deleteTaskFromHistory(taskId: number): Promise<void> {
+  const response = await fetch(`${API_BASE}/download/tasks/${taskId}?scope=history`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  });
+  const result: ApiResponse<null> = await response.json();
+  if (!result.success) throw new Error(result.error || '删除失败');
+}
+
+/** 从历史记录中删除图片记录 */
+export async function deleteImageRecordFromHistory(id: number): Promise<void> {
+  const response = await fetch(`${API_BASE}/image-records/${id}?scope=history`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  });
+  const result: ApiResponse<null> = await response.json();
+  if (!result.success) throw new Error(result.error || '删除失败');
+}
+
+/** 从历史记录中删除音频记录 */
+export async function deleteAudioGenerationFromHistory(id: number): Promise<void> {
+  const response = await fetch(`${API_BASE}/audio-generations/${id}?scope=history`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  });
+  const result: ApiResponse<null> = await response.json();
+  if (!result.success) throw new Error(result.error || '删除失败');
+}
+
+/** 从历史记录中删除画质增强记录 */
+export async function deleteEnhancementFromHistory(id: number): Promise<void> {
+  const response = await fetch(`${API_BASE}/video-enhancements/${id}?scope=history`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  });
+  const result: ApiResponse<null> = await response.json();
+  if (!result.success) throw new Error(result.error || '删除失败');
+}
+
+/** 从历史记录中删除 HappyHorse 记录 */
+export async function deleteHappyhorseFromHistory(id: number): Promise<void> {
+  const response = await fetch(`${API_BASE}/happyhorse-tasks/${id}?scope=history`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  });
+  const result: ApiResponse<null> = await response.json();
+  if (!result.success) throw new Error(result.error || '删除失败');
 }
 
 /**

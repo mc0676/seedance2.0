@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AppProvider } from './context/AppContext';
+import { useApp } from './context/AppContext';
 import Sidebar from './components/Sidebar';
 import ProfileCompletionGate from './components/ProfileCompletionGate';
+import NoProjectGate from './components/NoProjectGate';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import AdminPage from './pages/AdminPage';
@@ -57,6 +59,18 @@ function ProtectedRoute({
   return <>{children}</>;
 }
 
+// 无工作组时全屏拦截
+function NoProjectGateWrapper({ children }: { children: React.ReactNode }) {
+  const { state } = useApp();
+
+  // 加载中不拦截，等数据到了再判断
+  if (state.loading || state.projects.length > 0) {
+    return <>{children}</>;
+  }
+
+  return <NoProjectGate />;
+}
+
 // 主布局组件（带侧边栏）
 function MainLayout({
   currentUser,
@@ -76,7 +90,9 @@ function MainLayout({
     <div className="min-h-screen bg-[#0f111a]">
       <Sidebar currentUser={currentUser} onLogout={onLogout} onUserUpdated={onUserUpdated} />
       <main className="lg:pl-80 pt-16 lg:pt-0 min-h-screen">
-        {children}
+        <NoProjectGateWrapper>
+          {children}
+        </NoProjectGateWrapper>
       </main>
       {/* 未填资料时显示补填弹窗 */}
       {needsProfile && currentUser && (

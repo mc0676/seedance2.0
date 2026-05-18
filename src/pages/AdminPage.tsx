@@ -583,7 +583,11 @@ export default function AdminPage() {
   const codeDragStartRef = useRef<number | null>(null);
   const codeDragSelectingRef = useRef(false);
 
-  const handleCodeRowMouseDown = (index: number, id: number) => {
+  const handleCodeRowMouseDown = (index: number, id: number, e: React.MouseEvent) => {
+    // 点击交互元素（按钮/输入框/复选框）时不触发拖选
+    const target = e.target as HTMLElement;
+    if (target.closest('button, input, .cursor-pointer')) return;
+
     codeDragStartRef.current = index;
     codeDragSelectingRef.current = !selectedCodeIds.includes(id);
     setSelectedCodeIds((prev) =>
@@ -1238,7 +1242,7 @@ export default function AdminPage() {
                 <tbody className="divide-y divide-gray-800">
                   {codes.map((c, idx) => (
                     <tr key={c.id} className="hover:bg-[#0f111a]/50"
-                      onMouseDown={() => handleCodeRowMouseDown(idx, c.id)}
+                      onMouseDown={(e) => handleCodeRowMouseDown(idx, c.id, e)}
                       onMouseEnter={() => handleCodeRowMouseEnter(idx)}
                     >
                       <td className="px-6 py-4 text-sm">

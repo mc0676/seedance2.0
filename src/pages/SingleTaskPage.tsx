@@ -11,7 +11,7 @@ import { RATIO_OPTIONS, DURATION_OPTIONS, MODEL_OPTIONS } from '../types/index';
 import { generateVideo } from '../services/videoService';
 import { uploadToOss, FILE_LIMITS, validateMediaCombination } from '../services/ossService';
 import { estimatePricing, getCreditBalance, listEnabledModels, type RuntimeModelOption } from '../services/pricingService';
-import { getDownloadTasks } from '../services/downloadService';
+import { getDownloadTasks, deleteTaskFromHistory } from '../services/downloadService';
 import { GearIcon, PlusIcon, CloseIcon, SparkleIcon } from '../components/Icons';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
@@ -781,7 +781,7 @@ export default function SingleTaskPage() {
     const projectId = overrideProjectId !== undefined ? overrideProjectId : (state.currentProject?.id ?? null);
     const gen = historyGenRef.current;
     try {
-      const result = await getDownloadTasks('all', 'video', page, 20, projectId);
+      const result = await getDownloadTasks('all', 'video', page, 20, projectId, false, true);
       if (gen !== historyGenRef.current) return; // 工作组已切换，丢弃过期响应
       setHistoryItems((prev) => append ? [...prev, ...result.tasks] : result.tasks);
       setHistoryHasMore(result.tasks.length === 20 && result.tasks.length + (append ? historyItems.length : 0) < result.total);
@@ -2325,6 +2325,17 @@ export default function SingleTaskPage() {
                         className="text-[11px] px-2 py-1 rounded-xl border border-purple-500/40 text-purple-400 hover:bg-purple-500/10 transition-all"
                       >
                         复用
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (!confirm('确定要从历史记录中删除此任务吗？')) return;
+                          deleteTaskFromHistory(item.id)
+                            .then(() => setHistoryItems((prev) => prev.filter((x) => x.id !== item.id)))
+                            .catch((e) => alert(`删除失败：${e.message}`));
+                        }}
+                        className="text-[11px] px-2 py-1 rounded-xl border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-all"
+                      >
+                        删除
                       </button>
                     </div>
                     </div>

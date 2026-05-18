@@ -83,7 +83,7 @@ export default function DownloadManagementPage() {
   const { tasks, total, page, pageSize, statusFilter, typeFilter, selectedRowKeys, isLoading, downloadingIds, previewTask } = state;
 
   // 各源表（tasks / image_records / audio_generations / tasks_happyhorse）的 id 各自自增,易冲突。
-  // HappyHorse 行在下载页被打成 model_type='video'（不作为独立种类），用 happyhorse_mode 字段做内部识别。
+  // HappyHorse 行通过 happyhorse_mode 字段做内部识别，model_type 为 'happyhorse'。
   const isHappyhorse = (t: DownloadTask) => !!t.happyhorse_mode;
   const rowKey = (t: DownloadTask) => `${isHappyhorse(t) ? 'happyhorse' : t.model_type}:${t.id}`;
   // 视频生成 V-；HappyHorse 视频 V-H- 加以区分，避免两个 id 撞到同一前缀
@@ -409,7 +409,7 @@ export default function DownloadManagementPage() {
   // 删除任务（视频/图片/音频通用）：未下载的二次确认
   const handleDeleteTask = async (task: DownloadTask) => {
     const k = rowKey(task);
-    const isDownloaded = task.model_type === 'video'
+    const isDownloaded = task.model_type === 'video' || task.model_type === 'happyhorse'
       ? task.effective_download_status === 'done'
       : (!!task.downloaded_at || optimisticDownloaded.has(k));
 
@@ -662,7 +662,7 @@ export default function DownloadManagementPage() {
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-300">
                     <span className={`px-2 py-0.5 rounded text-xs ${
-                      task.model_type === 'video'
+                      task.model_type === 'video' || task.model_type === 'happyhorse'
                         ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30'
                         : task.model_type === 'audio'
                         ? 'bg-pink-500/20 text-pink-400 border border-pink-500/30'
@@ -674,6 +674,8 @@ export default function DownloadManagementPage() {
                         ? (isHappyhorse(task)
                             ? `视频·HappyHorse${task.happyhorse_mode_label ? '·' + task.happyhorse_mode_label : ''}`
                             : '视频')
+                        : task.model_type === 'happyhorse'
+                        ? `视频·HappyHorse${task.happyhorse_mode_label ? '·' + task.happyhorse_mode_label : ''}`
                         : task.model_type === 'audio' ? '音频'
                         : task.model_type === 'enhancement' ? '画质增强'
                         : '图片'}

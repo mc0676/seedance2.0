@@ -4,6 +4,7 @@ import { uploadToOss, FILE_LIMITS, probeOssVideo } from '../services/ossService'
 import { CloseIcon, PlusIcon, SparkleIcon, GearIcon } from '../components/Icons';
 import { formatShortDateTime, useUserTimezone } from '../utils/datetime';
 import { getCreditBalance } from '../services/pricingService';
+import { deleteHappyhorseFromHistory } from '../services/downloadService';
 import { useNavigate } from 'react-router-dom';
 import {
   submitHappyhorseTask,
@@ -108,8 +109,10 @@ export default function HappyHorsePage() {
 
   const [tasks, setTasks] = useState<HappyhorseTask[]>([]);
   const [tasksLoading, setTasksLoading] = useState(false);
-  const [tasksTotal, setTasksTotal] = useState(0);
-  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(true);
+  const pageRef = useRef(1);
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const deletingRef = useRef(false);
   const PAGE_SIZE = 12;
   const [previewVideo, setPreviewVideo] = useState<{ url: string; prompt: string; error?: string | null } | null>(null);
 
@@ -128,29 +131,51 @@ export default function HappyHorsePage() {
     return () => { alive = false; clearInterval(t); };
   }, [currentUser]);
 
-  async function loadTasks(p = 1) {
-    if (!projectId) return;
+  async function loadTasks(append = false) {
+    if (!projectId || deletingRef.current) return;
+    const p = append ? pageRef.current : 1;
     setTasksLoading(true);
     try {
       const data = await listMyHappyhorseTasks(projectId, p, PAGE_SIZE);
-      setTasks(data.items);
-      setTasksTotal(data.total);
-      setPage(p);
+      if (append) {
+        setTasks((prev) => [...prev, ...data.items]);
+        pageRef.current = p + 1;
+      } else {
+        setTasks(data.items);
+        pageRef.current = 2;
+      }
+      setHasMore(data.items.length === PAGE_SIZE && (p - 1) * PAGE_SIZE + data.items.length < data.total);
     } catch (e) {
       console.error('[happyhorse] 加载任务列表失败', e);
     } finally {
       setTasksLoading(false);
     }
   }
-  useEffect(() => { loadTasks(1); /* eslint-disable-next-line */ }, [projectId]);
+  useEffect(() => { loadTasks(); /* eslint-disable-next-line */ }, [projectId]);
+
+  // 无限滚动：底部哨兵进入视野时加载下一页
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting && hasMore && !tasksLoading) {
+          loadTasks(true);
+        }
+      },
+      { threshold: 0.1 }
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [hasMore, tasksLoading, projectId]);
 
   // 轮询进行中任务
   useEffect(() => {
     if (!tasks.some((t) => t.status === 'processing' || t.status === 'pending')) return;
-    const t = setInterval(() => loadTasks(page), 8000);
+    const t = setInterval(() => loadTasks(), 8000);
     return () => clearInterval(t);
     // eslint-disable-next-line
-  }, [tasks, page, projectId]);
+  }, [tasks, projectId]);
 
   // 切换 mode 时清空 media（避免类型混淆）
   // 复用历史任务时，setMode 会触发下面的 useEffect 把表单清空，
@@ -856,7 +881,7 @@ export default function HappyHorsePage() {
           : undefined,
       });
       setPrompt(''); setMedia([]); setSeed(''); setEditVideoDuration(null);
-      await loadTasks(1);
+      await loadTasks();
     } catch (e: any) {
       setSubmitError(e.message || '提交失败');
     } finally {
@@ -960,7 +985,6 @@ export default function HappyHorsePage() {
   }
 
   // ── 渲染 ─────────────────────────────────────────────────
-  const totalPages = Math.max(1, Math.ceil(tasksTotal / PAGE_SIZE));
   // video-edit 模式：上传了视频但时长不可知 → 提交时会落入 30s 上限兜底，可能超出余额，
   // 而且就算余额够也会扣多。统一禁用提交，强制用户重新上传 / 重选媒体。
   const hasEditVideo = mode === 'video-edit' && media.some((m) => m.type === 'video');
@@ -985,7 +1009,7 @@ export default function HappyHorsePage() {
             <h2 className="text-xl font-bold truncate">HappyHorse</h2>
             <div className="flex items-center gap-2 flex-shrink-0">
               <button
-                onClick={() => void loadTasks(page)}
+                onClick={() => void loadTasks()}
                 disabled={tasksLoading}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 rounded-xl text-xs font-medium text-white transition-all disabled:opacity-50"
               >
@@ -1428,6 +1452,22 @@ export default function HappyHorsePage() {
                               onClick={() => handleReuse(t)}
                               className="text-[11px] px-2 py-1 rounded-xl border border-purple-500/40 text-purple-400 hover:bg-purple-500/10 transition-all"
                             >复用</button>
+                            <button
+                              onClick={() => {
+                                if (!confirm('确定要从历史记录中删除此任务吗？')) return;
+                                const taskId = t.id;
+                                const rollback = tasks.find((x) => x.id === taskId);
+                                deletingRef.current = true;
+                                setTasks((prev) => prev.filter((x) => x.id !== taskId));
+                                deleteHappyhorseFromHistory(taskId)
+                                  .catch((e) => {
+                                    alert(`删除失败：${e.message}`);
+                                    if (rollback) setTasks((prev) => [...prev, rollback]);
+                                  })
+                                  .finally(() => { deletingRef.current = false; });
+                              }}
+                              className="text-[11px] px-2 py-1 rounded-xl border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-all"
+                            >删除</button>
                           </div>
                         </div>
                       </div>
@@ -1439,13 +1479,15 @@ export default function HappyHorsePage() {
           </div>
         )}
 
-        {totalPages > 1 && (
-          <div className="flex items-center justify-center gap-2 py-4">
-            <button disabled={page <= 1} onClick={() => loadTasks(page - 1)} className="px-3 py-1.5 rounded bg-[#1c1f2e] text-gray-300 disabled:opacity-40 text-sm">上一页</button>
-            <span className="text-sm text-gray-400">第 {page} / {totalPages} 页</span>
-            <button disabled={page >= totalPages} onClick={() => loadTasks(page + 1)} className="px-3 py-1.5 rounded bg-[#1c1f2e] text-gray-300 disabled:opacity-40 text-sm">下一页</button>
-          </div>
-        )}
+        {/* 无限滚动哨兵 */}
+        <div ref={sentinelRef} className="flex items-center justify-center py-4">
+          {tasksLoading && (
+            <span className="text-sm text-gray-500">加载更多...</span>
+          )}
+          {!hasMore && tasks.length > 0 && (
+            <span className="text-xs text-gray-600">已加载全部记录</span>
+          )}
+        </div>
       </div>
 
       {/* 视频预览弹窗 —— 与 SingleTaskPage 同款 */}

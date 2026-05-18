@@ -136,6 +136,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   retry_count INTEGER DEFAULT 0,
   task_kind TEXT NOT NULL DEFAULT 'video' CHECK (task_kind IN ('video', 'audio_intermediate')),
   deleted_at DATETIME, -- 软删时间戳；NULL = 未删除，所有用户可见查询应过滤 WHERE deleted_at IS NULL
+  downloadable INTEGER DEFAULT 1, -- 下载管理可见性：1=显示在下载管理，0=隐藏
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -470,6 +471,7 @@ CREATE TABLE IF NOT EXISTS tasks_happyhorse (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   deleted_at DATETIME,
+  downloadable INTEGER DEFAULT 1, -- 下载管理可见性
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
@@ -522,6 +524,7 @@ CREATE TABLE IF NOT EXISTS video_enhancements (
   finished_at DATETIME,
   downloaded_at DATETIME,
   deleted_at DATETIME, -- 软删时间戳；NULL = 未删除
+  downloadable INTEGER DEFAULT 1, -- 下载管理可见性
   FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -545,6 +548,7 @@ CREATE TABLE IF NOT EXISTS audio_generations (
   finished_at DATETIME,
   downloaded_at DATETIME,
   deleted_at DATETIME, -- 软删时间戳；NULL = 未删除
+  downloadable INTEGER DEFAULT 1, -- 下载管理可见性
   FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -626,6 +630,7 @@ CREATE TABLE IF NOT EXISTS image_records (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   downloaded_at DATETIME,
   deleted_at DATETIME, -- 软删时间戳；NULL = 未删除
+  downloadable INTEGER DEFAULT 1, -- 下载管理可见性
   error_message TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_image_records_user ON image_records(user_id, created_at DESC);
