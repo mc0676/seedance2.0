@@ -1,10 +1,16 @@
 import type { GenerateVideoRequest, VideoGenerationResponse, FrameReferenceFlags } from '../types';
 import { getAuthHeaders } from './authService';
 
+export interface BatchGenerateResult {
+  batch: true;
+  taskIds: number[];
+  concurrent_id: string;
+}
+
 export async function generateVideo(
   request: GenerateVideoRequest & FrameReferenceFlags & { projectId?: number; resolution?: string; referenceMode?: string },
   onProgress?: (message: string) => void
-): Promise<VideoGenerationResponse> {
+): Promise<VideoGenerationResponse | BatchGenerateResult> {
   const formData = new FormData();
   formData.append('prompt', request.prompt);
   formData.append('model', request.model);
@@ -24,6 +30,9 @@ export async function generateVideo(
   }
   if (request.lastFrameProvided !== undefined) {
     formData.append('lastFrameProvided', String(request.lastFrameProvided));
+  }
+  if (request.batchSize && request.batchSize > 1) {
+    formData.append('batchSize', String(request.batchSize));
   }
 
   // 传 OSS URL（新方式）
@@ -52,6 +61,15 @@ export async function generateVideo(
   const submitData = await submitRes.json();
   if (!submitRes.ok) {
     throw new Error(submitData.error || `提交失败 (HTTP ${submitRes.status})`);
+  }
+
+  // 批量生成：返回 taskIds，不轮询（历史面板会自动刷新）
+  if (submitData.taskIds && Array.isArray(submitData.taskIds)) {
+    return {
+      batch: true,
+      taskIds: submitData.taskIds,
+      concurrent_id: submitData.concurrent_id,
+    };
   }
 
   const { taskId } = submitData;

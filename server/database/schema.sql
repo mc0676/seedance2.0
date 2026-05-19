@@ -137,6 +137,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   task_kind TEXT NOT NULL DEFAULT 'video' CHECK (task_kind IN ('video', 'audio_intermediate')),
   deleted_at DATETIME, -- 软删时间戳；NULL = 未删除，所有用户可见查询应过滤 WHERE deleted_at IS NULL
   downloadable INTEGER DEFAULT 1, -- 下载管理可见性：1=显示在下载管理，0=隐藏
+  concurrent_id TEXT, -- 批量生成批次 ID（同一批次的任务共享此 UUID）
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -292,6 +293,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status_download ON tasks(status, download_s
 CREATE INDEX IF NOT EXISTS idx_tasks_history_id ON tasks(history_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_item_id ON tasks(item_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_submit_id ON tasks(submit_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_concurrent_id ON tasks(concurrent_id);
 CREATE INDEX IF NOT EXISTS idx_task_assets_task_id ON task_assets(task_id);
 CREATE INDEX IF NOT EXISTS idx_generation_history_task_id ON generation_history(task_id);
 CREATE INDEX IF NOT EXISTS idx_jimeng_session_accounts_user_id ON jimeng_session_accounts(user_id);
@@ -472,6 +474,7 @@ CREATE TABLE IF NOT EXISTS tasks_happyhorse (
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   deleted_at DATETIME,
   downloadable INTEGER DEFAULT 1, -- 下载管理可见性
+  concurrent_id TEXT, -- 批量生成批次 ID（同一批次的任务共享此 UUID）
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
@@ -479,6 +482,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_happyhorse_user ON tasks_happyhorse(user_id
 CREATE INDEX IF NOT EXISTS idx_tasks_happyhorse_project ON tasks_happyhorse(project_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_happyhorse_status ON tasks_happyhorse(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_happyhorse_dashscope ON tasks_happyhorse(dashscope_task_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_happyhorse_concurrent_id ON tasks_happyhorse(concurrent_id);
 
 -- HappyHorse 计费表（mode × resolution → 积分/秒），命名沿用 model_pricing_* 规范
 CREATE TABLE IF NOT EXISTS model_pricing_happyhorse (

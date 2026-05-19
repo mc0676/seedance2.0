@@ -180,13 +180,14 @@ function cleanupExpiredDownloadTokens() {
   }
 }
 
-function createDownloadToken(taskId, userId) {
+function createDownloadToken(taskId, userId, extra = {}) {
   cleanupExpiredDownloadTokens();
   const token = crypto.randomBytes(24).toString('hex');
   downloadTokens.set(token, {
     taskId: String(taskId),
     userId: Number(userId),
     expiresAt: Date.now() + DOWNLOAD_TOKEN_TTL_MS,
+    ...extra,
   });
   return token;
 }
@@ -206,6 +207,18 @@ function consumeDownloadToken(token, userId = null) {
     return null;
   }
   downloadTokens.delete(token);
+  return record;
+}
+
+// 与 consumeDownloadToken 相同但不删除 token，允许下载暂停/续传时多次请求
+function validateDownloadToken(token) {
+  cleanupExpiredDownloadTokens();
+  const record = downloadTokens.get(token);
+  if (!record) return null;
+  if (record.expiresAt <= Date.now()) {
+    downloadTokens.delete(token);
+    return null;
+  }
   return record;
 }
 
@@ -1370,11 +1383,12 @@ app.delete('/api/video-enhancements/:id', authenticate, (req, res) => {
 // POST /api/generate-video - 提交任务, 立即返回 taskId
 app.post('/api/generate-video', authenticate, upload.array('files', 5), async (req, res) => {
   const startTime = Date.now();
-  let dbTaskId = null;
 
   try {
     const { prompt, ratio, duration, model, projectId: reqProjectId } = req.body;
     const referenceMode = req.body.referenceMode === 'first_last_frame' ? 'first_last_frame' : 'reference';
+    const maxConcurrent = parseInt(settingsService.getSetting('max_concurrent') || '5', 10);
+    const batchSize = Math.max(1, Math.min(parseInt(req.body.batchSize, 10) || 1, maxConcurrent || 5));
     const firstFrameProvided = String(req.body.firstFrameProvided || '') === 'true';
     const lastFrameProvided = String(req.body.lastFrameProvided || '') === 'true';
     const files = req.files;
@@ -1455,107 +1469,127 @@ app.post('/api/generate-video', authenticate, upload.array('files', 5), async (r
     if (!quota.unlimited) {
       const lockedSum = creditLockService.getLockedTotal(req.user.id);
       const available = quota.credits - lockedSum;
-      if (lockedCredits > 0 && available < lockedCredits) {
+      const totalNeeded = lockedCredits * batchSize;
+      if (lockedCredits > 0 && available < totalNeeded) {
         return res.status(402).json({
-          error: `可用积分不足（可用 ${available}，本次预计需要 ${lockedCredits}）`,
+          error: batchSize > 1
+            ? `批量生成 ${batchSize} 个任务积分不足（可用 ${available}，需要 ${totalNeeded}）`
+            : `可用积分不足（可用 ${available}，本次预计需要 ${lockedCredits}）`,
           estimate: estimateResult,
         });
       }
     }
+
+    // 批量生成时生成批次 ID
+    const concurrentId = batchSize > 1 ? crypto.randomUUID() : null;
 
     const apiKey = resolveApiKey();
     if (!apiKey) {
       return res.status(401).json({ error: getMissingSessionErrorMessage() });
     }
 
-    const taskId = createTaskId();
-    const task = {
-      id: taskId,
-      status: 'processing',
-      progress: '正在准备...',
-      startTime,
-      result: null,
-      error: null,
-    };
-    tasks.set(taskId, task);
-
+    // 创建 N 个任务（batchSize ≥ 1）
+    const taskIds = [];
+    const dbTaskIds = [];
+    const memTasks = [];
     let creditLockFailed = false;
-    try {
-      const createdTask = taskService.createTask({
-        projectId: targetProject.id,
-        userId: req.user.id,
-        prompt: prompt || '',
-        model: model || null,
-        ratio: ratio || null,
-        duration: duration ? String(duration) : null,
-        resolution: req.body.resolution || null,
-        status: 'generating',
-        downloadStatus: 'pending',
+
+    for (let i = 0; i < batchSize; i++) {
+      const taskId = createTaskId();
+      const task = {
+        id: taskId,
+        status: 'processing',
         progress: '正在准备...',
-        startedAt: new Date().toISOString(),
-      });
-      dbTaskId = createdTask.id;
-      console.log(`[生成任务] 数据库记录已创建，db_task_id = ${dbTaskId}, project_id = ${targetProject.id}`);
+        startTime,
+        result: null,
+        error: null,
+      };
+      tasks.set(taskId, task);
+      taskIds.push(taskId);
+      memTasks.push(task);
 
-      // 保存素材 URL 到 task_assets（供历史记录展示）
-      {
-        const db = getDatabase();
-        let sortOrder = 0;
-        const getOriginalName = (url) => url.startsWith('asset://') ? url : (url.split('/').pop()?.split('?')[0] || 'file');
-        for (const url of imageUrls) {
-          db.prepare(`INSERT INTO task_assets (task_id, asset_type, file_path, image_uri, original_name, sort_order) VALUES (?, 'image', '', ?, ?, ?)`)
-            .run(dbTaskId, url, getOriginalName(url), sortOrder++);
-        }
-        if (videoUrl) {
-          db.prepare(`INSERT INTO task_assets (task_id, asset_type, file_path, image_uri, original_name, sort_order) VALUES (?, 'video', '', ?, ?, ?)`)
-            .run(dbTaskId, videoUrl, getOriginalName(videoUrl), sortOrder++);
-        }
-        if (audioUrl) {
-          db.prepare(`INSERT INTO task_assets (task_id, asset_type, file_path, image_uri, original_name, sort_order) VALUES (?, 'audio', '', ?, ?, ?)`)
-            .run(dbTaskId, audioUrl, getOriginalName(audioUrl), sortOrder++);
-        }
-      }
+      try {
+        const createdTask = taskService.createTask({
+          projectId: targetProject.id,
+          userId: req.user.id,
+          prompt: prompt || '',
+          model: model || null,
+          ratio: ratio || null,
+          duration: duration ? String(duration) : null,
+          resolution: req.body.resolution || null,
+          status: 'generating',
+          downloadStatus: 'pending',
+          progress: '正在准备...',
+          startedAt: new Date().toISOString(),
+          concurrentId: concurrentId,
+        });
+        const thisDbTaskId = createdTask.id;
+        dbTaskIds.push(thisDbTaskId);
+        console.log(`[生成任务] 数据库记录已创建，db_task_id = ${thisDbTaskId}, project_id = ${targetProject.id}${concurrentId ? ', concurrent_id = ' + concurrentId : ''}`);
 
-      // 锁定预估积分（不立即扣，任务结束时按 actual 结算）
-      if (lockedCredits > 0) {
-        try {
-          creditLockService.lock({
-            userId: req.user.id,
-            taskId: dbTaskId,
-            estimatedCredits: estimateResult.credits,
-            lockedCredits,
-            meta: { ...estimateParams, model: resolvedModel },
-          });
-          console.log(`[积分] 锁定 ${lockedCredits}（预估 ${estimateResult.credits}）user=${req.user.id} task=${dbTaskId}`);
-        } catch (lockErr) {
-          console.error('[积分] 锁定失败：', lockErr.message);
-          // 锁定失败说明积分不足或DB异常，取消任务
-          if (dbTaskId) {
-            try { taskService.updateTaskStatus(dbTaskId, 'error', { error_message: '积分锁定失败：' + lockErr.message }); } catch {}
+        // 保存素材 URL 到 task_assets（每个任务独立一份）
+        {
+          const db = getDatabase();
+          let sortOrder = 0;
+          const getOriginalName = (url) => url.startsWith('asset://') ? url : (url.split('/').pop()?.split('?')[0] || 'file');
+          for (const url of imageUrls) {
+            db.prepare(`INSERT INTO task_assets (task_id, asset_type, file_path, image_uri, original_name, sort_order) VALUES (?, 'image', '', ?, ?, ?)`)
+              .run(thisDbTaskId, url, getOriginalName(url), sortOrder++);
           }
-          creditLockFailed = true;
-          if (!res.headersSent) {
-            res.status(402).json({ error: '积分锁定失败，任务已取消：' + lockErr.message });
+          if (videoUrl) {
+            db.prepare(`INSERT INTO task_assets (task_id, asset_type, file_path, image_uri, original_name, sort_order) VALUES (?, 'video', '', ?, ?, ?)`)
+              .run(thisDbTaskId, videoUrl, getOriginalName(videoUrl), sortOrder++);
+          }
+          if (audioUrl) {
+            db.prepare(`INSERT INTO task_assets (task_id, asset_type, file_path, image_uri, original_name, sort_order) VALUES (?, 'audio', '', ?, ?, ?)`)
+              .run(thisDbTaskId, audioUrl, getOriginalName(audioUrl), sortOrder++);
           }
         }
+
+        // 锁定预估积分
+        if (lockedCredits > 0) {
+          try {
+            creditLockService.lock({
+              userId: req.user.id,
+              taskId: thisDbTaskId,
+              estimatedCredits: estimateResult.credits,
+              lockedCredits,
+              meta: { ...estimateParams, model: resolvedModel },
+            });
+            console.log(`[积分] 锁定 ${lockedCredits}（预估 ${estimateResult.credits}）user=${req.user.id} task=${thisDbTaskId}`);
+          } catch (lockErr) {
+            console.error('[积分] 锁定失败：', lockErr.message);
+            if (thisDbTaskId) {
+              try { taskService.updateTaskStatus(thisDbTaskId, 'error', { error_message: '积分锁定失败：' + lockErr.message }); } catch {}
+            }
+            creditLockFailed = true;
+            if (!res.headersSent) {
+              res.status(402).json({ error: '积分锁定失败，任务已取消：' + lockErr.message });
+            }
+            break;
+          }
+        }
+      } catch (dbError) {
+        console.error('[生成任务] 创建数据库记录失败:', dbError.message);
+        creditLockFailed = true;
+        break;
       }
-    } catch (dbError) {
-      console.error('[生成任务] 创建数据库记录失败:', dbError.message);
     }
 
     if (creditLockFailed) return;
 
-    console.log(`\n========== [${taskId}] 收到视频生成请求 ==========`);
+    console.log(`\n========== 收到视频生成请求 (批量=${batchSize}) ==========`);
     console.log(`  prompt: ${(prompt || '').substring(0, 80)}${(prompt || '').length > 80 ? '...' : ''}`);
     console.log(`  model: ${model || 'seedance-2.0'}, ratio: ${ratio || '4:3'}, duration: ${duration || 4}秒`);
-    console.log(`  files: ${(files || []).length}张`);
-    (files || []).forEach((f, i) => {
-      console.log(
-        `  file[${i}]: ${f.originalname} (${f.mimetype}, ${(f.size / 1024).toFixed(1)}KB)`
-      );
-    });
+    console.log(`  files: ${(files || []).length}张, batchSize: ${batchSize}, concurrentId: ${concurrentId || '(无)'}`);
+    console.log(`  dbTaskIds: [${dbTaskIds.join(', ')}]`);
 
-    res.json({ taskId: dbTaskId || taskId, dbTaskId });
+    // 批量生成返回 taskIds 数组，单次生成保持向后兼容
+    if (batchSize > 1) {
+      res.json({ taskIds: dbTaskIds, concurrent_id: concurrentId });
+    } else {
+      res.json({ taskId: dbTaskIds[0], dbTaskId: dbTaskIds[0] });
+    }
 
     // 将 prompt 中的 @asset-xxx chip 标签转换为 Ark API 要求的"图片N/视频N/音频N"格式
     // 官方文档要求 content.text 中用位置序号指代素材，不能用 asset ID
@@ -1585,127 +1619,136 @@ app.post('/api/generate-video', authenticate, upload.array('files', 5), async (r
       }
     }
 
-    generateSeedanceVideoCore({
-      prompt: finalPrompt,
-      ratio: ratio || '4:3',
-      duration: parseInt(duration) || 4,
-      resolution,
-      files: files || [],
-      imageUrls: imageUrls || [],
-      videoUrl: videoUrl || null,
-      audioUrl: audioUrl || null,
-      sessionId: apiKey,
-      model: model || 'seedance-2.0',
-      referenceMode,
-      firstFrameProvided,
-      lastFrameProvided,
-      onProgress: async (progress) => {
-        task.progress = progress;
-        console.log(`[${taskId}] 进度：${progress}`);
-        if (dbTaskId) {
-          try { taskService.updateTask(dbTaskId, { progress }); } catch {}
-        }
-      },
-      onSubmitId: async (submitId) => {
-        if (dbTaskId) {
-          try {
-            taskService.updateTask(dbTaskId, { submit_id: submitId, submitted_at: new Date().toISOString() });
-            console.log(`[生成任务] submitId 已保存到数据库：${submitId}`);
-          } catch {}
-        }
-      },
-      onHistoryId: async (historyId) => {
-        if (dbTaskId) {
-          try {
-            taskService.updateTask(dbTaskId, { history_id: historyId, status: 'generating' });
-            console.log(`[生成任务] historyId 已保存到数据库：${historyId}`);
-          } catch {}
-        }
-      },
-      onItemId: async (itemId) => {
-        if (dbTaskId) {
-          try {
-            taskService.updateTask(dbTaskId, { item_id: itemId });
-            console.log(`[生成任务] itemId 已保存到数据库：${itemId}`);
-          } catch {}
-        }
-      },
-      onVideoReady: async (videoUrl) => {
-        if (dbTaskId) {
-          try { taskService.updateTask(dbTaskId, { video_url: videoUrl }); } catch {}
-        }
-      },
-    })
-      .then((result) => {
-        // 按 Ark API 返回的 usage.total_tokens 实际扣费；缺失或 0 则视为未计费
-        try {
-          console.log(`[计费][ark-usage] task=${dbTaskId} usage=${JSON.stringify(result?.usage || null)}`);
-          const tokens = Number(result?.usage?.total_tokens) || Number(result?.usage?.completion_tokens) || 0;
+    // 为每个任务启动异步生成（批次内每个请求间隔 2s 避免瞬时并发冲击）
+    for (let i = 0; i < dbTaskIds.length; i++) {
+      if (i > 0) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+      const dbTaskId = dbTaskIds[i];
+      const taskId = taskIds[i];
+      const task = memTasks[i];
+
+      generateSeedanceVideoCore({
+        prompt: finalPrompt,
+        ratio: ratio || '4:3',
+        duration: parseInt(duration) || 4,
+        resolution,
+        files: files || [],
+        imageUrls: imageUrls || [],
+        videoUrl: videoUrl || null,
+        audioUrl: audioUrl || null,
+        sessionId: apiKey,
+        model: model || 'seedance-2.0',
+        referenceMode,
+        firstFrameProvided,
+        lastFrameProvided,
+        onProgress: async (progress) => {
+          task.progress = progress;
+          console.log(`[${taskId}] 进度：${progress}`);
           if (dbTaskId) {
-            if (tokens > 0) {
-              const actualCredits = pricingService.actualCredits(model || 'seedance-2.0', tokens, estimateParams);
-              creditLockService.settle({ taskId: dbTaskId, actualCredits });
-              console.log(`[积分] 结算 task=${dbTaskId} tokens=${tokens} credits=${actualCredits}`);
-            } else {
-              creditLockService.release({ taskId: dbTaskId, reason: 'usage 缺失或 token=0，视为未计费' });
-              console.log(`[积分] 释放 task=${dbTaskId}（usage 缺失）`);
+            try { taskService.updateTask(dbTaskId, { progress }); } catch {}
+          }
+        },
+        onSubmitId: async (submitId) => {
+          if (dbTaskId) {
+            try {
+              taskService.updateTask(dbTaskId, { submit_id: submitId, submitted_at: new Date().toISOString() });
+              console.log(`[生成任务] submitId 已保存到数据库：${submitId}`);
+            } catch {}
+          }
+        },
+        onHistoryId: async (historyId) => {
+          if (dbTaskId) {
+            try {
+              taskService.updateTask(dbTaskId, { history_id: historyId, status: 'generating' });
+              console.log(`[生成任务] historyId 已保存到数据库：${historyId}`);
+            } catch {}
+          }
+        },
+        onItemId: async (itemId) => {
+          if (dbTaskId) {
+            try {
+              taskService.updateTask(dbTaskId, { item_id: itemId });
+              console.log(`[生成任务] itemId 已保存到数据库：${itemId}`);
+            } catch {}
+          }
+        },
+        onVideoReady: async (videoUrl) => {
+          if (dbTaskId) {
+            try { taskService.updateTask(dbTaskId, { video_url: videoUrl }); } catch {}
+          }
+        },
+      })
+        .then((result) => {
+          try {
+            console.log(`[计费][ark-usage] task=${dbTaskId} usage=${JSON.stringify(result?.usage || null)}`);
+            const tokens = Number(result?.usage?.total_tokens) || Number(result?.usage?.completion_tokens) || 0;
+            if (dbTaskId) {
+              if (tokens > 0) {
+                const actualCredits = pricingService.actualCredits(model || 'seedance-2.0', tokens, estimateParams);
+                creditLockService.settle({ taskId: dbTaskId, actualCredits });
+                console.log(`[积分] 结算 task=${dbTaskId} tokens=${tokens} credits=${actualCredits}`);
+              } else {
+                creditLockService.release({ taskId: dbTaskId, reason: 'usage 缺失或 token=0，视为未计费' });
+                console.log(`[积分] 释放 task=${dbTaskId}（usage 缺失）`);
+              }
+            }
+          } catch (usageErr) {
+            console.error('[usage] 结算积分失败:', usageErr.message);
+          }
+          task.status = 'done';
+          task.result = {
+            created: Math.floor(Date.now() / 1000),
+            data: [{ url: result.videoUrl, revised_prompt: result.revisedPrompt || prompt || '' }],
+          };
+          const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+          console.log(`========== [${taskId}] ✅ 视频生成成功 (${elapsed}秒) ==========\n`);
+
+          if (dbTaskId) {
+            try {
+              taskService.updateTaskStatus(dbTaskId, 'done', {
+                submit_id: result.submitId || null,
+                history_id: result.historyId || null,
+                item_id: result.itemId || null,
+                video_url: result.videoUrl,
+                progress: '',
+                error_message: null,
+              });
+              console.log('[生成任务] 数据库记录已更新，status = done');
+            } catch (dbError) {
+              console.error('[生成任务] 更新数据库记录失败:', dbError.message);
             }
           }
-        } catch (usageErr) {
-          console.error('[usage] 结算积分失败:', usageErr.message);
-        }
-        task.status = 'done';
-        task.result = {
-          created: Math.floor(Date.now() / 1000),
-          data: [{ url: result.videoUrl, revised_prompt: result.revisedPrompt || prompt || '' }],
-        };
-        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        console.log(`========== [${taskId}] ✅ 视频生成成功 (${elapsed}秒) ==========\n`);
-
-        if (dbTaskId) {
+        })
+        .catch((err) => {
+          task.status = 'error';
+          task.error = err.message || '视频生成失败';
           try {
-            taskService.updateTaskStatus(dbTaskId, 'done', {
-              submit_id: result.submitId || null,
-              history_id: result.historyId || null,
-              item_id: result.itemId || null,
-              video_url: result.videoUrl,
-              progress: '',
-              error_message: null,
-            });
-            console.log('[生成任务] 数据库记录已更新，status = done');
-          } catch (dbError) {
-            console.error('[生成任务] 更新数据库记录失败:', dbError.message);
+            if (dbTaskId) {
+              creditLockService.release({ taskId: dbTaskId, reason: err.message || '生成失败' });
+              console.log(`[积分] 释放 task=${dbTaskId}（生成失败）`);
+            }
+            usageService.logFailure({ userId: req.user.id, taskId: dbTaskId, model: model || 'seedance-2.0', errorMessage: err.message });
+          } catch (usageErr) {
+            console.error('[usage] 释放积分失败:', usageErr.message);
           }
-        }
-      })
-      .catch((err) => {
-        task.status = 'error';
-        task.error = err.message || '视频生成失败';
-        try {
+          const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+          console.error(`========== [${taskId}] ❌ 视频生成失败 (${elapsed}秒): ${err.message} ==========\n`);
+          if (err.stack) console.error(err.stack);
+
           if (dbTaskId) {
-            creditLockService.release({ taskId: dbTaskId, reason: err.message || '生成失败' });
-            console.log(`[积分] 释放 task=${dbTaskId}（生成失败）`);
+            try {
+              taskService.updateTaskStatus(dbTaskId, 'error', {
+                progress: '',
+                error_message: err.message,
+              });
+              console.log('[生成任务] 数据库记录已更新，status = error');
+            } catch (dbError) {
+              console.error('[生成任务] 更新数据库记录失败:', dbError.message);
+            }
           }
-          usageService.logFailure({ userId: req.user.id, taskId: dbTaskId, model: model || 'seedance-2.0', errorMessage: err.message });
-        } catch (usageErr) {
-          console.error('[usage] 释放积分失败:', usageErr.message);
-        }
-        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        console.error(`========== [${taskId}] ❌ 视频生成失败 (${elapsed}秒): ${err.message} ==========\n`);
-        if (err.stack) console.error(err.stack);
-
-        if (dbTaskId) {
-          try {
-            taskService.updateTaskStatus(dbTaskId, 'error', {
-              progress: '',
-              error_message: err.message,
-            });
-            console.log('[生成任务] 数据库记录已更新，status = error');
-          } catch (dbError) {
-            console.error('[生成任务] 更新数据库记录失败:', dbError.message);
-          }
-        }
-      });
+        });
+    }
   } catch (error) {
     console.error(`请求处理错误: ${error.message}`);
     if (!res.headersSent) {
@@ -2412,6 +2455,76 @@ app.get('/api/download/tasks/:id/preview', authenticate, async (req, res) => {
   }
 });
 
+// POST /api/download/video-proxy-token - 创建远程视频代理下载 token（CORS 回退方案）
+app.post('/api/download/video-proxy-token', authenticate, async (req, res) => {
+  try {
+    const { videoUrl, filename } = req.body || {};
+    if (!videoUrl || typeof videoUrl !== 'string') {
+      return res.status(400).json({ error: '缺少 videoUrl' });
+    }
+    // 用 URL 的 hash 作为 taskId 占位（只需要唯一标识，不需要真实 taskId）
+    const pseudoId = crypto.createHash('md5').update(videoUrl).digest('hex').slice(0, 8);
+    const token = createDownloadToken(pseudoId, req.user.id, { videoUrl, filename: filename || 'video.mp4' });
+    res.json({ success: true, data: { token } });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/download/video-by-token - 使用 token 代理下载远程视频（无需登录态，支持断点续传）
+app.get('/api/download/video-by-token', async (req, res) => {
+  try {
+    const token = String(req.query.token || '');
+    if (!token) {
+      return res.status(400).json({ error: '下载参数无效' });
+    }
+
+    const record = validateDownloadToken(token);
+    if (!record || !record.videoUrl) {
+      return res.status(401).json({ error: '下载链接已失效，请重试' });
+    }
+
+    const headers = {};
+    const range = req.headers.range;
+    if (range) headers.Range = range;
+
+    const upstream = await fetch(record.videoUrl, { headers });
+    if (!upstream.ok && upstream.status !== 206) {
+      return res.status(502).json({ error: `上游视频请求失败 HTTP ${upstream.status}` });
+    }
+
+    const contentLength = upstream.headers.get('content-length');
+    const contentType = upstream.headers.get('content-type') || 'video/mp4';
+    const contentRange = upstream.headers.get('content-range');
+
+    if (upstream.status === 206 && contentRange) {
+      res.status(206);
+      res.setHeader('Content-Range', contentRange);
+      res.setHeader('Accept-Ranges', 'bytes');
+    } else {
+      res.setHeader('Accept-Ranges', 'bytes');
+    }
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${record.filename || 'video.mp4'}"`);
+    res.setHeader('Cache-Control', 'no-store');
+    if (contentLength) res.setHeader('Content-Length', contentLength);
+
+    const reader = upstream.body.getReader();
+    const pump = async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) { res.end(); break; }
+        res.write(value);
+      }
+    };
+    pump().catch(() => { if (!res.writableEnded) res.end(); });
+  } catch (error) {
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
 // POST /api/download/tasks/:id/file-token - 创建一次性下载 token
 app.post('/api/download/tasks/:id/file-token', authenticate, async (req, res) => {
   try {
@@ -2495,7 +2608,7 @@ app.get('/api/download/tasks/:id/file', authenticate, async (req, res) => {
 // GET /api/download/tasks - 获取下载任务列表
 app.get('/api/download/tasks', authenticate, (req, res) => {
   try {
-    const { status = 'all', type = 'all', page = 1, pageSize = 20, projectId, includeHappyhorse, skipDownloadableFilter } = req.query;
+    const { status = 'all', type = 'all', page = 1, pageSize = 20, projectId, includeHappyhorse, skipDownloadableFilter, groupByConcurrent } = req.query;
     const isAdmin = ['admin','super_admin'].includes(req.user.role);
     const result = videoDownloader.getDownloadTasks({
       status,
@@ -2508,6 +2621,7 @@ app.get('/api/download/tasks', authenticate, (req, res) => {
       // 仅当显式 ?includeHappyhorse=1 时，把 HappyHorse 行合并到 video / all
       includeHappyhorse: includeHappyhorse === '1' || includeHappyhorse === 'true',
       skipDownloadableFilter: skipDownloadableFilter === '1' || skipDownloadableFilter === 'true',
+      groupByConcurrent: groupByConcurrent === '1' || groupByConcurrent === 'true',
     });
     res.json({ success: true, data: result });
   } catch (error) {
@@ -4686,8 +4800,10 @@ app.post('/api/happyhorse-tasks', authenticate, async (req, res) => {
     const {
       projectId, mode, prompt, resolution,
       ratio, duration, media, audioSetting, seed,
-      inputVideoDurationSec,
+      inputVideoDurationSec, batchSize: rawBatchSize,
     } = req.body || {};
+    const maxHHConcurrent = parseInt(settingsService.getSetting('max_concurrent') || '5', 10);
+    const batchSize = Math.max(1, Math.min(parseInt(rawBatchSize, 10) || 1, maxHHConcurrent || 5));
 
     const m = String(mode || '').toLowerCase();
     if (!HAPPYHORSE_MODE_MODELS[m]) {
@@ -4701,7 +4817,7 @@ app.post('/api/happyhorse-tasks', authenticate, async (req, res) => {
     if (!project) return res.status(403).json({ error: '工作组不存在或您不是该工作组成员' });
 
     const promptStr = String(prompt || '').trim();
-    if (!promptStr && m !== 'i2v') return res.status(400).json({ error: '请输入文本提示词' });
+    if (!promptStr && m === 't2v') return res.status(400).json({ error: '请输入文本提示词' });
     if (promptStr.length > 5000) return res.status(400).json({ error: '提示词过长（≤5000 字符）' });
 
     const resolutionUp = String(resolution || '').toUpperCase();
@@ -4774,6 +4890,25 @@ app.post('/api/happyhorse-tasks', authenticate, async (req, res) => {
     }
     const lockedCredits = est.lockedCredits;
 
+    // 批量生成：检查总积分
+    if (batchSize > 1) {
+      const quota = usageService.checkUserQuota(req.user.id);
+      if (!quota.allowed) {
+        return res.status(402).json({ error: `积分不足（当前 ${quota.credits}），请联系管理员充值` });
+      }
+      if (!quota.unlimited) {
+        const lockedSum = creditLockService.getLockedTotal(req.user.id);
+        const available = quota.credits - lockedSum;
+        const totalNeeded = lockedCredits * batchSize;
+        if (lockedCredits > 0 && available < totalNeeded) {
+          return res.status(402).json({
+            error: `批量生成 ${batchSize} 个任务积分不足（可用 ${available}，需要 ${totalNeeded}）`,
+          });
+        }
+      }
+    }
+    const hhConcurrentId = batchSize > 1 ? crypto.randomUUID() : null;
+
     // API Key
     const apiKeyRow = db.prepare("SELECT value FROM system_config WHERE key = 'happyhorse_api_key'").get();
     const apiKey = apiKeyRow?.value || '';
@@ -4785,36 +4920,51 @@ app.post('/api/happyhorse-tasks', authenticate, async (req, res) => {
     const audioSettingStr = (m === 'video-edit' && (audioSetting === 'origin' || audioSetting === 'auto')) ? audioSetting : null;
     const seedNum = (seed !== undefined && seed !== null && seed !== '') ? parseInt(seed, 10) : null;
 
-    // 预插入
-    const ins = db.prepare(
-      `INSERT INTO tasks_happyhorse
-         (user_id, project_id, mode, model, prompt, ratio, duration, resolution, media_json,
-          watermark, audio_setting, seed, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
-    ).run(
-      req.user.id, pid, m, HAPPYHORSE_MODE_MODELS[m], promptStr, normalizedRatio,
-      normalizedDuration, resolutionUp, mediaJson, wm, audioSettingStr, Number.isFinite(seedNum) ? seedNum : null,
-    );
-    const happyhorseTaskId = ins.lastInsertRowid;
+    // 批量：创建 N 条任务，锁定积分，并行提交 DashScope
+    const hhTaskIds = [];
+    const hhResults = [];
 
-    // 锁定积分
-    try {
-      creditLockService.lockForHappyhorse({
-        userId: req.user.id,
-        happyhorseTaskId,
-        credits: lockedCredits,
-        meta: {
-          mode: m, model: HAPPYHORSE_MODE_MODELS[m],
-          resolution: resolutionUp, ratio: normalizedRatio, duration: normalizedDuration,
-          estimated_credits: est.credits, credits_per_second: est.creditsPerSecond,
-        },
-      });
-    } catch (e) {
-      db.prepare('DELETE FROM tasks_happyhorse WHERE id = ?').run(happyhorseTaskId);
-      return res.status(402).json({ error: e.message });
+    for (let i = 0; i < batchSize; i++) {
+      // 预插入
+      const ins = db.prepare(
+        `INSERT INTO tasks_happyhorse
+           (user_id, project_id, mode, model, prompt, ratio, duration, resolution, media_json,
+            watermark, audio_setting, seed, status, concurrent_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+      ).run(
+        req.user.id, pid, m, HAPPYHORSE_MODE_MODELS[m], promptStr, normalizedRatio,
+        normalizedDuration, resolutionUp, mediaJson, wm, audioSettingStr, Number.isFinite(seedNum) ? seedNum : null,
+        hhConcurrentId,
+      );
+      const happyhorseTaskId = ins.lastInsertRowid;
+      hhTaskIds.push(happyhorseTaskId);
+
+      try {
+        creditLockService.lockForHappyhorse({
+          userId: req.user.id,
+          happyhorseTaskId,
+          credits: lockedCredits,
+          meta: {
+            mode: m, model: HAPPYHORSE_MODE_MODELS[m],
+            resolution: resolutionUp, ratio: normalizedRatio, duration: normalizedDuration,
+            estimated_credits: est.credits, credits_per_second: est.creditsPerSecond,
+          },
+        });
+      } catch (e) {
+        db.prepare('DELETE FROM tasks_happyhorse WHERE id = ?').run(happyhorseTaskId);
+        // 回滚已创建的前几个任务
+        for (const tid of hhTaskIds) {
+          if (tid !== happyhorseTaskId) {
+            try { creditLockService.releaseForHappyhorse({ happyhorseTaskId: tid, reason: '批量创建回滚' }); } catch {}
+          }
+        }
+        return res.status(402).json({ error: e.message });
+      }
+
+      hhResults.push({ id: happyhorseTaskId, lockedCredits });
     }
 
-    // 调 DashScope
+    // 顺序提交 DashScope（每个请求间隔 2s）
     const apiInput = { prompt: promptStr };
     if (apiInputMedia) apiInput.media = apiInputMedia;
     const apiParams = { resolution: resolutionUp, watermark: wm === 1 };
@@ -4823,29 +4973,52 @@ app.post('/api/happyhorse-tasks', authenticate, async (req, res) => {
     if (audioSettingStr) apiParams.audio_setting = audioSettingStr;
     if (Number.isFinite(seedNum)) apiParams.seed = seedNum;
 
-    let result;
-    try {
-      result = await happyhorseService.submitTask({
-        apiKey,
-        model: HAPPYHORSE_MODE_MODELS[m],
-        input: apiInput,
-        parameters: apiParams,
-      });
-    } catch (e) {
-      creditLockService.releaseForHappyhorse({ happyhorseTaskId, reason: 'DashScope 提交失败：' + e.message });
-      db.prepare(`UPDATE tasks_happyhorse SET status='error', error_message=?, completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
-        .run(e.message, happyhorseTaskId);
-      return res.status(502).json({ error: '马匹提交失败：' + e.message });
+    // 顺序提交 DashScope，每个请求间隔 2s 避免瞬时并发冲击
+    const submitResults = [];
+    for (let i = 0; i < hhTaskIds.length; i++) {
+      if (i > 0) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+      const hhId = hhTaskIds[i];
+      try {
+        const result = await happyhorseService.submitTask({
+          apiKey,
+          model: HAPPYHORSE_MODE_MODELS[m],
+          input: apiInput,
+          parameters: apiParams,
+        });
+        db.prepare(
+          `UPDATE tasks_happyhorse
+           SET dashscope_task_id=?, request_id=?, status='processing', submitted_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+           WHERE id=?`
+        ).run(result.task_id, result.request_id || null, hhId);
+        submitResults.push({ id: hhId, success: true, dashscope_task_id: result.task_id });
+      } catch (e) {
+        creditLockService.releaseForHappyhorse({ happyhorseTaskId: hhId, reason: 'DashScope 提交失败：' + e.message });
+        db.prepare(`UPDATE tasks_happyhorse SET status='error', error_message=?, completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+          .run(e.message, hhId);
+        submitResults.push({ id: hhId, success: false, error: e.message });
+      }
+    }
+    const allFailed = submitResults.every((r) => !r.success);
+
+    if (allFailed) {
+      return res.status(502).json({ error: '马匹提交失败：所有任务提交均失败' });
     }
 
-    db.prepare(
-      `UPDATE tasks_happyhorse
-       SET dashscope_task_id=?, request_id=?, status='processing', submitted_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
-       WHERE id=?`
-    ).run(result.task_id, result.request_id || null, happyhorseTaskId);
+    const rows = hhTaskIds.map((hhId) => db.prepare('SELECT * FROM tasks_happyhorse WHERE id = ?').get(hhId));
+    const tasks_ = rows.map((row) => happyhorseRowToDto(row));
 
-    const row = db.prepare('SELECT * FROM tasks_happyhorse WHERE id = ?').get(happyhorseTaskId);
-    res.json({ success: true, data: happyhorseRowToDto(row), estimatedCredits: est.credits, lockedCredits });
+    if (batchSize > 1) {
+      res.json({
+        success: true,
+        data: { tasks: tasks_, concurrent_id: hhConcurrentId, batchSize },
+        estimatedCredits: est.credits,
+        lockedCredits: lockedCredits * batchSize,
+      });
+    } else {
+      res.json({ success: true, data: tasks_[0], estimatedCredits: est.credits, lockedCredits });
+    }
   } catch (error) {
     console.error('[happyhorse] 提交失败:', error);
     res.status(500).json({ error: error.message });

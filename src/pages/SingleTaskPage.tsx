@@ -11,7 +11,7 @@ import { RATIO_OPTIONS, DURATION_OPTIONS, MODEL_OPTIONS } from '../types/index';
 import { generateVideo } from '../services/videoService';
 import { uploadToOss, FILE_LIMITS, validateMediaCombination } from '../services/ossService';
 import { estimatePricing, getCreditBalance, listEnabledModels, type RuntimeModelOption } from '../services/pricingService';
-import { getDownloadTasks, deleteTaskFromHistory } from '../services/downloadService';
+import { getDownloadTasks, deleteTaskFromHistory, downloadTaskVideoDirect, makeDownloadFilename } from '../services/downloadService';
 import { GearIcon, PlusIcon, CloseIcon, SparkleIcon } from '../components/Icons';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
@@ -253,6 +253,9 @@ export default function SingleTaskPage() {
   const [estimate, setEstimate] = useState<{ credits: number; lockedCredits: number; tokens: number; warn?: string } | null>(null);
   const [balance, setBalance] = useState<{ credits: number; unlimited: boolean; locked: number; available: number } | null>(null);
   const [runtimeModels, setRuntimeModels] = useState<RuntimeModelOption[]>([]);
+  // 批量生成
+  const maxConcurrent = Math.max(1, parseInt(settings.max_concurrent || '5', 10) || 5);
+  const [batchSize, setBatchSize] = useState(1);
   // History panel state
   const [historyItems, setHistoryItems] = useState<DownloadTask[]>([]);
   const [historyPage, setHistoryPage] = useState(1);
@@ -781,7 +784,7 @@ export default function SingleTaskPage() {
     const projectId = overrideProjectId !== undefined ? overrideProjectId : (state.currentProject?.id ?? null);
     const gen = historyGenRef.current;
     try {
-      const result = await getDownloadTasks('all', 'video', page, 20, projectId, false, true);
+      const result = await getDownloadTasks('all', 'video', page, 20, projectId, false, true, true);
       if (gen !== historyGenRef.current) return; // 工作组已切换，丢弃过期响应
       setHistoryItems((prev) => append ? [...prev, ...result.tasks] : result.tasks);
       setHistoryHasMore(result.tasks.length === 20 && result.tasks.length + (append ? historyItems.length : 0) < result.total);
@@ -854,10 +857,12 @@ export default function SingleTaskPage() {
     return () => observer.disconnect();
   }, [historyHasMore, historyLoading, historyPage, loadHistory]);
 
-  // 实时估算积分
+  // 实时估算积分（requestId 计数器确保始终使用最新结果）
+  const estimateRequestRef = useRef(0);
   useEffect(() => {
     if (!model) { setEstimate(null); return; }
     const ctrl = new AbortController();
+    const reqId = ++estimateRequestRef.current;
     const timer = setTimeout(() => {
       estimatePricing({
         model,
@@ -868,8 +873,12 @@ export default function SingleTaskPage() {
         hasAudio: audios.length > 0,
         isDraft: false,
       })
-        .then((r) => { if (!ctrl.signal.aborted) setEstimate({ credits: r.credits, lockedCredits: r.lockedCredits, tokens: r.tokens, warn: r.warn }); })
-        .catch(() => { if (!ctrl.signal.aborted) setEstimate(null); });
+        .then((r) => {
+          if (!ctrl.signal.aborted && reqId === estimateRequestRef.current) {
+            setEstimate({ credits: r.credits, lockedCredits: r.lockedCredits, tokens: r.tokens, warn: r.warn });
+          }
+        })
+        .catch(() => { if (!ctrl.signal.aborted && reqId === estimateRequestRef.current) setEstimate(null); });
     }, 200);
     return () => { ctrl.abort(); clearTimeout(timer); };
   }, [model, duration, ratio, resolution, videos.length, audios.length]);
@@ -1381,8 +1390,11 @@ export default function SingleTaskPage() {
 
     // 积分余额预检（避免提交后才被后端拒绝）
     if (balance && !balance.unlimited && estimate && estimate.lockedCredits > 0) {
-      if (balance.available < estimate.lockedCredits) {
-        alert(`可用积分不足（可用 ${balance.available}，本次预计需要 ${estimate.lockedCredits}）\n当前总积分 ${balance.credits}，其中 ${balance.locked} 积分被其他任务锁定。`);
+      const totalNeeded = estimate.lockedCredits * batchSize;
+      if (balance.available < totalNeeded) {
+        alert(batchSize > 1
+          ? `批量生成 ${batchSize} 个任务积分不足（可用 ${balance.available}，需要 ${totalNeeded}）`
+          : `可用积分不足（可用 ${balance.available}，本次预计需要 ${estimate.lockedCredits}）`);
         return;
       }
     }
@@ -1492,9 +1504,20 @@ export default function SingleTaskPage() {
           videoUrl: videoUrl || undefined,
           audioUrl: audioUrl || undefined,
           projectId: state.currentProject?.id,
+          batchSize: batchSize > 1 ? batchSize : undefined,
         },
         (progress) => setGeneration((prev) => ({ ...prev, progress }))
       );
+
+      // 批量生成：不轮询，直接刷新历史
+      if ('taskIds' in result) {
+        setGeneration({ status: 'success', result: undefined });
+        if (state.currentProject) {
+          void loadProjectTasks(state.currentProject.id);
+        }
+        void loadHistory(1, false);
+        return;
+      }
 
       if (result.data?.[0]?.url) {
         setGeneration({ status: 'success', result });
@@ -1552,7 +1575,7 @@ export default function SingleTaskPage() {
 
   const activeImages = referenceMode === 'first_last_frame' ? [...firstFrameImages, ...lastFrameImages] : images;
   const canGenerate = (prompt.trim() || activeImages.length > 0 || videos.length > 0 || audios.length > 0 || assetSelections.length > 0) && !isGenerating && !uploading;
-  const creditInsufficient = !!(balance && !balance.unlimited && estimate && estimate.lockedCredits > 0 && balance.available < estimate.lockedCredits);
+  const creditInsufficient = !!(balance && !balance.unlimited && estimate && estimate.lockedCredits > 0 && balance.available < estimate.lockedCredits * batchSize);
   const currentModelLabel = runtimeModels.find((m) => m.model_key === model)?.label
     || MODEL_OPTIONS.find((m) => m.value === model)?.label
     || 'Seedance 2.0';
@@ -2005,6 +2028,19 @@ export default function SingleTaskPage() {
             )}
 
             <div className="flex gap-3">
+              {/* 批量生成选择器：只有 max_concurrent > 1 时显示 */}
+              {maxConcurrent > 1 && (
+                <select
+                  value={batchSize}
+                  onChange={(e) => setBatchSize(parseInt(e.target.value, 10))}
+                  disabled={isGenerating || uploading}
+                  className="px-3 py-3 rounded-xl text-sm font-medium border border-gray-700 bg-[#161824] text-gray-300 focus:outline-none focus:border-purple-500 disabled:opacity-40"
+                >
+                  {Array.from({ length: maxConcurrent }, (_, i) => i + 1).map((n) => (
+                    <option key={n} value={n}>数量：{n}</option>
+                  ))}
+                </select>
+              )}
               <button
                 onClick={handleGenerate}
                 disabled={!canGenerate}
@@ -2019,7 +2055,7 @@ export default function SingleTaskPage() {
                 ) : uploading ? (
                   <><span className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />上传中...</>
                 ) : creditInsufficient ? (
-                  <>⚠️ 可用积分不足（可用 {balance!.available}，需 {estimate!.lockedCredits}）</>
+                  <>⚠️ 可用积分不足（可用 {balance!.available}，需 {estimate!.lockedCredits * batchSize}）</>
                 ) : (
                   <><SparkleIcon className="w-4 h-4" />生成视频</>
                 )}
@@ -2052,8 +2088,8 @@ export default function SingleTaskPage() {
                 </span>
                 {estimate && estimate.credits > 0 ? (
                   <span>
-                    本次预计消耗 <span className="text-purple-300 font-semibold">{estimate.credits}</span> 积分
-                    <span className="ml-2 text-gray-500">（锁定 {estimate.lockedCredits}）</span>
+                    本次预计消耗 <span className="text-purple-300 font-semibold">{estimate.credits * batchSize}</span> 积分
+                    <span className="ml-2 text-gray-500">（锁定 {estimate.lockedCredits * batchSize}）</span>
                   </span>
                 ) : (
                   <span>请选择模型与时长</span>
@@ -2096,10 +2132,14 @@ export default function SingleTaskPage() {
         <div className="px-4 pb-4 space-y-3">
           {historyItems.map((item) => {
             const playUrl = item.video_url;
+            const isGroup = !!item.concurrent_id;
+            const allGroupItems = isGroup ? [item, ...(item.concurrent_items || [])] : [item];
+
             return (
-            <div key={item.id} className="bg-[#1c1f2e] border border-gray-800 hover:border-gray-700 rounded-2xl overflow-hidden transition-all">
+            <div key={isGroup ? (item.concurrent_id || `group-${item.id}`) : item.id} className="bg-[#1c1f2e] border border-gray-800 hover:border-gray-700 rounded-2xl overflow-hidden transition-all">
               <div className="flex gap-3 p-3 items-start">
-                {/* Thumbnail / status */}
+                {/* Thumbnail / status — 非批量时显示 */}
+                {!isGroup && (
                 <div
                   className="w-[25vh] h-[25vh] min-w-[120px] min-h-[120px] flex-shrink-0 rounded-xl overflow-hidden bg-[#0f111a] flex items-center justify-center cursor-pointer relative group"
                   onClick={() => {
@@ -2132,19 +2172,20 @@ export default function SingleTaskPage() {
                     <span className="text-xs text-gray-500 text-center px-1">待下载</span>
                   )}
                 </div>
+                )}
 
                 {/* Info */}
                 <div className="flex-1 min-w-0 flex flex-col gap-1.5">
                   {/* Prompt */}
                   <p className="text-xs text-gray-300 line-clamp-2 leading-relaxed">{item.prompt || '（无提示词）'}</p>
 
-                  {/* 报错信息直接显示在卡片内 */}
-                  {item.status === 'error' && item.error_message && (
+                  {/* 报错信息直接显示在卡片内（仅非批量时） */}
+                  {!isGroup && item.status === 'error' && item.error_message && (
                     <p className="text-xs text-red-400 line-clamp-3 leading-relaxed bg-red-950/30 rounded-lg px-2 py-1">{parseArkError(item.error_message)}</p>
                   )}
 
-                  {/* Asset thumbnails */}
-                  {item.assets && item.assets.length > 0 && (
+                  {/* Asset thumbnails（仅非批量时） */}
+                  {!isGroup && item.assets && item.assets.length > 0 && (
                     <div className="flex gap-1 flex-wrap">
                       {item.assets.filter((a) => a.assetType === 'image').slice(0, 5).map((a, i) => (
                         a.uri.startsWith('asset://') ? (
@@ -2162,7 +2203,88 @@ export default function SingleTaskPage() {
                     </div>
                   )}
 
-                  {/* Bottom row: date (left) + params+actions (right) */}
+                  {/* 批量生成的子项网格 */}
+                  {isGroup && (
+                    <div className="mt-1">
+                      <span className="text-[10px] text-purple-400 bg-purple-500/10 px-1.5 py-0.5 rounded">批量生成 · {allGroupItems.length} 个视频</span>
+                      <div className="grid grid-cols-3 gap-2 mt-2">
+                        {allGroupItems.map((sub) => {
+                          const subPlayUrl = sub.video_url;
+                          const isSubDone = sub.status === 'done' && subPlayUrl;
+                          const isSubGenerating = sub.status === 'generating';
+                          const isSubError = sub.status === 'error';
+                          return (
+                            <div key={sub.id} className="bg-[#0f111a] rounded-xl overflow-hidden border border-gray-800">
+                              <div
+                              className="h-[15vh] min-h-[80px] cursor-pointer relative group flex items-center justify-center"
+                                onClick={() => {
+                                  if (subPlayUrl) setPreviewVideo({ url: subPlayUrl, prompt: item.prompt, error: null });
+                                }}
+                              >
+                                {isSubDone ? (
+                                  <>
+                                    <video src={subPlayUrl} muted className="w-full h-full object-cover" preload="metadata" />
+                                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                      <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                                    </div>
+                                  </>
+                                ) : isSubGenerating ? (
+                                  <span className="text-[10px] text-purple-400">生成中</span>
+                                ) : isSubError ? (
+                                  <span className="text-[10px] text-red-400">失败</span>
+                                ) : (
+                                  <span className="text-[10px] text-gray-500">待下载</span>
+                                )}
+                              </div>
+                              <div className="flex gap-1 p-1.5 justify-center">
+                                {isSubDone && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      downloadTaskVideoDirect(sub.video_url!, makeDownloadFilename(sub.prompt, sub.id));
+                                    }}
+                                    className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-all"
+                                  >
+                                    下载
+                                  </button>
+                                )}
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (!confirm('确定要删除此产物吗？')) return;
+                                    deleteTaskFromHistory(sub.id)
+                                      .then(() => {
+                                        setHistoryItems((prev) => prev.map((h) => {
+                                          if (h.concurrent_id === item.concurrent_id && h.concurrent_items) {
+                                            if (sub.id === h.id) {
+                                              // 删除的是组头：用第一个兄弟替代，无兄弟则移除整组
+                                              const siblings = h.concurrent_items;
+                                              if (siblings.length === 0) return null;
+                                              const [newHead, ...rest] = siblings;
+                                              return { ...newHead, concurrent_items: rest, concurrent_id: h.concurrent_id };
+                                            }
+                                            // 删除的是兄弟
+                                            const filtered = h.concurrent_items.filter((x) => x.id !== sub.id);
+                                            return { ...h, concurrent_items: filtered };
+                                          }
+                                          return h;
+                                        }).filter(Boolean) as DownloadTask[]);
+                                      })
+                                      .catch((e) => alert(`删除失败：${e.message}`));
+                                  }}
+                                  className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-all"
+                                >
+                                  删除
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Bottom row */}
                   <div className="flex items-end justify-between gap-2 mt-auto">
                     <span className="text-[10px] text-gray-600 flex-shrink-0">{formatShortDateTime(item.created_at)}</span>
                     <div className="flex flex-col items-end gap-1.5">
@@ -2179,7 +2301,35 @@ export default function SingleTaskPage() {
                       </div>
                       {/* 增强相关 UI 已移至 /enhancement 页面 */}
                       <div className="flex gap-2">
-                        {(playUrl || (item.status === 'error' && item.error_message)) && (
+                        {/* 批量操作 */}
+                        {isGroup && (
+                          <>
+                            <button
+                              onClick={async () => {
+                                const doneItems = allGroupItems.filter((gi) => gi.status === 'done' && gi.video_url);
+                                if (doneItems.length === 0) { alert('没有可下载的产物'); return; }
+                                for (const gi of doneItems) {
+                                  downloadTaskVideoDirect(gi.video_url!, makeDownloadFilename(gi.prompt, gi.id));
+                                }
+                              }}
+                              className="text-[11px] px-2 py-1 rounded-xl border border-blue-500/40 text-blue-400 hover:bg-blue-500/10 transition-all"
+                            >
+                              批量下载({allGroupItems.filter((gi) => gi.status === 'done' && gi.video_url).length})
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (!confirm(`确定要删除整条批量记录（${allGroupItems.length} 个产物）吗？`)) return;
+                                Promise.all(allGroupItems.map((gi) => deleteTaskFromHistory(gi.id).catch(() => {})))
+                                  .then(() => setHistoryItems((prev) => prev.filter((h) => h.concurrent_id !== item.concurrent_id)));
+                              }}
+                              className="text-[11px] px-2 py-1 rounded-xl border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-all"
+                            >
+                              批量删除
+                            </button>
+                          </>
+                        )}
+                        {/* 预览（非批量） */}
+                        {!isGroup && (playUrl || (item.status === 'error' && item.error_message)) && (
                           <button
                             onClick={() => {
                               if (playUrl) {
@@ -2326,6 +2476,8 @@ export default function SingleTaskPage() {
                       >
                         复用
                       </button>
+                      {/* 删除 — 仅非批量记录显示（批量记录在组级别有"批量删除"） */}
+                      {!isGroup && (
                       <button
                         onClick={() => {
                           if (!confirm('确定要从历史记录中删除此任务吗？')) return;
@@ -2337,6 +2489,7 @@ export default function SingleTaskPage() {
                       >
                         删除
                       </button>
+                      )}
                     </div>
                     </div>
                   </div>

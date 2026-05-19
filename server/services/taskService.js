@@ -30,6 +30,7 @@ const TASK_COLUMNS = [
   'error_message',
   'retry_count',
   'task_kind',
+  'concurrent_id',
 ];
 
 const TASK_UPDATE_FIELDS = new Set(TASK_COLUMNS);
@@ -76,6 +77,7 @@ function normalizeTaskData(data = {}) {
     error_message: pickFirstDefined(data.errorMessage, data.error_message, null),
     retry_count: Number(pickFirstDefined(data.retryCount, data.retry_count, 0) || 0),
     task_kind: pickFirstDefined(data.taskKind, data.task_kind, 'video'),
+    concurrent_id: pickFirstDefined(data.concurrentId, data.concurrent_id, null),
   };
 }
 

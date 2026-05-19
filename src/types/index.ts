@@ -132,6 +132,7 @@ export interface GenerateVideoRequest {
   imageUrls?: string[];  // OSS image URLs
   videoUrl?: string;     // OSS video URL
   audioUrl?: string;     // OSS audio URL
+  batchSize?: number;    // 批量生成数量（>1 时后端返回 taskIds 数组）
 }
 
 export interface VideoGenerationResponse {
@@ -363,6 +364,9 @@ export interface DownloadTask {
   // HappyHorse 行专用：子模式 + 显示标签（用于卡片副标题）
   happyhorse_mode?: 't2v' | 'i2v' | 'r2v' | 'video-edit';
   happyhorse_mode_label?: string;
+  // 批量生成专用
+  concurrent_id?: string | null;
+  concurrent_items?: DownloadTask[];
 }
 
 /**
@@ -482,6 +486,8 @@ export interface HappyhorseTask {
   completed_at: string | null;
   created_at: string;
   updated_at: string;
+  concurrent_id?: string | null;
+  concurrent_items?: HappyhorseTask[];
 }
 
 export interface HappyhorsePricingItem {

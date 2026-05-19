@@ -549,6 +549,16 @@ export function initDatabase() {
     }
   }
 
+  // 增量迁移：tasks / tasks_happyhorse 加 concurrent_id 列（批量生成批次 ID）
+  for (const table of ['tasks', 'tasks_happyhorse']) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+    if (!cols.includes('concurrent_id')) {
+      console.log(`[database] 迁移：${table} 添加 concurrent_id 列（批量生成批次 ID）...`);
+      db.exec(`ALTER TABLE ${table} ADD COLUMN concurrent_id TEXT`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_concurrent_id ON ${table}(concurrent_id)`);
+    }
+  }
+
   console.log(`[database] 数据库初始化成功：${DB_PATH}`);
   return db;
 }

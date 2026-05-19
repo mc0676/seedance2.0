@@ -294,7 +294,7 @@ export default function DownloadManagementPage() {
       downloadService.markAudioGenerationDownloaded(task.id).then(() => loadTasks()).catch(rollback);
     } else if (task.model_type === 'enhancement') {
       downloadService.markEnhancementDownloaded(task.id).then(() => loadTasks()).catch(rollback);
-    } else if (isHappyhorse(task)) {
+    } else if (task.model_type === 'happyhorse') {
       downloadService.markHappyhorseDownloaded(task.id).then(() => loadTasks()).catch(rollback);
     }
     // video 由 handleBrowserDownload 内部已调 markDownloaded + loadTasks，这里不重复
@@ -340,17 +340,15 @@ export default function DownloadManagementPage() {
 
   const handleBrowserDownload = async (task: DownloadTask) => {
     const baseName = task.model_type === 'enhancement' ? 'enhanced'
-      : isHappyhorse(task) ? 'happyhorse'
+      : task.model_type === 'happyhorse' ? 'happyhorse'
       : 'task';
     const filename = `${baseName}_${task.id}_${(task.prompt || 'video').substring(0, 20).replace(/[^\w\u4e00-\u9fa5]/g, '_')}.mp4`;
     // 有远程 URL 直接走代理下载，无需先保存到服务器
     if (task.video_url) {
       downloadService.downloadVideoFromRemoteUrl(task.video_url, filename);
-      // markDownloaded after triggering download (fire-and-forget refresh)
-      if (task.model_type === 'enhancement') {
-        downloadService.markEnhancementDownloaded(task.id).then(() => loadTasks()).catch(() => {});
-      } else if (isHappyhorse(task)) {
-        downloadService.markHappyhorseDownloaded(task.id).then(() => loadTasks()).catch(() => {});
+      // 乐观更新 + 持久化标记（与 markPersistDownloaded 一致的模式）
+      if (task.model_type === 'enhancement' || task.model_type === 'happyhorse') {
+        markPersistDownloaded(task);
       } else {
         downloadService.markDownloaded(task.id).then(() => loadTasks()).catch(() => {});
       }

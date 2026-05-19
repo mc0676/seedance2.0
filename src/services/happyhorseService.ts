@@ -31,10 +31,14 @@ export interface HappyhorseSubmitParams {
   seed?: number;
   /** video-edit 模式：用户上传视频的真实时长（秒），用于精确预扣 */
   inputVideoDurationSec?: number;
+  /** 批量生成数量 */
+  batchSize?: number;
 }
 
 export interface HappyhorseSubmitResult {
   task: HappyhorseTask;
+  tasks?: HappyhorseTask[];       // 批量生成时返回多个任务
+  concurrent_id?: string;         // 批量生成批次 ID
   estimatedCredits: number;
   lockedCredits: number;
 }
@@ -46,14 +50,25 @@ export async function submitHappyhorseTask(params: HappyhorseSubmitParams): Prom
     body: JSON.stringify(params),
   });
   const ct = res.headers.get('content-type') || '';
-  let body: { success?: boolean; error?: string; data?: HappyhorseTask; estimatedCredits?: number; lockedCredits?: number } = {};
+  let body: { success?: boolean; error?: string; data?: HappyhorseTask | { tasks: HappyhorseTask[]; concurrent_id: string }; estimatedCredits?: number; lockedCredits?: number } = {};
   if (ct.includes('application/json')) {
     try { body = await res.json(); } catch { /* ignore */ }
   }
   if (!res.ok || !body.success || !body.data) {
-    throw new Error(body.error || `提交 HappyHorse 任务失败（HTTP ${res.status}）`);
+    throw new Error(body.error || `提交 HappyHorse 任务失败（HTTP ${res.status})`);
   }
-  return { task: body.data, estimatedCredits: body.estimatedCredits || 0, lockedCredits: body.lockedCredits || 0 };
+  // 批量生成：data 是 { tasks: [...], concurrent_id: '...' }
+  if (body.data && typeof body.data === 'object' && 'tasks' in body.data && Array.isArray(body.data.tasks)) {
+    const batchData = body.data as { tasks: HappyhorseTask[]; concurrent_id: string };
+    return {
+      task: batchData.tasks[0],
+      tasks: batchData.tasks,
+      concurrent_id: batchData.concurrent_id,
+      estimatedCredits: body.estimatedCredits || 0,
+      lockedCredits: body.lockedCredits || 0,
+    };
+  }
+  return { task: body.data as HappyhorseTask, estimatedCredits: body.estimatedCredits || 0, lockedCredits: body.lockedCredits || 0 };
 }
 
 export interface HappyhorseListResult {

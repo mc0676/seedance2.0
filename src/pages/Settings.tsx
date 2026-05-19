@@ -14,6 +14,7 @@ export default function SettingsPage() {
     duration: settings.duration || '4',
     resolution: settings.resolution || '720p',
     reference_mode: settings.reference_mode || 'reference',
+    max_concurrent: settings.max_concurrent || '5',
   });
 
   const [hasChanges, setHasChanges] = useState(false);
@@ -52,7 +53,8 @@ export default function SettingsPage() {
       localSettings.ratio !== settings.ratio ||
       localSettings.duration !== settings.duration ||
       localSettings.resolution !== settings.resolution ||
-      localSettings.reference_mode !== settings.reference_mode;
+      localSettings.reference_mode !== settings.reference_mode ||
+      localSettings.max_concurrent !== (settings.max_concurrent || '5');
     setHasChanges(changed);
   }, [localSettings, settings]);
 
@@ -256,7 +258,29 @@ export default function SettingsPage() {
         {/* 批量生成设置 */}
         <div className="bg-[#1c1f2e] rounded-xl p-6 mb-6 border border-gray-800">
           <h2 className="text-lg font-bold mb-4">批量生成设置</h2>
-
+          <div>
+            <label className="block text-sm font-medium text-gray-400 mb-2">
+              每次批量生成数量上限
+            </label>
+            <p className="text-xs text-gray-500 mb-3">
+              控制视频生成和 HappyHorse 模块点击一次按钮可同时生成的任务数。数量越大，积分消耗越快。
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {([1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const).map((n) => (
+                <button
+                  key={n}
+                  onClick={() => setLocalSettings((prev) => ({ ...prev, max_concurrent: String(n) }))}
+                  className={`px-3 py-2 rounded-xl text-sm font-medium border transition-all ${
+                    localSettings.max_concurrent === String(n)
+                      ? 'border-purple-500 bg-purple-500/10 text-purple-400'
+                      : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
+                  }`}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
 
         {/* 时区设置 */}
@@ -294,6 +318,7 @@ export default function SettingsPage() {
                 duration: settings.duration || '4',
                 resolution: settings.resolution || '720p',
                 reference_mode: settings.reference_mode || 'reference',
+                max_concurrent: settings.max_concurrent || '5',
               })
             }
             className="px-6 py-2.5 bg-[#1c1f2e] border border-gray-700 hover:border-gray-500 text-gray-300 hover:text-white rounded-xl transition-all font-medium"

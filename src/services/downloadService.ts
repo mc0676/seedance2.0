@@ -71,6 +71,7 @@ export async function getDownloadTasks(
   projectId?: number | null,
   includeHappyhorse: boolean = false,
   skipDownloadableFilter: boolean = false,
+  groupByConcurrent: boolean = false,
 ): Promise<DownloadTaskList> {
   const params = new URLSearchParams({
     status,
@@ -86,6 +87,9 @@ export async function getDownloadTasks(
   }
   if (skipDownloadableFilter) {
     params.append('skipDownloadableFilter', '1');
+  }
+  if (groupByConcurrent) {
+    params.append('groupByConcurrent', '1');
   }
 
   const response = await fetch(`${API_BASE}/download/tasks?${params}`, {
@@ -353,4 +357,38 @@ export async function refreshDownloadTasks(): Promise<{
     throw new Error(result.error || '刷新任务列表失败');
   }
   return result.data!;
+}
+
+/**
+ * 下载远程视频：在新标签页打开原始视频 URL，浏览器根据服务器返回的
+ * Content-Disposition 决定直接下载或显示视频（用户可使用浏览器原生控件下载）
+ */
+export function downloadTaskVideoDirect(videoUrl: string, _filename?: string): void {
+  window.open(videoUrl, '_blank', 'noopener,noreferrer');
+}
+
+/** 从 prompt 和可选 ID 生成安全的下载文件名 */
+export function makeDownloadFilename(prompt: string | undefined, id?: number): string {
+  const base = (prompt || `task_${id ?? 'video'}`)
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '')
+    .replace(/\s+/g, '_')
+    .slice(0, 40);
+  return id != null ? `${base}_${id}.mp4` : `${base}.mp4`;
+}
+
+/**
+ * 直接从远程 URL 在浏览器触发下载（适用于支持 CORS 的 URL，如 HappyHorse DashScope OSS）
+ */
+export async function downloadDirectFromUrl(videoUrl: string, filename: string): Promise<void> {
+  const resp = await fetch(videoUrl);
+  if (!resp.ok) throw new Error(`下载失败 HTTP ${resp.status}`);
+  const blob = await resp.blob();
+  const objUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = objUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(objUrl), 1000);
 }

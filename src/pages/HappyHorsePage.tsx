@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
 import { uploadToOss, FILE_LIMITS, probeOssVideo } from '../services/ossService';
 import { CloseIcon, PlusIcon, SparkleIcon, GearIcon } from '../components/Icons';
@@ -102,6 +102,9 @@ export default function HappyHorsePage() {
   const editorRef = useRef<HTMLDivElement | null>(null);
   // video-edit：已上传待编辑视频的真实时长（秒），用于精确预估积分
   const [editVideoDuration, setEditVideoDuration] = useState<number | null>(null);
+  // 批量生成
+  const maxConcurrent = Math.max(1, parseInt(state.settings.max_concurrent || '5', 10) || 5);
+  const [batchSize, setBatchSize] = useState(1);
   // @ 提及面板：弹出位置 + 当前 @ 之后的过滤文本 + 高亮项
   const [mentionPanel, setMentionPanel] = useState<{ top: number; left: number; filter: string; focusIdx: number } | null>(null);
   const mentionAnchorNodeRef = useRef<Node | null>(null);
@@ -113,6 +116,10 @@ export default function HappyHorsePage() {
   const pageRef = useRef(1);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const deletingRef = useRef(false);
+  const loadingRef = useRef(false); // 防止并发加载
+  const loadGenRef = useRef(0); // 代际计数器，丢弃过期响应
+  const loadedRef = useRef(false); // 防止同一 projectId 重复初始加载
+  const prevProjectIdRef = useRef<number | null>(null);
   const PAGE_SIZE = 12;
   const [previewVideo, setPreviewVideo] = useState<{ url: string; prompt: string; error?: string | null } | null>(null);
 
@@ -131,27 +138,75 @@ export default function HappyHorsePage() {
     return () => { alive = false; clearInterval(t); };
   }, [currentUser]);
 
-  async function loadTasks(append = false) {
-    if (!projectId || deletingRef.current) return;
-    const p = append ? pageRef.current : 1;
+  // 将任务列表按 concurrent_id 分组合并。第一个任务作为组头（代表该批次），其余放入 concurrent_items
+  function groupTasks(items: HappyhorseTask[]): HappyhorseTask[] {
+    const groups = new Map<string, HappyhorseTask[]>();
+    const singles: HappyhorseTask[] = [];
+    for (const t of items) {
+      if (t.concurrent_id) {
+        if (!groups.has(t.concurrent_id)) {
+          groups.set(t.concurrent_id, []);
+        }
+        groups.get(t.concurrent_id)!.push(t);
+      } else {
+        singles.push(t);
+      }
+    }
+    const grouped: HappyhorseTask[] = [];
+    for (const [, grp] of groups) {
+      grp.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+      const primary = grp[0];
+      const siblings = grp.slice(1);
+      grouped.push({ ...primary, concurrent_items: siblings });
+    }
+    grouped.push(...singles);
+    // 按每个组的最新 created_at 降序排序
+    grouped.sort((a, b) => {
+      const aMax = a.concurrent_items?.length
+        ? Math.max(...a.concurrent_items.map((x) => new Date(x.created_at).getTime()))
+        : new Date(a.created_at).getTime();
+      const bMax = b.concurrent_items?.length
+        ? Math.max(...b.concurrent_items.map((x) => new Date(x.created_at).getTime()))
+        : new Date(b.created_at).getTime();
+      return bMax - aMax;
+    });
+    return grouped;
+  }
+
+  const loadTasks = useCallback(async (append = false) => {
+    if (!projectId || deletingRef.current || loadingRef.current) return;
+    loadingRef.current = true;
     setTasksLoading(true);
+    const gen = loadGenRef.current;
     try {
+      const p = append ? pageRef.current : 1;
       const data = await listMyHappyhorseTasks(projectId, p, PAGE_SIZE);
+      if (gen !== loadGenRef.current) return; // 旧响应，丢弃
+      const grouped = groupTasks(data.items);
       if (append) {
-        setTasks((prev) => [...prev, ...data.items]);
+        setTasks((prev) => [...prev, ...grouped]);
         pageRef.current = p + 1;
       } else {
-        setTasks(data.items);
+        setTasks(grouped);
         pageRef.current = 2;
       }
       setHasMore(data.items.length === PAGE_SIZE && (p - 1) * PAGE_SIZE + data.items.length < data.total);
     } catch (e) {
       console.error('[happyhorse] 加载任务列表失败', e);
     } finally {
+      loadingRef.current = false;
       setTasksLoading(false);
     }
-  }
-  useEffect(() => { loadTasks(); /* eslint-disable-next-line */ }, [projectId]);
+  }, [projectId]);
+  // 项目切换 / 初次加载
+  useEffect(() => {
+    if (!projectId) return;
+    if (prevProjectIdRef.current === projectId && loadedRef.current) return;
+    prevProjectIdRef.current = projectId;
+    loadedRef.current = true;
+    loadGenRef.current += 1;
+    loadTasks();
+  }, [projectId, loadTasks]);
 
   // 无限滚动：底部哨兵进入视野时加载下一页
   useEffect(() => {
@@ -159,7 +214,7 @@ export default function HappyHorsePage() {
     if (!el) return;
     const obs = new IntersectionObserver(
       ([entry]) => {
-        if (entry.isIntersecting && hasMore && !tasksLoading) {
+        if (entry.isIntersecting && hasMore && !tasksLoading && !loadingRef.current) {
           loadTasks(true);
         }
       },
@@ -167,15 +222,14 @@ export default function HappyHorsePage() {
     );
     obs.observe(el);
     return () => obs.disconnect();
-  }, [hasMore, tasksLoading, projectId]);
+  }, [hasMore, tasksLoading, projectId, loadTasks]);
 
   // 轮询进行中任务
   useEffect(() => {
     if (!tasks.some((t) => t.status === 'processing' || t.status === 'pending')) return;
     const t = setInterval(() => loadTasks(), 8000);
     return () => clearInterval(t);
-    // eslint-disable-next-line
-  }, [tasks, projectId]);
+  }, [tasks, projectId, loadTasks]);
 
   // 切换 mode 时清空 media（避免类型混淆）
   // 复用历史任务时，setMode 会触发下面的 useEffect 把表单清空，
@@ -694,7 +748,7 @@ export default function HappyHorsePage() {
     return estimateHappyhorseCredits(mode, resolution, dur, pricing);
   }, [mode, resolution, duration, pricing, editVideoDuration]);
 
-  const creditInsufficient = !!balance && !balance.unlimited && estimate.lockedCredits > balance.available;
+  const creditInsufficient = !!balance && !balance.unlimited && estimate.lockedCredits * batchSize > balance.available;
 
   // ── 上传 ─────────────────────────────────────────────────
   async function handleUploadImage(files: FileList | null) {
@@ -839,7 +893,7 @@ export default function HappyHorsePage() {
   // ── 提交 ─────────────────────────────────────────────────
   async function handleSubmit() {
     if (!projectId) { setSubmitError('请先选择工作组'); return; }
-    if (mode !== 'i2v' && !prompt.trim()) { setSubmitError('请输入提示词'); return; }
+    if (mode === 't2v' && !prompt.trim()) { setSubmitError('请输入提示词'); return; }
     if (mode === 'i2v' && !media.some((m) => m.type === 'first_frame')) { setSubmitError('请上传首帧图片'); return; }
     if (mode === 'r2v' && media.filter((m) => m.type === 'reference_image').length < 1) { setSubmitError('请至少上传 1 张参考图'); return; }
     if (mode === 'video-edit' && !media.some((m) => m.type === 'video')) { setSubmitError('请上传待编辑的视频'); return; }
@@ -879,6 +933,7 @@ export default function HappyHorsePage() {
         inputVideoDurationSec: mode === 'video-edit' && editVideoDuration && editVideoDuration > 0
           ? editVideoDuration
           : undefined,
+        batchSize: batchSize > 1 ? batchSize : undefined,
       });
       setPrompt(''); setMedia([]); setSeed(''); setEditVideoDuration(null);
       await loadTasks();
@@ -911,8 +966,7 @@ export default function HappyHorsePage() {
       document.body.appendChild(a);
       a.click();
       a.remove();
-      // 给浏览器一点时间开始下载再 revoke
-      setTimeout(() => URL.revokeObjectURL(objUrl), 1000);
+      setTimeout(() => URL.revokeObjectURL(objUrl), 5 * 60 * 1000);
     } catch (e: any) {
       alert(`下载失败：${e.message || '未知错误'}（视频链接可能已过期，请重新生成）`);
     }
@@ -989,7 +1043,12 @@ export default function HappyHorsePage() {
   // 而且就算余额够也会扣多。统一禁用提交，强制用户重新上传 / 重选媒体。
   const hasEditVideo = mode === 'video-edit' && media.some((m) => m.type === 'video');
   const videoEditDurationUnknown = hasEditVideo && (!editVideoDuration || editVideoDuration <= 0);
-  const canGenerate = !submitting && !uploading && !!projectId && !creditInsufficient && !videoEditDurationUnknown;
+  const modeInputMissing =
+    (mode === 't2v' && !prompt.trim()) ||
+    (mode === 'i2v' && !media.some((m) => m.type === 'first_frame')) ||
+    (mode === 'r2v' && media.filter((m) => m.type === 'reference_image').length < 1) ||
+    (mode === 'video-edit' && !media.some((m) => m.type === 'video'));
+  const canGenerate = !submitting && !uploading && !!projectId && !creditInsufficient && !videoEditDurationUnknown && !modeInputMissing;
   const currentTab = MODE_TABS.find((m) => m.mode === mode)!;
 
   return (
@@ -1269,6 +1328,19 @@ export default function HappyHorsePage() {
               </div>
             )}
             <div className="flex gap-3">
+              {/* 批量生成选择器 */}
+              {maxConcurrent > 1 && (
+                <select
+                  value={batchSize}
+                  onChange={(e) => setBatchSize(parseInt(e.target.value, 10))}
+                  disabled={submitting || uploading}
+                  className="px-3 py-3 rounded-xl text-sm font-medium border border-gray-700 bg-[#161824] text-gray-300 focus:outline-none focus:border-purple-500 disabled:opacity-40"
+                >
+                  {Array.from({ length: maxConcurrent }, (_, i) => i + 1).map((n) => (
+                    <option key={n} value={n}>数量：{n}</option>
+                  ))}
+                </select>
+              )}
               <button
                 onClick={handleSubmit}
                 disabled={!canGenerate}
@@ -1283,9 +1355,11 @@ export default function HappyHorsePage() {
                 ) : uploading ? (
                   <><span className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />上传中...</>
                 ) : creditInsufficient ? (
-                  <>⚠️ 可用积分不足（可用 {balance!.available}，需 {estimate.lockedCredits}）</>
+                  <>⚠️ 可用积分不足（可用 {balance!.available}，需 {estimate.lockedCredits * batchSize}）</>
                 ) : videoEditDurationUnknown ? (
                   <>⚠️ 请重新上传视频</>
+                ) : modeInputMissing ? (
+                  <>{mode === 't2v' ? '请输入提示词' : mode === 'i2v' ? '请上传首帧图' : mode === 'r2v' ? '请上传参考图' : '请上传视频'}</>
                 ) : (
                   <><SparkleIcon className="w-4 h-4" />生成视频</>
                 )}
@@ -1318,8 +1392,8 @@ export default function HappyHorsePage() {
                   <span className="text-amber-400">请先上传视频后再预估积分</span>
                 ) : estimate.credits > 0 ? (
                   <span>
-                    本次预计消耗 <span className="text-purple-300 font-semibold">{estimate.credits}</span> 积分
-                    <span className="ml-2 text-gray-500">（锁定 {estimate.lockedCredits}）</span>
+                    本次预计消耗 <span className="text-purple-300 font-semibold">{estimate.credits * batchSize}</span> 积分
+                    <span className="ml-2 text-gray-500">（锁定 {estimate.lockedCredits * batchSize}）</span>
                   </span>
                 ) : (
                   <span>{pricing === null ? '加载计费中...' : '请选择参数'}</span>
@@ -1362,10 +1436,14 @@ export default function HappyHorsePage() {
                   error: t.status === 'error' && t.error_message ? t.error_message : null,
                 });
               };
+              const isGroup = !!t.concurrent_id;
+              const allGroupItems = isGroup ? [t, ...(t.concurrent_items || [])] : [t];
+
               return (
-                <div key={t.id} className="bg-[#1c1f2e] border border-gray-800 hover:border-gray-700 rounded-2xl overflow-hidden transition-all">
+                <div key={isGroup ? (t.concurrent_id || `group-${t.id}`) : t.id} className="bg-[#1c1f2e] border border-gray-800 hover:border-gray-700 rounded-2xl overflow-hidden transition-all">
                   <div className="flex gap-3 p-3 items-start">
-                    {/* Thumbnail */}
+                    {/* Thumbnail — 非批量时显示 */}
+                    {!isGroup && (
                     <div
                       className={`w-[25vh] h-[25vh] min-w-[120px] min-h-[120px] flex-shrink-0 rounded-xl overflow-hidden bg-[#0f111a] flex items-center justify-center relative group ${canPreview ? 'cursor-pointer' : ''}`}
                       onClick={openPreview}
@@ -1395,6 +1473,7 @@ export default function HappyHorsePage() {
                         <span className="text-xs text-gray-500 text-center px-1">{badge.text}</span>
                       )}
                     </div>
+                    )}
 
                     {/* Info */}
                     <div className="flex-1 min-w-0 flex flex-col gap-1.5">
@@ -1404,12 +1483,12 @@ export default function HappyHorsePage() {
                         <span className="text-purple-400">{MODE_TABS.find((m) => m.mode === t.mode)?.label}</span>
                       </div>
                       <p className="text-xs text-gray-300 line-clamp-2 leading-relaxed">{t.prompt || '（无提示词）'}</p>
-                      {t.status === 'error' && t.error_message && (
+                      {!isGroup && t.status === 'error' && t.error_message && (
                         <p className="text-xs text-red-400 line-clamp-3 leading-relaxed bg-red-950/30 rounded-lg px-2 py-1">{t.error_message}</p>
                       )}
 
-                      {/* 输入素材缩略 */}
-                      {t.media && t.media.length > 0 && (
+                      {/* 输入素材缩略（非批量时） */}
+                      {!isGroup && t.media && t.media.length > 0 && (
                         <div className="flex gap-1 flex-wrap">
                           {t.media.slice(0, 6).map((m, i) => (
                             m.type === 'video' ? (
@@ -1421,7 +1500,88 @@ export default function HappyHorsePage() {
                         </div>
                       )}
 
-                      {/* Bottom row: date (left) + params+actions (right) —— 与 SingleTaskPage 同款 */}
+                      {/* 批量生成的子项网格 */}
+                      {isGroup && (
+                        <div className="mt-1">
+                          <span className="text-[10px] text-purple-400 bg-purple-500/10 px-1.5 py-0.5 rounded">批量生成 · {allGroupItems.length} 个视频</span>
+                          <div className="grid grid-cols-3 gap-2 mt-2">
+                            {allGroupItems.map((sub) => {
+                              const subPlayUrl = sub.video_url;
+                              const isSubDone = sub.status === 'done' && subPlayUrl;
+                              const isSubProcessing = sub.status === 'processing' || sub.status === 'pending';
+                              const isSubError = sub.status === 'error';
+                              return (
+                                <div key={sub.id} className="bg-[#0f111a] rounded-xl overflow-hidden border border-gray-800">
+                                  <div
+                                  className="h-[15vh] min-h-[80px] cursor-pointer relative group flex items-center justify-center"
+                                    onClick={() => {
+                                      if (subPlayUrl) setPreviewVideo({ url: subPlayUrl, prompt: t.prompt, error: null });
+                                    }}
+                                  >
+                                    {isSubDone ? (
+                                      <>
+                                        <video src={subPlayUrl} muted className="w-full h-full object-cover" preload="metadata" />
+                                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                          <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                                        </div>
+                                      </>
+                                    ) : isSubProcessing ? (
+                                      <span className="text-[10px] text-blue-400 flex flex-col items-center gap-1">
+                                        <span className="animate-spin h-3 w-3 border-2 border-blue-400 border-t-transparent rounded-full" />
+                                        生成中
+                                      </span>
+                                    ) : isSubError ? (
+                                      <span className="text-[10px] text-red-400">失败</span>
+                                    ) : (
+                                      <span className="text-[10px] text-gray-500">待下载</span>
+                                    )}
+                                  </div>
+                                  <div className="flex gap-1 p-1.5 justify-center">
+                                    {isSubDone && (
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); handleDownload(sub); }}
+                                        className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-all"
+                                      >下载</button>
+                                    )}
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (!confirm('确定要删除此产物吗？')) return;
+                                        const taskId = sub.id;
+                                        deletingRef.current = true;
+                                        setTasks((prev) => prev.map((h) => {
+                                          if (h.concurrent_id === t.concurrent_id && h.concurrent_items) {
+                                            if (taskId === h.id) {
+                                              // 删除的是组头：用第一个兄弟替代，无兄弟则移除整组
+                                              const siblings = h.concurrent_items;
+                                              if (siblings.length === 0) return null;
+                                              const [newHead, ...rest] = siblings;
+                                              return { ...newHead, concurrent_items: rest, concurrent_id: h.concurrent_id };
+                                            }
+                                            // 删除的是兄弟
+                                            const filtered = h.concurrent_items.filter((x) => x.id !== taskId);
+                                            return { ...h, concurrent_items: filtered };
+                                          }
+                                          return h;
+                                        }).filter(Boolean) as HappyhorseTask[]);
+                                        deleteHappyhorseFromHistory(taskId)
+                                          .catch((e) => {
+                                            alert(`删除失败：${e.message}`);
+                                            loadTasks();
+                                          })
+                                          .finally(() => { deletingRef.current = false; });
+                                      }}
+                                      className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-all"
+                                    >删除</button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Bottom row */}
                       <div className="flex items-end justify-between gap-2 mt-auto">
                         <span className="text-[10px] text-gray-600 flex-shrink-0">{formatShortDateTime(t.created_at)}</span>
                         <div className="flex flex-col items-end gap-1.5">
@@ -1434,40 +1594,59 @@ export default function HappyHorsePage() {
                             {t.duration && <span className="text-[9px] px-1 py-0.5 rounded bg-gray-700/60 text-gray-400 leading-none">{t.duration}s</span>}
                           </div>
                           <div className="flex gap-2">
-                            {canPreview && (
-                              <button
-                                onClick={openPreview}
-                                className="text-[11px] px-2 py-1 rounded-xl border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition-all"
-                              >
+                            {/* 批量操作 */}
+                            {isGroup && (
+                              <>
+                                <button
+                                  onClick={async () => {
+                                    const doneItems = allGroupItems.filter((gi) => gi.status === 'done' && gi.video_url);
+                                    if (doneItems.length === 0) { alert('没有可下载的产物'); return; }
+                                    for (const gi of doneItems) {
+                                      try { await handleDownload(gi); } catch {}
+                                    }
+                                  }}
+                                  className="text-[11px] px-2 py-1 rounded-xl border border-blue-500/40 text-blue-400 hover:bg-blue-500/10 transition-all"
+                                >批量下载({allGroupItems.filter((gi) => gi.status === 'done' && gi.video_url).length})</button>
+                                <button
+                                  onClick={() => {
+                                    if (!confirm(`确定要删除整条批量记录（${allGroupItems.length} 个产物）吗？`)) return;
+                                    deletingRef.current = true;
+                                    setTasks((prev) => prev.filter((h) => h.concurrent_id !== t.concurrent_id));
+                                    Promise.all(allGroupItems.map((gi) => deleteHappyhorseFromHistory(gi.id).catch(() => {})))
+                                      .catch(() => loadTasks())
+                                      .finally(() => { deletingRef.current = false; });
+                                  }}
+                                  className="text-[11px] px-2 py-1 rounded-xl border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-all"
+                                >批量删除</button>
+                              </>
+                            )}
+                            {/* 非批量操作 */}
+                            {!isGroup && canPreview && (
+                              <button onClick={openPreview} className="text-[11px] px-2 py-1 rounded-xl border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition-all">
                                 {playUrl ? '预览' : '报错'}
                               </button>
                             )}
-                            {t.status === 'done' && t.video_url && (
-                              <button
-                                onClick={() => handleDownload(t)}
-                                className="text-[11px] px-2 py-1 rounded-xl border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition-all"
-                              >下载</button>
+                            {!isGroup && t.status === 'done' && t.video_url && (
+                              <button onClick={() => handleDownload(t)} className="text-[11px] px-2 py-1 rounded-xl border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition-all">下载</button>
                             )}
-                            <button
-                              onClick={() => handleReuse(t)}
-                              className="text-[11px] px-2 py-1 rounded-xl border border-purple-500/40 text-purple-400 hover:bg-purple-500/10 transition-all"
-                            >复用</button>
+                            <button onClick={() => handleReuse(t)} className="text-[11px] px-2 py-1 rounded-xl border border-purple-500/40 text-purple-400 hover:bg-purple-500/10 transition-all">复用</button>
+                            {!isGroup && (
                             <button
                               onClick={() => {
                                 if (!confirm('确定要从历史记录中删除此任务吗？')) return;
                                 const taskId = t.id;
-                                const rollback = tasks.find((x) => x.id === taskId);
                                 deletingRef.current = true;
                                 setTasks((prev) => prev.filter((x) => x.id !== taskId));
                                 deleteHappyhorseFromHistory(taskId)
                                   .catch((e) => {
                                     alert(`删除失败：${e.message}`);
-                                    if (rollback) setTasks((prev) => [...prev, rollback]);
+                                    loadTasks();
                                   })
                                   .finally(() => { deletingRef.current = false; });
                               }}
                               className="text-[11px] px-2 py-1 rounded-xl border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-all"
                             >删除</button>
+                            )}
                           </div>
                         </div>
                       </div>

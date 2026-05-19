@@ -568,6 +568,8 @@ export function getDownloadTasks(options = {}) {
     includeHappyhorse = false,
     // 当 true 时跳过 downloadable 过滤（供历史记录页使用，只按 deleted_at 判断可见性）
     skipDownloadableFilter = false,
+    // 当 true 且 type='video' 时，按 concurrent_id 合并批次，一个批次显示为一条记录
+    groupByConcurrent = false,
   } = options;
 
   const whereClauses = [];
@@ -709,6 +711,7 @@ export function getDownloadTasks(options = {}) {
       t.completed_at,
       t.error_message,
       t.project_id,
+      t.concurrent_id,
       p.name as project_name,
       CASE
         WHEN t.status = 'error' OR t.status = 'cancelled' THEN 'failed'
@@ -730,6 +733,7 @@ export function getDownloadTasks(options = {}) {
       ...task,
       hasHistory: !!task.history_id,
       model_type: 'video',
+      concurrent_id: task.concurrent_id || null,
       assets: [],
       enhancements: [],
     }));
@@ -835,6 +839,7 @@ export function getDownloadTasks(options = {}) {
     ...task,
     hasHistory: !!task.history_id,
     model_type: 'video',
+    concurrent_id: task.concurrent_id || null,
     assets: assetsByTask[task.id] || [],
     enhancements: enhancementsByTask[task.id] || [],
   }));
@@ -872,6 +877,7 @@ export function getDownloadTasks(options = {}) {
       ...task,
       hasHistory: !!task.history_id,
       model_type: 'video',
+      concurrent_id: task.concurrent_id || null,
       assets: allAssetsByTask[task.id] || [],
       enhancements: allEnhancementsByTask[task.id] || [],
     }));
@@ -885,6 +891,43 @@ export function getDownloadTasks(options = {}) {
     return {
       tasks: merged.slice((page - 1) * pageSize, page * pageSize),
       total: merged.length,
+      page,
+      pageSize,
+    };
+  }
+
+  // 批量生成分组：按 concurrent_id 合并同一批次的任务为一条记录
+  // 第一个任务作为组头（代表该批次），其余任务进入 concurrent_items
+  if (groupByConcurrent) {
+    const groups = new Map(); // key: concurrent_id (string) or '__single__${id}' for standalone
+    for (const t of videoTasks) {
+      const cid = t.concurrent_id || `__single__${t.id}`;
+      if (!groups.has(cid)) {
+        groups.set(cid, {
+          ...t,
+          concurrent_id: t.concurrent_id || null,
+          concurrent_items: [],
+        });
+        // 批次第一个任务作为组头，不再放入 concurrent_items（避免重复）
+      } else if (t.concurrent_id) {
+        groups.get(cid).concurrent_items.push(t);
+      }
+    }
+    // 排序：每个组取最新 created_at
+    const sortedGroups = Array.from(groups.values()).sort((a, b) => {
+      const aMax = a.concurrent_items.length > 0
+        ? Math.max(...a.concurrent_items.map((x) => new Date(x.created_at).getTime()))
+        : new Date(a.created_at).getTime();
+      const bMax = b.concurrent_items.length > 0
+        ? Math.max(...b.concurrent_items.map((x) => new Date(x.created_at).getTime()))
+        : new Date(b.created_at).getTime();
+      return bMax - aMax;
+    });
+    const totalGroups = sortedGroups.length;
+    const pagedGroups = sortedGroups.slice((page - 1) * pageSize, page * pageSize);
+    return {
+      tasks: pagedGroups,
+      total: totalGroups,
       page,
       pageSize,
     };
