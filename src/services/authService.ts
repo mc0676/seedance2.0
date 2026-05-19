@@ -839,6 +839,10 @@ export interface CreditDetailItem {
   email: string;
   name: string | null;
   department: string;
+  concurrent_id: string | null;
+  batch_total_credits: number | null;
+  batch_count: number | null;
+  unit_credits: number | null;
 }
 
 export interface GroupSummaryItem {
@@ -882,11 +886,12 @@ export const fetchDailyTrend = (days = 30) =>
 export const fetchTodayRanking = () =>
   adminFetch<TodayRankingItem[]>('/admin/credits/today-ranking');
 
-export const fetchCreditDetails = (params: { page?: number; pageSize?: number; userId?: number; date?: string; action?: string; model?: string } = {}) => {
+export const fetchCreditDetails = (params: { page?: number; pageSize?: number; name?: string; email?: string; date?: string; action?: string; model?: string } = {}) => {
   const sp = new URLSearchParams();
   if (params.page) sp.set('page', String(params.page));
   if (params.pageSize) sp.set('pageSize', String(params.pageSize));
-  if (params.userId) sp.set('userId', String(params.userId));
+  if (params.name) sp.set('name', params.name);
+  if (params.email) sp.set('email', params.email);
   if (params.date) sp.set('date', params.date);
   if (params.action) sp.set('action', params.action);
   if (params.model) sp.set('model', params.model);

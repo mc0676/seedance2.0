@@ -3249,24 +3249,58 @@ app.get('/api/admin/credits/details', authenticate, requireAdmin, (req, res) => 
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize) || 20));
     const offset = (page - 1) * pageSize;
-    const { userId, date, action, model } = req.query;
+    const { name, email, date, action, model } = req.query;
 
     let where = 'WHERE 1=1';
     const params = [];
-    if (userId) { where += ' AND ul.user_id = ?'; params.push(parseInt(userId)); }
+    if (name) { where += ' AND u.name LIKE ?'; params.push(`%${name}%`); }
+    if (email) { where += ' AND u.email LIKE ?'; params.push(`%${email}%`); }
     if (date) { where += " AND date(ul.created_at) = ?"; params.push(date); }
     if (action) { where += ' AND ul.action = ?'; params.push(action); }
     if (model) { where += ' AND ul.model LIKE ?'; params.push(`%${model}%`); }
 
-    const total = db.prepare(`SELECT COUNT(*) as count FROM usage_logs ul ${where}`).get(...params).count;
+    const batchFilter = `AND (
+      t.concurrent_id IS NULL
+      OR ul.id = (
+        SELECT MIN(ul3.id) FROM usage_logs ul3
+        JOIN tasks t3 ON t3.id = ul3.task_id
+        WHERE t3.concurrent_id = t.concurrent_id
+      )
+    )`;
+
+    const total = db.prepare(`
+      SELECT COUNT(*) as count
+      FROM usage_logs ul
+      JOIN users u ON u.id = ul.user_id
+      LEFT JOIN tasks t ON t.id = ul.task_id
+      ${where} ${batchFilter}
+    `).get(...params).count;
+
     const rows = db.prepare(`
       SELECT ul.id, ul.user_id, ul.task_id, ul.model, ul.action, ul.credits_cost, ul.status,
              ul.error_message, ul.created_at,
              u.email, u.name,
-             COALESCE((SELECT d.name FROM departments d WHERE d.id = u.department_id), '') AS department
+             COALESCE((SELECT d.name FROM departments d WHERE d.id = u.department_id), '') AS department,
+             t.concurrent_id,
+             CASE WHEN t.concurrent_id IS NOT NULL
+               THEN (SELECT SUM(ul2.credits_cost) FROM usage_logs ul2
+                     JOIN tasks t2 ON t2.id = ul2.task_id
+                     WHERE t2.concurrent_id = t.concurrent_id AND ul2.status = 'success')
+               ELSE NULL
+             END AS batch_total_credits,
+             CASE WHEN t.concurrent_id IS NOT NULL
+               THEN (SELECT COUNT(*) FROM tasks t2 WHERE t2.concurrent_id = t.concurrent_id)
+               ELSE NULL
+             END AS batch_count,
+             CASE WHEN t.concurrent_id IS NOT NULL
+               THEN (SELECT ul2.credits_cost FROM usage_logs ul2
+                     WHERE ul2.task_id = ul.task_id LIMIT 1)
+               ELSE NULL
+             END AS unit_credits
       FROM usage_logs ul
       JOIN users u ON u.id = ul.user_id
-      ${where}
+      LEFT JOIN tasks t ON t.id = ul.task_id
+      ${where} ${batchFilter}
       ORDER BY ul.created_at DESC
       LIMIT ? OFFSET ?
     `).all(...params, pageSize, offset);
@@ -3326,15 +3360,19 @@ app.get('/api/admin/credits/project-consumption', authenticate, requireAdmin, (r
     const db = getDatabase();
     const days = Math.min(90, Math.max(7, parseInt(req.query.days) || 30));
     const rows = db.prepare(`
-      SELECT p.id, p.name,
-             COUNT(DISTINCT ul.user_id) AS user_count,
-             SUM(ul.credits_cost) AS total_credits,
+      SELECT COALESCE(p.id, 0) AS id,
+             COALESCE(p.name, '无项目') AS name,
+             COUNT(DISTINCT cl.user_id) AS user_count,
+             SUM(cl.actual_credits) AS total_credits,
              COUNT(*) AS task_count
-      FROM usage_logs ul
-      JOIN tasks t ON t.id = ul.task_id
-      JOIN projects p ON p.id = t.project_id
-      WHERE ul.created_at >= date('now', ? || ' days') AND ul.status = 'success'
-        AND t.deleted_at IS NULL AND p.id IS NOT NULL
+      FROM credit_locks cl
+      LEFT JOIN tasks t ON t.id = cl.task_id
+      LEFT JOIN tasks_happyhorse th ON th.id = cl.task_happyhorse_id
+      LEFT JOIN image_records ir ON ir.id = cl.image_record_id
+      LEFT JOIN video_enhancements ve ON ve.id = cl.enhancement_id
+      LEFT JOIN projects p ON p.id = COALESCE(t.project_id, th.project_id, ir.project_id, ve.project_id)
+      WHERE cl.status = 'settled'
+        AND cl.settled_at >= date('now', ? || ' days')
       GROUP BY p.id
       ORDER BY total_credits DESC
       LIMIT 30
@@ -3351,13 +3389,20 @@ app.get('/api/admin/credits/failure-analysis', authenticate, requireAdmin, (req,
     const db = getDatabase();
     const days = Math.min(90, Math.max(1, parseInt(req.query.days) || 7));
     const rows = db.prepare(`
-      SELECT ul.model, ul.action, ul.error_message,
+      SELECT COALESCE(json_extract(cl.meta, '$.model'), '') AS model,
+             CASE COALESCE(json_extract(cl.meta, '$.type'), 'video')
+               WHEN 'image' THEN 'generate_image'
+               WHEN 'enhancement' THEN 'enhance_video'
+               WHEN 'happyhorse' THEN 'generate_video_happyhorse'
+               ELSE 'generate_video'
+             END AS action,
+             cl.release_reason AS error_message,
              COUNT(*) AS fail_count,
-             SUM(ul.credits_cost) AS wasted_credits
-      FROM usage_logs ul
-      WHERE ul.status = 'failed'
-        AND ul.created_at >= date('now', ? || ' days')
-      GROUP BY ul.model, ul.action, ul.error_message
+             SUM(cl.locked_credits) AS wasted_credits
+      FROM credit_locks cl
+      WHERE cl.status = 'released'
+        AND cl.settled_at >= date('now', ? || ' days')
+      GROUP BY model, action, cl.release_reason
       ORDER BY fail_count DESC
       LIMIT 30
     `).all(`-${days}`);

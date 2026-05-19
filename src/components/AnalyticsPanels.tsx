@@ -8,6 +8,7 @@ import {
   fetchProjectConsumption,
   fetchFailureAnalysis,
   fetchUserActivity,
+  CreditDetailItem,
 } from '../services/authService';
 
 const ANALYTICS_TABS = ['趋势图', '当日排行', '消耗明细', '小组汇总', '工作组消耗', '失败分析', '用户活跃度'] as const;
@@ -92,13 +93,13 @@ export default function AnalyticsPanels() {
   const [tab, setTab] = useState<string>('趋势图');
   const [trendData, setTrendData] = useState<Array<{ day: string; consumed: number; active_users: number; total_calls: number }>>([]);
   const [rankingData, setRankingData] = useState<Array<{ id: number; email: string; name: string | null; department: string; total_credits: number; call_count: number }>>([]);
-  const [detailData, setDetailData] = useState<{ rows: Array<{ id: number; user_id: number; task_id: number | null; model: string; action: string; credits_cost: number; status: string; error_message: string | null; created_at: string; email: string; name: string | null; department: string }>; pagination: { page: number; pageSize: number; total: number; totalPages: number } } | null>(null);
+  const [detailData, setDetailData] = useState<{ rows: CreditDetailItem[]; pagination: { page: number; pageSize: number; total: number; totalPages: number } } | null>(null);
   const [groupData, setGroupData] = useState<Array<{ department: string; user_count: number; total_credits: number; call_count: number }>>([]);
   const [groupDrill, setGroupDrill] = useState<{ group: string; data: Array<any> } | null>(null);
   const [projectData, setProjectData] = useState<Array<{ id: number; name: string; user_count: number; total_credits: number; task_count: number }>>([]);
   const [failureData, setFailureData] = useState<Array<{ model: string; action: string; error_message: string | null; fail_count: number; wasted_credits: number }>>([]);
   const [activityData, setActivityData] = useState<{ dailyActive: Array<{ day: string; active_users: number }>; dormant: Array<any> } | null>(null);
-  const [detailQuery, setDetailQuery] = useState({ page: 1, userId: '', date: '', action: '', model: '' });
+  const [detailQuery, setDetailQuery] = useState({ page: 1, name: '', email: '', date: '', action: '', model: '' });
   const [groupDays, setGroupDays] = useState(7);
   const [loadingPanel, setLoadingPanel] = useState('');
   const loadedRef = useRef<Set<string>>(new Set());
@@ -129,7 +130,7 @@ export default function AnalyticsPanels() {
         fetchTodayRanking().then(d => { setRankingData(d); cacheSet(key, d); }).catch(() => {}).finally(() => setLoadingPanel(''));
         break;
       case '消耗明细':
-        fetchCreditDetails({ page: detailQuery.page, userId: detailQuery.userId ? Number(detailQuery.userId) : undefined, date: detailQuery.date || undefined, action: detailQuery.action || undefined, model: detailQuery.model || undefined })
+        fetchCreditDetails({ page: detailQuery.page, name: detailQuery.name || undefined, email: detailQuery.email || undefined, date: detailQuery.date || undefined, action: detailQuery.action || undefined, model: detailQuery.model || undefined })
           .then(d => { setDetailData(d); cacheSet(key, d); }).catch(() => {}).finally(() => setLoadingPanel(''));
         break;
       case '小组汇总':
@@ -156,7 +157,7 @@ export default function AnalyticsPanels() {
   function loadDetails(page: number) {
     setDetailQuery(q => ({ ...q, page }));
     setLoadingPanel('消耗明细');
-    fetchCreditDetails({ page, userId: detailQuery.userId ? Number(detailQuery.userId) : undefined, date: detailQuery.date || undefined, action: detailQuery.action || undefined, model: detailQuery.model || undefined })
+    fetchCreditDetails({ page, name: detailQuery.name || undefined, email: detailQuery.email || undefined, date: detailQuery.date || undefined, action: detailQuery.action || undefined, model: detailQuery.model || undefined })
       .then(setDetailData).catch(() => {}).finally(() => setLoadingPanel(''));
   }
 
@@ -271,8 +272,10 @@ export default function AnalyticsPanels() {
         {tab === '消耗明细' && !loadingPanel && (
           <div>
             <div className="flex flex-wrap items-center gap-3 mb-4">
-              <input type="text" placeholder="用户ID" value={detailQuery.userId} onChange={e => setDetailQuery(q => ({ ...q, userId: e.target.value }))}
-                className="w-24 px-3 py-1.5 bg-[#0f111a] border border-gray-700 rounded-lg text-white text-xs focus:outline-none focus:border-purple-500" />
+              <input type="text" placeholder="用户名" value={detailQuery.name} onChange={e => setDetailQuery(q => ({ ...q, name: e.target.value }))}
+                className="w-28 px-3 py-1.5 bg-[#0f111a] border border-gray-700 rounded-lg text-white text-xs focus:outline-none focus:border-purple-500" />
+              <input type="text" placeholder="邮箱" value={detailQuery.email} onChange={e => setDetailQuery(q => ({ ...q, email: e.target.value }))}
+                className="w-36 px-3 py-1.5 bg-[#0f111a] border border-gray-700 rounded-lg text-white text-xs focus:outline-none focus:border-purple-500" />
               <input type="date" value={detailQuery.date} onChange={e => setDetailQuery(q => ({ ...q, date: e.target.value }))}
                 className="px-3 py-1.5 bg-[#0f111a] border border-gray-700 rounded-lg text-white text-xs focus:outline-none focus:border-purple-500" />
               <input type="text" placeholder="模型" value={detailQuery.model} onChange={e => setDetailQuery(q => ({ ...q, model: e.target.value }))}
@@ -305,10 +308,22 @@ export default function AnalyticsPanels() {
                       {detailData.rows.map(r => (
                         <tr key={r.id} className="hover:bg-[#0f111a]/50">
                           <td className="px-3 py-2 text-gray-400 text-xs font-mono">{formatDateTime(r.created_at)}</td>
-                          <td className="px-3 py-2 text-white text-xs">{r.name || r.email}</td>
+                          <td className="px-3 py-2 text-xs">
+                            {r.name
+                              ? <><span className="text-white">{r.name}</span><span className="text-gray-500"> ({r.email})</span></>
+                              : <span className="text-gray-500">- ({r.email})</span>
+                            }
+                          </td>
                           <td className="px-3 py-2 text-gray-400 text-xs">{r.model}</td>
-                          <td className="px-3 py-2 text-gray-400 text-xs">{r.action}</td>
-                          <td className="px-3 py-2 text-right text-purple-400 text-xs font-mono">{r.credits_cost}</td>
+                          <td className="px-3 py-2 text-gray-400 text-xs">
+                            {r.concurrent_id ? `${r.action} (批量)` : r.action}
+                          </td>
+                          <td className="px-3 py-2 text-right text-purple-400 text-xs font-mono">
+                            {r.concurrent_id && r.batch_total_credits != null && r.unit_credits != null && r.batch_count != null
+                              ? `${r.batch_total_credits} (${r.unit_credits}×${r.batch_count})`
+                              : r.credits_cost
+                            }
+                          </td>
                           <td className="px-3 py-2 text-center">
                             <span className={`px-1.5 py-0.5 rounded text-xs ${r.status === 'success' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>{r.status}</span>
                           </td>
