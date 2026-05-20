@@ -123,19 +123,51 @@ export function validateMediaCombination(
 }
 
 /**
- * 重新探测一个已存在的 OSS 视频 URL 的元数据。
- * 后端走 OSS video/info 处理，**不下载视频到服务器磁盘**，仅几百字节 JSON 流量。
- * 失败抛错（OSS 过期、URL 不在我们桶下、对象不存在等）。
+ * 客户端探测视频时长（不依赖 OSS 服务端 video/info 处理）。
+ * 浏览器通过 <video preload="metadata"> 仅下载 MP4/MOV 头部元数据（几 KB），不会下载完整视频。
+ * 读取完毕后立即从 DOM 移除，释放内存。
  */
-export async function probeOssVideo(url: string): Promise<OssVideoInfo> {
-  const res = await fetch('/api/oss/probe-video', {
-    method: 'POST',
-    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ url }),
+export function probeVideoDuration(url: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement('video');
+    let settled = false;
+
+    const cleanup = () => {
+      // 暂停加载，切断网络
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+      video.remove();
+    };
+
+    video.preload = 'metadata';
+
+    video.onloadedmetadata = () => {
+      if (settled) return;
+      settled = true;
+      const dur = video.duration;
+      cleanup();
+      if (Number.isFinite(dur) && dur > 0) {
+        resolve(dur);
+      } else {
+        reject(new Error('无法读取视频时长，文件可能已损坏或格式不支持'));
+      }
+    };
+
+    video.onerror = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      const code = video.error?.code;
+      if (code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) {
+        reject(new Error('视频格式不支持，请上传 MP4 或 MOV'));
+      } else if (code === MediaError.MEDIA_ERR_NETWORK) {
+        reject(new Error('原视频已不可访问（网络错误）'));
+      } else {
+        reject(new Error(`视频无法加载（错误码 ${code ?? '未知'}）`));
+      }
+    };
+
+    video.src = url;
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data.success) {
-    throw new Error(data.error || '视频信息探测失败');
-  }
-  return data.data as OssVideoInfo;
 }

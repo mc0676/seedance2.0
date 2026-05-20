@@ -540,15 +540,6 @@ export function initDatabase() {
     }
   }
 
-  // 增量迁移：5 张业务表加 downloadable 列（下载管理可见性，与 deleted_at 历史软删分离）
-  for (const table of ['tasks', 'image_records', 'audio_generations', 'video_enhancements', 'tasks_happyhorse']) {
-    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
-    if (!cols.includes('downloadable')) {
-      console.log(`[database] 迁移：${table} 添加 downloadable 列（下载管理可见性）...`);
-      db.exec(`ALTER TABLE ${table} ADD COLUMN downloadable INTEGER DEFAULT 1`);
-    }
-  }
-
   // 增量迁移：tasks / tasks_happyhorse 加 concurrent_id 列（批量生成批次 ID）
   for (const table of ['tasks', 'tasks_happyhorse']) {
     const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);

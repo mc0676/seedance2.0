@@ -11,7 +11,7 @@ import { RATIO_OPTIONS, DURATION_OPTIONS, MODEL_OPTIONS } from '../types/index';
 import { generateVideo } from '../services/videoService';
 import { uploadToOss, FILE_LIMITS, validateMediaCombination } from '../services/ossService';
 import { estimatePricing, getCreditBalance, listEnabledModels, type RuntimeModelOption } from '../services/pricingService';
-import { getDownloadTasks, deleteTaskFromHistory, downloadTaskVideoDirect, makeDownloadFilename } from '../services/downloadService';
+import { getDownloadTasks, downloadTaskVideoDirect, makeDownloadFilename } from '../services/downloadService';
 import { GearIcon, PlusIcon, CloseIcon, SparkleIcon } from '../components/Icons';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
@@ -262,7 +262,7 @@ export default function SingleTaskPage() {
   const [historyHasMore, setHistoryHasMore] = useState(true);
   const [historyLoading, setHistoryLoading] = useState(false);
   const historyLoadingRef = useRef(false); // ref 版本，避免 loadHistory 闭包捕获过期值
-  const [previewVideo, setPreviewVideo] = useState<{ url: string; prompt: string; error?: string | null } | null>(null);
+  const [previewVideo, setPreviewVideo] = useState<{ url: string; prompt: string } | null>(null);
   const historyBottomRef = useRef<HTMLDivElement>(null);
   const historyLoadedRef = useRef(false);
   const prevProjectIdRef = useRef<number | undefined>(undefined);
@@ -784,7 +784,7 @@ export default function SingleTaskPage() {
     const projectId = overrideProjectId !== undefined ? overrideProjectId : (state.currentProject?.id ?? null);
     const gen = historyGenRef.current;
     try {
-      const result = await getDownloadTasks('all', 'video', page, 20, projectId, false, true, true);
+      const result = await getDownloadTasks('all', 'video', page, 20, projectId, false, true);
       if (gen !== historyGenRef.current) return; // 工作组已切换，丢弃过期响应
       setHistoryItems((prev) => append ? [...prev, ...result.tasks] : result.tasks);
       setHistoryHasMore(result.tasks.length === 20 && result.tasks.length + (append ? historyItems.length : 0) < result.total);
@@ -2144,9 +2144,7 @@ export default function SingleTaskPage() {
                   className="w-[25vh] h-[25vh] min-w-[120px] min-h-[120px] flex-shrink-0 rounded-xl overflow-hidden bg-[#0f111a] flex items-center justify-center cursor-pointer relative group"
                   onClick={() => {
                     if (playUrl) {
-                      setPreviewVideo({ url: playUrl, prompt: item.prompt, error: item.status === 'error' && item.error_message ? parseArkError(item.error_message) : null });
-                    } else if (item.status === 'error' && item.error_message) {
-                      setPreviewVideo({ url: '', prompt: item.prompt, error: parseArkError(item.error_message) });
+                      setPreviewVideo({ url: playUrl, prompt: item.prompt });
                     }
                   }}
                 >
@@ -2218,7 +2216,7 @@ export default function SingleTaskPage() {
                               <div
                               className="h-[15vh] min-h-[80px] cursor-pointer relative group flex items-center justify-center"
                                 onClick={() => {
-                                  if (subPlayUrl) setPreviewVideo({ url: subPlayUrl, prompt: item.prompt, error: null });
+                                  if (subPlayUrl) setPreviewVideo({ url: subPlayUrl, prompt: item.prompt });
                                 }}
                               >
                                 {isSubDone ? (
@@ -2248,34 +2246,6 @@ export default function SingleTaskPage() {
                                     下载
                                   </button>
                                 )}
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    if (!confirm('确定要删除此产物吗？')) return;
-                                    deleteTaskFromHistory(sub.id)
-                                      .then(() => {
-                                        setHistoryItems((prev) => prev.map((h) => {
-                                          if (h.concurrent_id === item.concurrent_id && h.concurrent_items) {
-                                            if (sub.id === h.id) {
-                                              // 删除的是组头：用第一个兄弟替代，无兄弟则移除整组
-                                              const siblings = h.concurrent_items;
-                                              if (siblings.length === 0) return null;
-                                              const [newHead, ...rest] = siblings;
-                                              return { ...newHead, concurrent_items: rest, concurrent_id: h.concurrent_id };
-                                            }
-                                            // 删除的是兄弟
-                                            const filtered = h.concurrent_items.filter((x) => x.id !== sub.id);
-                                            return { ...h, concurrent_items: filtered };
-                                          }
-                                          return h;
-                                        }).filter(Boolean) as DownloadTask[]);
-                                      })
-                                      .catch((e) => alert(`删除失败：${e.message}`));
-                                  }}
-                                  className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-all"
-                                >
-                                  删除
-                                </button>
                               </div>
                             </div>
                           );
@@ -2316,31 +2286,17 @@ export default function SingleTaskPage() {
                             >
                               批量下载({allGroupItems.filter((gi) => gi.status === 'done' && gi.video_url).length})
                             </button>
-                            <button
-                              onClick={() => {
-                                if (!confirm(`确定要删除整条批量记录（${allGroupItems.length} 个产物）吗？`)) return;
-                                Promise.all(allGroupItems.map((gi) => deleteTaskFromHistory(gi.id).catch(() => {})))
-                                  .then(() => setHistoryItems((prev) => prev.filter((h) => h.concurrent_id !== item.concurrent_id)));
-                              }}
-                              className="text-[11px] px-2 py-1 rounded-xl border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-all"
-                            >
-                              批量删除
-                            </button>
                           </>
                         )}
                         {/* 预览（非批量） */}
-                        {!isGroup && (playUrl || (item.status === 'error' && item.error_message)) && (
+                        {!isGroup && playUrl && (
                           <button
                             onClick={() => {
-                              if (playUrl) {
-                                setPreviewVideo({ url: playUrl, prompt: item.prompt, error: item.status === 'error' && item.error_message ? parseArkError(item.error_message) : null });
-                              } else {
-                                setPreviewVideo({ url: '', prompt: item.prompt, error: item.error_message ? parseArkError(item.error_message) : null });
-                              }
+                              setPreviewVideo({ url: playUrl, prompt: item.prompt });
                             }}
                             className="text-[11px] px-2 py-1 rounded-xl border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition-all"
                           >
-                            {playUrl ? '预览' : '报错'}
+                                                        预览
                           </button>
                         )}
                       <button
@@ -2476,20 +2432,6 @@ export default function SingleTaskPage() {
                       >
                         复用
                       </button>
-                      {/* 删除 — 仅非批量记录显示（批量记录在组级别有"批量删除"） */}
-                      {!isGroup && (
-                      <button
-                        onClick={() => {
-                          if (!confirm('确定要从历史记录中删除此任务吗？')) return;
-                          deleteTaskFromHistory(item.id)
-                            .then(() => setHistoryItems((prev) => prev.filter((x) => x.id !== item.id)))
-                            .catch((e) => alert(`删除失败：${e.message}`));
-                        }}
-                        className="text-[11px] px-2 py-1 rounded-xl border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-all"
-                      >
-                        删除
-                      </button>
-                      )}
                     </div>
                     </div>
                   </div>
@@ -2542,22 +2484,10 @@ export default function SingleTaskPage() {
             )}
 
             {/* Info panels */}
-            {(previewVideo.prompt || previewVideo.error) && (
-              <div className={`grid gap-3 ${previewVideo.prompt && previewVideo.error ? 'grid-cols-2' : 'grid-cols-1'}`}>
-                {/* 提示词 */}
-                {previewVideo.prompt && (
-                  <div className="bg-[#0f111a]/90 border border-gray-700 rounded-xl px-4 py-3">
-                    <div className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1.5">提示词</div>
-                    <p className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap break-words max-h-28 overflow-y-auto custom-scrollbar">{previewVideo.prompt}</p>
-                  </div>
-                )}
-                {/* 报错 */}
-                {previewVideo.error && (
-                  <div className="bg-red-950/50 border border-red-700/40 rounded-xl px-4 py-3">
-                    <div className="text-[10px] font-bold text-red-400 uppercase tracking-wider mb-1.5">报错信息</div>
-                    <p className="text-sm text-red-300 leading-relaxed whitespace-pre-wrap break-words max-h-28 overflow-y-auto custom-scrollbar">{previewVideo.error}</p>
-                  </div>
-                )}
+            {previewVideo.prompt && (
+              <div className="bg-[#0f111a]/90 border border-gray-700 rounded-xl px-4 py-3">
+                <div className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1.5">提示词</div>
+                <p className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap break-words max-h-28 overflow-y-auto custom-scrollbar">{previewVideo.prompt}</p>
               </div>
             )}
           </div>

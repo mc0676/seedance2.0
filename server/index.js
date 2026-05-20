@@ -27,7 +27,7 @@ import * as mediaKitService from './services/mediaKitService.js';
 import * as enhancementWorker from './services/enhancementWorker.js';
 import * as enhancementPricingService from './services/enhancementPricingService.js';
 import * as audioGenerationService from './services/audioGenerationService.js';
-import * as happyhorseService from './services/happyhorseService.js';
+import { submitTask as happyhorseSubmitTask, getTask as happyhorseGetTask } from './services/happyhorseService.js';
 import * as happyhorsePricingService from './services/happyhorsePricingService.js';
 import * as happyhorseWorker from './services/happyhorseWorker.js';
 import { readFileSync } from 'fs';
@@ -1261,14 +1261,12 @@ app.post('/api/audio-generations/:id/mark-downloaded', authenticate, (req, res) 
   }
 });
 
-// DELETE /api/image-records/:id - 删除图片记录
-// ?scope=history → 历史软删（deleted_at）；默认 → 下载管理隐藏（downloadable=0）
+// DELETE /api/image-records/:id - 软删图片记录（置 deleted_at）
 app.delete('/api/image-records/:id', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const id = parseInt(req.params.id);
     if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
-    const historyDelete = req.query.scope === 'history';
     const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
     const row = isAdmin
       ? db.prepare('SELECT id, deleted_at FROM image_records WHERE id = ?').get(id)
@@ -1278,26 +1276,20 @@ app.delete('/api/image-records/:id', authenticate, (req, res) => {
           )
         )`).get(id, req.user.id, req.user.id);
     if (!row) return res.status(404).json({ error: '记录不存在或无权限' });
-    if (historyDelete && row.deleted_at) return res.json({ success: true });
-    if (historyDelete) {
-      db.prepare('UPDATE image_records SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
-    } else {
-      db.prepare('UPDATE image_records SET downloadable = 0 WHERE id = ?').run(id);
-    }
+    if (row.deleted_at) return res.json({ success: true });
+    db.prepare('UPDATE image_records SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// DELETE /api/audio-generations/:id - 删除音频记录
-// ?scope=history → 历史软删（deleted_at + 同步软删中转视频）；默认 → 下载管理隐藏（downloadable=0）
+// DELETE /api/audio-generations/:id - 软删音频记录（置 deleted_at + 同步软删中转视频）
 app.delete('/api/audio-generations/:id', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const id = parseInt(req.params.id);
     if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
-    const historyDelete = req.query.scope === 'history';
     const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
     const row = isAdmin
       ? db.prepare('SELECT id, task_id, deleted_at FROM audio_generations WHERE id = ?').get(id)
@@ -1307,18 +1299,14 @@ app.delete('/api/audio-generations/:id', authenticate, (req, res) => {
           )
         )`).get(id, req.user.id, req.user.id);
     if (!row) return res.status(404).json({ error: '记录不存在或无权限' });
-    if (historyDelete && row.deleted_at) return res.json({ success: true });
+    if (row.deleted_at) return res.json({ success: true });
 
     const tx = db.transaction(() => {
-      if (historyDelete) {
-        db.prepare('UPDATE audio_generations SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
-        if (row.task_id) {
-          db.prepare(
-            "UPDATE tasks SET deleted_at = CURRENT_TIMESTAMP WHERE id = ? AND task_kind = 'audio_intermediate' AND deleted_at IS NULL"
-          ).run(row.task_id);
-        }
-      } else {
-        db.prepare('UPDATE audio_generations SET downloadable = 0 WHERE id = ?').run(id);
+      db.prepare('UPDATE audio_generations SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
+      if (row.task_id) {
+        db.prepare(
+          "UPDATE tasks SET deleted_at = CURRENT_TIMESTAMP WHERE id = ? AND task_kind = 'audio_intermediate' AND deleted_at IS NULL"
+        ).run(row.task_id);
       }
     });
     tx();
@@ -1351,14 +1339,12 @@ app.post('/api/video-enhancements/:id/mark-downloaded', authenticate, (req, res)
   }
 });
 
-// DELETE /api/video-enhancements/:id - 删除画质增强记录
-// ?scope=history → 历史软删（deleted_at）；默认 → 下载管理隐藏（downloadable=0）
+// DELETE /api/video-enhancements/:id - 软删画质增强记录（置 deleted_at）
 app.delete('/api/video-enhancements/:id', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const id = parseInt(req.params.id);
     if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
-    const historyDelete = req.query.scope === 'history';
     const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
     const row = isAdmin
       ? db.prepare('SELECT id, deleted_at FROM video_enhancements WHERE id = ?').get(id)
@@ -1368,12 +1354,8 @@ app.delete('/api/video-enhancements/:id', authenticate, (req, res) => {
           )
         )`).get(id, req.user.id, req.user.id);
     if (!row) return res.status(404).json({ error: '记录不存在或无权限' });
-    if (historyDelete && row.deleted_at) return res.json({ success: true });
-    if (historyDelete) {
-      db.prepare('UPDATE video_enhancements SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
-    } else {
-      db.prepare('UPDATE video_enhancements SET downloadable = 0 WHERE id = ?').run(id);
-    }
+    if (row.deleted_at) return res.json({ success: true });
+    db.prepare('UPDATE video_enhancements SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -2608,7 +2590,7 @@ app.get('/api/download/tasks/:id/file', authenticate, async (req, res) => {
 // GET /api/download/tasks - 获取下载任务列表
 app.get('/api/download/tasks', authenticate, (req, res) => {
   try {
-    const { status = 'all', type = 'all', page = 1, pageSize = 20, projectId, includeHappyhorse, skipDownloadableFilter, groupByConcurrent } = req.query;
+    const { status = 'all', type = 'all', page = 1, pageSize = 20, projectId, includeHappyhorse, groupByConcurrent } = req.query;
     const isAdmin = ['admin','super_admin'].includes(req.user.role);
     const result = videoDownloader.getDownloadTasks({
       status,
@@ -2620,7 +2602,6 @@ app.get('/api/download/tasks', authenticate, (req, res) => {
       projectId: projectId ? Number(projectId) : null,
       // 仅当显式 ?includeHappyhorse=1 时，把 HappyHorse 行合并到 video / all
       includeHappyhorse: includeHappyhorse === '1' || includeHappyhorse === 'true',
-      skipDownloadableFilter: skipDownloadableFilter === '1' || skipDownloadableFilter === 'true',
       groupByConcurrent: groupByConcurrent === '1' || groupByConcurrent === 'true',
     });
     res.json({ success: true, data: result });
@@ -2820,30 +2801,24 @@ app.post('/api/download/tasks/:id/open', authenticate, async (req, res) => {
   }
 });
 
-// DELETE /api/download/tasks/:id - 删除任务
-// ?scope=history → 历史软删（deleted_at）；默认 → 下载管理隐藏（downloadable=0）
+// DELETE /api/download/tasks/:id - 软删任务（置 deleted_at）
 app.delete('/api/download/tasks/:id', authenticate, (req, res) => {
   try {
     const taskId = req.params.id;
     const db = getDatabase();
-    const historyDelete = req.query.scope === 'history';
 
     const task = db.prepare('SELECT project_id, deleted_at FROM tasks WHERE id = ?').get(taskId);
     if (!task) {
       return res.status(404).json({ error: '任务不存在' });
     }
-    if (historyDelete && task.deleted_at) {
+    if (task.deleted_at) {
       return res.json({ success: true }); // 已软删，幂等
     }
     if (req.user.role !== "admin" && req.user.role !== "super_admin" && !projectService.isProjectMember(task.project_id, req.user.id)) {
       return res.status(403).json({ error: '无权访问' });
     }
 
-    if (historyDelete) {
-      db.prepare('UPDATE tasks SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?').run(taskId);
-    } else {
-      db.prepare('UPDATE tasks SET downloadable = 0 WHERE id = ?').run(taskId);
-    }
+    db.prepare('UPDATE tasks SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?').run(taskId);
 
     res.json({ success: true });
   } catch (error) {
@@ -5026,7 +5001,7 @@ app.post('/api/happyhorse-tasks', authenticate, async (req, res) => {
       }
       const hhId = hhTaskIds[i];
       try {
-        const result = await happyhorseService.submitTask({
+        const result = await happyhorseSubmitTask({
           apiKey,
           model: HAPPYHORSE_MODE_MODELS[m],
           input: apiInput,
@@ -5048,7 +5023,12 @@ app.post('/api/happyhorse-tasks', authenticate, async (req, res) => {
     const allFailed = submitResults.every((r) => !r.success);
 
     if (allFailed) {
-      return res.status(502).json({ error: '马匹提交失败：所有任务提交均失败' });
+      const firstError = submitResults[0]?.error || '未知错误';
+      if (batchSize <= 1) {
+        return res.status(502).json({ error: `快乐马（HappyHorse）提交失败：${firstError}` });
+      }
+      const detail = submitResults.map((r, i) => `#${i + 1} ${r.error}`).join('；');
+      return res.status(502).json({ error: `快乐马（HappyHorse）提交失败（${submitResults.length}/${submitResults.length} 失败）：${detail}` });
     }
 
     const rows = hhTaskIds.map((hhId) => db.prepare('SELECT * FROM tasks_happyhorse WHERE id = ?').get(hhId));
@@ -5115,20 +5095,15 @@ app.get('/api/happyhorse-tasks/:id', authenticate, (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// DELETE /api/happyhorse-tasks/:id - 删除 HappyHorse 记录
-// ?scope=history → 历史软删（deleted_at）；默认 → 下载管理隐藏（downloadable=0）
+// DELETE /api/happyhorse-tasks/:id - 软删 HappyHorse 记录（置 deleted_at）
 app.delete('/api/happyhorse-tasks/:id', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const row = db.prepare('SELECT * FROM tasks_happyhorse WHERE id = ?').get(req.params.id);
     const auth = authorizeHappyhorseRow(row, req);
     if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
-    const historyDelete = req.query.scope === 'history';
-    if (historyDelete) {
-      db.prepare('UPDATE tasks_happyhorse SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?').run(req.params.id);
-    } else {
-      db.prepare('UPDATE tasks_happyhorse SET downloadable = 0 WHERE id = ?').run(req.params.id);
-    }
+    if (row.deleted_at) return res.json({ success: true });
+    db.prepare('UPDATE tasks_happyhorse SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?').run(req.params.id);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

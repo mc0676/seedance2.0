@@ -6,7 +6,8 @@
  *
  * 关键点：
  *   - **不下载视频到本地**，仅一次轻量 JSON 请求（通常 < 1 KB），适合磁盘极小的服务器
- *   - 用 `client.signatureUrl` 生成临时签名 URL（即使对象是 private 也能拿到 JSON）
+ *   - OSS 桶为公开读，直接拼接原始 URL + x-oss-process 参数即可，无需 SDK 签名
+ *   - 若 video/info 处理不可用（桶未开通 IMM），回退到 HEAD 请求验证可访问性
  *   - 解析 `VideoStreams[0].Duration` (秒数，字符串/数字皆有) 作为「真实视频时长」
  *
  * 失败兜底：返回 { ok: false, error: '...' }；调用方按需展示给用户。
@@ -16,20 +17,7 @@
  *   https://help.aliyun.com/zh/oss/developer-reference/get-video-information
  */
 
-import OSS from 'ali-oss';
-
-// 与 server/index.js 同源的 OSS 配置（保持一致；如未来抽公共配置，统一从那里 import）
-const OSS_CONFIG = {
-  region: 'oss-cn-shanghai',
-  accessKeyId: 'LTAI5tL9SYY5FN5eSJ3Yhxw9',
-  accessKeySecret: 'atR8ItYSJhCIA76C2imtUKNr3h24Zr',
-  bucket: 'yunyu-oss',
-};
 const OSS_URL_PREFIX = 'https://yunyu-oss.oss-cn-shanghai.aliyuncs.com/';
-
-function createClient() {
-  return new OSS({ ...OSS_CONFIG, timeout: 30000 });
-}
 
 /**
  * 从 OSS URL 中提取对象 key（去掉桶域名前缀和可能的 query / fragment）。
@@ -43,10 +31,24 @@ export function extractOssKey(url) {
 }
 
 /**
+ * 检查 OSS 文件是否可访问（HEAD 请求，轻量）。
+ */
+async function checkAccessible(url) {
+  try {
+    const resp = await fetch(url, { method: 'HEAD' });
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 通过 OSS video/info 处理拿到视频元数据。
+ * 先尝试 video/info 拿时长；若处理不可用则回退为 HEAD 检查可访问性。
  * @param {string} ossUrl - 完整 OSS URL（必须在我们桶下）
  * @returns {Promise<{
  *   ok: boolean,
+ *   accessible?: boolean,
  *   error?: string,
  *   durationSec?: number,
  *   width?: number,
@@ -62,40 +64,48 @@ export async function probeVideoInfo(ossUrl) {
   if (!key) {
     return { ok: false, error: '不是受支持的 OSS URL（仅支持本平台 yunyu-oss）' };
   }
-  const client = createClient();
 
-  // 用 signatureUrl 拿到带签名的处理 URL。即使桶是 private 也能用；公有读时签名也无害。
-  // 过期 60s 足以完成一次 fetch；很短的 TTL 避免日志暴露 URL 后被盗用。
-  let signedUrl;
-  try {
-    signedUrl = client.signatureUrl(key, { expires: 60, process: 'video/info' });
-  } catch (e) {
-    return { ok: false, error: `OSS 签名失败：${e.message}` };
-  }
+  const baseUrl = ossUrl.split('?')[0].split('#')[0];
+  const processUrl = `${baseUrl}?x-oss-process=video/info`;
 
+  // 1. 尝试 video/info 处理拿元数据
   let resp;
   try {
-    resp = await fetch(signedUrl);
+    resp = await fetch(processUrl);
   } catch (e) {
-    return { ok: false, error: `网络请求失败：${e.message}` };
+    // 网络不通：回退到 HEAD 检查原始 URL 可访问性
+    console.warn(`[ossVideoInfo] video/info fetch 失败: ${e.message}，回退 HEAD 检查`);
+    const accessible = await checkAccessible(baseUrl);
+    if (accessible) {
+      return { ok: true, accessible: true, durationSec: 0 };
+    }
+    return { ok: false, error: `视频文件不可访问：${e.message}` };
   }
 
   if (!resp.ok) {
-    // 对象不存在或被删 → OSS 通常返回 404；签名过期返回 403
-    if (resp.status === 404) {
+    const status = resp.status;
+    // video/info 处理不可用时 OSS 返回 403/404/400，尝试回退 HEAD 检查
+    console.warn(`[ossVideoInfo] video/info 返回 HTTP ${status}，回退 HEAD 检查 ${baseUrl}`);
+    const accessible = await checkAccessible(baseUrl);
+    if (accessible) {
+      return { ok: true, accessible: true, durationSec: 0 };
+    }
+    if (status === 404 || status === 403) {
       return { ok: false, error: '视频文件已不存在（可能已过期或被删除）' };
     }
-    if (resp.status === 403) {
-      return { ok: false, error: '视频访问被拒（OSS 凭证或权限异常）' };
-    }
-    return { ok: false, error: `OSS 处理失败 HTTP ${resp.status}` };
+    return { ok: false, error: `OSS 处理失败 HTTP ${status}` };
   }
 
   let body;
   try {
     body = await resp.json();
   } catch (e) {
-    // OSS 在非视频文件上调 video/info 会返回 XML 错误
+    // OSS 返回非 JSON（如 XML 错误），回退 HEAD 检查
+    console.warn(`[ossVideoInfo] video/info 返回非 JSON: ${String(e).slice(0, 100)}，回退 HEAD 检查`);
+    const accessible = await checkAccessible(baseUrl);
+    if (accessible) {
+      return { ok: true, accessible: true, durationSec: 0 };
+    }
     return { ok: false, error: '该文件不是视频或无法解析' };
   }
 
@@ -115,6 +125,7 @@ export async function probeVideoInfo(ossUrl) {
 
   return {
     ok: true,
+    accessible: true,
     durationSec,
     width: Number(vs?.Width) || undefined,
     height: Number(vs?.Height) || undefined,

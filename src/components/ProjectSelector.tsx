@@ -34,6 +34,13 @@ export default function ProjectSelector() {
     setDeletingId(p.id);
     try {
       await deleteProjectAction(p.id);
+      // 如果删除的是当前选中的工作组，自动切换到剩余的第一个
+      if (currentProject?.id === p.id) {
+        const remaining = projects.filter((proj) => proj.id !== p.id);
+        if (remaining.length > 0) {
+          selectProject(remaining[0]);
+        }
+      }
       setOpen(false);
     } catch (err) {
       alert(err instanceof Error ? err.message : '删除失败');

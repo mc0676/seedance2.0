@@ -5,7 +5,6 @@ import { uploadToOss } from '../services/ossService';
 import type { VideoEnhancement, EnhancementPricing, EnhancementResolutionPreset } from '../types';
 import { SparkleIcon, SpinnerIcon, DownloadIcon, CloseIcon, GearIcon } from '../components/Icons';
 import { formatDateTime, useUserTimezone } from '../utils/datetime';
-import { deleteEnhancementFromHistory } from '../services/downloadService';
 import {
   getEnhancementPricing,
   submitEnhancement,
@@ -432,7 +431,7 @@ export default function EnhancementPage() {
           <div className="flex-1 flex items-center justify-center text-gray-600 text-sm">还没有提交过增强任务</div>
         ) : (
           <div className="px-4 pb-4 space-y-3">
-            {records.map((r) => <RecordRow key={r.id} r={r} onDelete={(id) => setRecords((prev) => prev.filter((x) => x.id !== id))} />)}
+            {records.map((r) => <RecordRow key={r.id} r={r} />)}
             {recordsTotal > RECORDS_PAGE_SIZE && (
               <div className="flex justify-center pt-2">
                 <Pager page={recordsPage} total={recordsTotal} pageSize={RECORDS_PAGE_SIZE} onChange={(p) => loadRecords(p)} />
@@ -458,7 +457,7 @@ function Pager({ page, total, pageSize, onChange }: { page: number; total: numbe
   );
 }
 
-function RecordRow({ r, onDelete }: { r: VideoEnhancement; onDelete: (id: number) => void }) {
+function RecordRow({ r }: { r: VideoEnhancement }) {
   const badge = STATUS_BADGE[r.status];
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   return (
@@ -503,15 +502,6 @@ function RecordRow({ r, onDelete }: { r: VideoEnhancement; onDelete: (id: number
                 <SpinnerIcon className="w-3 h-3 inline-block animate-spin mr-1" />MediaKit 处理中...
               </div>
             )}
-            <button
-              onClick={() => {
-                if (!confirm('确定要从历史记录中删除此增强记录吗？')) return;
-                deleteEnhancementFromHistory(r.id)
-                  .then(() => onDelete(r.id))
-                  .catch((e) => alert(`删除失败：${e.message}`));
-              }}
-              className="self-start text-[11px] px-2 py-1 rounded-xl border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-all"
-            >删除</button>
           </div>
           {/* 增强片缩略图 */}
           <div className="w-[25vh] h-[25vh] min-w-[120px] min-h-[120px] flex-shrink-0 rounded-xl overflow-hidden bg-[#0f111a] relative group">

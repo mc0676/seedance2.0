@@ -71,7 +71,7 @@ function DeleteConfirmModal({ name, onConfirm, onCancel }: { name: string; onCon
 
 export default function ProjectWorkspacePage() {
   useUserTimezone();
-  const { state, currentUser } = useApp();
+  const { state, currentUser, loadProjects } = useApp();
   const currentProject = state.currentProject;
   const [tab, setTab] = useState<Tab>('volc');
 
@@ -130,6 +130,7 @@ export default function ProjectWorkspacePage() {
   const [memberError, setMemberError] = useState('');
 
   const isAdmin = currentUser?.role === 'admin' || currentUser?.role === 'super_admin';
+  const canManageMembers = isAdmin || currentProject?.my_role === 'owner' || currentProject?.my_role === 'admin';
 
   // 加载组列表，并为每个组加载第一个 Asset 封面
   // 严格按当前工作组过滤：只显示当前工作组绑定的素材组
@@ -374,9 +375,22 @@ export default function ProjectWorkspacePage() {
   };
 
   const handleRemoveMember = async (member: ProjectMember) => {
-    if (!currentProject || !confirm(`确定移除成员 ${member.email}？`)) return;
-    try { await removeProjectMember(currentProject.id, member.user_id); await loadMembers(); }
-    catch (err) { alert(err instanceof Error ? err.message : '移除失败'); }
+    const isSelf = currentUser?.id === member.user_id;
+    if (!currentProject) return;
+    const msg = isSelf
+      ? `确定退出工作组「${currentProject.name}」？`
+      : `确定移除成员 ${member.email}？`;
+    if (!confirm(msg)) return;
+    try {
+      await removeProjectMember(currentProject.id, member.user_id);
+      if (isSelf) {
+        await loadProjects();
+      } else {
+        await loadMembers();
+      }
+    } catch (err) {
+      alert(err instanceof Error ? err.message : '移除失败');
+    }
   };
 
   useEffect(() => {
@@ -805,9 +819,9 @@ export default function ProjectWorkspacePage() {
                       <td className="px-5 py-3 text-sm"><MemberRoleTag role={m.role} /></td>
                       <td className="px-5 py-3 text-sm text-gray-400">{formatDate(m.created_at)}</td>
                       <td className="px-5 py-3 text-sm">
-                        {m.role !== 'owner' && (isAdmin || currentUser?.id === m.user_id) && (
+                        {m.role !== 'owner' && (canManageMembers || currentUser?.id === m.user_id) && (
                           <button onClick={() => handleRemoveMember(m)}
-                            className="px-2 py-1 bg-red-600/10 text-red-500 hover:bg-red-600/20 rounded-md text-xs transition-colors">移除</button>
+                            className="px-2 py-1 bg-red-600/10 text-red-500 hover:bg-red-600/20 rounded-md text-xs transition-colors">{currentUser?.id === m.user_id ? '退出' : '移除'}</button>
                         )}
                       </td>
                     </tr>

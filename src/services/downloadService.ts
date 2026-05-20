@@ -70,7 +70,6 @@ export async function getDownloadTasks(
   pageSize: number = 20,
   projectId?: number | null,
   includeHappyhorse: boolean = false,
-  skipDownloadableFilter: boolean = false,
   groupByConcurrent: boolean = false,
 ): Promise<DownloadTaskList> {
   const params = new URLSearchParams({
@@ -84,9 +83,6 @@ export async function getDownloadTasks(
   }
   if (includeHappyhorse) {
     params.append('includeHappyhorse', '1');
-  }
-  if (skipDownloadableFilter) {
-    params.append('skipDownloadableFilter', '1');
   }
   if (groupByConcurrent) {
     params.append('groupByConcurrent', '1');

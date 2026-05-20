@@ -172,6 +172,10 @@ export function AppProvider({ children, currentUser }: { children: ReactNode; cu
         projectService.getProjectTasks(toSelect.id).then((tasks) => {
           dispatch({ type: 'SET_TASKS', payload: tasks });
         }).catch(() => {});
+      } else {
+        dispatch({ type: 'SET_CURRENT_PROJECT', payload: null });
+        dispatch({ type: 'SET_TASKS', payload: [] });
+        localStorage.removeItem('currentProjectId');
       }
     } catch (error) {
       dispatch({ type: 'SET_ERROR', payload: error instanceof Error ? error.message : '加载项目失败' });

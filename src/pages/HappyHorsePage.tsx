@@ -1,16 +1,16 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
-import { uploadToOss, FILE_LIMITS, probeOssVideo } from '../services/ossService';
+import { uploadToOss, FILE_LIMITS, probeVideoDuration } from '../services/ossService';
 import { CloseIcon, PlusIcon, SparkleIcon, GearIcon } from '../components/Icons';
 import { formatShortDateTime, useUserTimezone } from '../utils/datetime';
 import { getCreditBalance } from '../services/pricingService';
-import { deleteHappyhorseFromHistory } from '../services/downloadService';
 import { useNavigate } from 'react-router-dom';
 import {
   submitHappyhorseTask,
   listMyHappyhorseTasks,
   getHappyhorsePricing,
   estimateHappyhorseCredits,
+  translateDashScopeError,
 } from '../services/happyhorseService';
 import type {
   HappyhorseMode, HappyhorseResolution, HappyhorseRatio,
@@ -121,7 +121,7 @@ export default function HappyHorsePage() {
   const loadedRef = useRef(false); // 防止同一 projectId 重复初始加载
   const prevProjectIdRef = useRef<number | null>(null);
   const PAGE_SIZE = 12;
-  const [previewVideo, setPreviewVideo] = useState<{ url: string; prompt: string; error?: string | null } | null>(null);
+  const [previewVideo, setPreviewVideo] = useState<{ url: string; prompt: string } | null>(null);
 
   // 加载计费表
   useEffect(() => {
@@ -801,11 +801,11 @@ export default function HappyHorsePage() {
     probe.src = blobUrl;
     try {
       const out = await uploadToOss(file, 'video', (pct) => setUploadPct(pct));
-      URL.revokeObjectURL(blobUrl);
       // 1) 优先用服务端 OSS video/info 探测的时长
       let duration: number | null = out.videoInfo?.durationSec ?? null;
       // 2) 兜底用浏览器 probe 出的时长
       if (!duration || duration <= 0) duration = await localProbe;
+      URL.revokeObjectURL(blobUrl);
       setEditVideoDuration(Number.isFinite(duration as number) && (duration as number) > 0 ? (duration as number) : null);
       setMedia((prev) => [
         { type: 'video', url: out.url, original_name: file.name },
@@ -897,7 +897,7 @@ export default function HappyHorsePage() {
     if (mode === 'i2v' && !media.some((m) => m.type === 'first_frame')) { setSubmitError('请上传首帧图片'); return; }
     if (mode === 'r2v' && media.filter((m) => m.type === 'reference_image').length < 1) { setSubmitError('请至少上传 1 张参考图'); return; }
     if (mode === 'video-edit' && !media.some((m) => m.type === 'video')) { setSubmitError('请上传待编辑的视频'); return; }
-    // video-edit：必须有可信的视频时长才能精确计费；OSS 探测失败 / 浏览器 probe 失败 / 视频已过期都属此情况
+    // video-edit：必须有可信的视频时长才能精确计费
     if (mode === 'video-edit' && (!editVideoDuration || editVideoDuration <= 0)) {
       setSubmitError('无法识别视频时长，无法预估积分。请重新上传视频后再生成。');
       return;
@@ -938,7 +938,7 @@ export default function HappyHorsePage() {
       setPrompt(''); setMedia([]); setSeed(''); setEditVideoDuration(null);
       await loadTasks();
     } catch (e: any) {
-      setSubmitError(e.message || '提交失败');
+      setSubmitError(translateDashScopeError(e.message) || '提交失败');
     } finally {
       setSubmitting(false);
     }
@@ -1009,8 +1009,12 @@ export default function HappyHorsePage() {
         setEditVideoDuration(null);
         const vid = restoredMedia.find((m) => m.type === 'video');
         if (vid?.url) {
-          probeOssVideo(vid.url)
-            .then((info) => { if (info.durationSec > 0) setEditVideoDuration(info.durationSec); })
+                          probeVideoDuration(vid.url)
+            .then((sec) => {
+              if (sec > 0) {
+                setEditVideoDuration(sec);
+              }
+            })
             .catch((e) => {
               setSubmitError(e.message?.includes('不存在') || e.message?.includes('过期')
                 ? '原视频已不在 OSS 中（可能已过期或被删除），请重新上传后再生成。'
@@ -1402,7 +1406,7 @@ export default function HappyHorsePage() {
             )}
             {mode === 'video-edit' && estimate.credits > 0 && editVideoDuration && editVideoDuration > 0 && (
               <div className="mt-1 text-[10px] text-gray-500">
-                视频编辑计费 = 输入 {Math.min(15, Math.ceil(editVideoDuration))}s + 输出 {Math.min(15, Math.ceil(editVideoDuration))}s（≤15s 输出与输入等长）
+                视频编辑计费 = 输入 {Math.min(15, Math.round(editVideoDuration))}s + 输出 {Math.min(15, Math.round(editVideoDuration))}s（≤15s 输出与输入等长）
               </div>
             )}
             {submitError && <div className="mt-3 text-sm text-red-400">{submitError}</div>}
@@ -1427,13 +1431,12 @@ export default function HappyHorsePage() {
             {tasks.map((t) => {
               const badge = STATUS_BADGE[t.status];
               const playUrl = t.video_url;
-              const canPreview = !!playUrl || (t.status === 'error' && !!t.error_message);
+              const canPreview = !!playUrl;
               const openPreview = () => {
                 if (!canPreview) return;
                 setPreviewVideo({
                   url: playUrl || '',
                   prompt: t.prompt || '',
-                  error: t.status === 'error' && t.error_message ? t.error_message : null,
                 });
               };
               const isGroup = !!t.concurrent_id;
@@ -1484,7 +1487,7 @@ export default function HappyHorsePage() {
                       </div>
                       <p className="text-xs text-gray-300 line-clamp-2 leading-relaxed">{t.prompt || '（无提示词）'}</p>
                       {!isGroup && t.status === 'error' && t.error_message && (
-                        <p className="text-xs text-red-400 line-clamp-3 leading-relaxed bg-red-950/30 rounded-lg px-2 py-1">{t.error_message}</p>
+                        <p className="text-xs text-red-400 line-clamp-3 leading-relaxed bg-red-950/30 rounded-lg px-2 py-1">{translateDashScopeError(t.error_message)}</p>
                       )}
 
                       {/* 输入素材缩略（非批量时） */}
@@ -1515,7 +1518,7 @@ export default function HappyHorsePage() {
                                   <div
                                   className="h-[15vh] min-h-[80px] cursor-pointer relative group flex items-center justify-center"
                                     onClick={() => {
-                                      if (subPlayUrl) setPreviewVideo({ url: subPlayUrl, prompt: t.prompt, error: null });
+                                      if (subPlayUrl) setPreviewVideo({ url: subPlayUrl, prompt: t.prompt });
                                     }}
                                   >
                                     {isSubDone ? (
@@ -1543,36 +1546,6 @@ export default function HappyHorsePage() {
                                         className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-all"
                                       >下载</button>
                                     )}
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        if (!confirm('确定要删除此产物吗？')) return;
-                                        const taskId = sub.id;
-                                        deletingRef.current = true;
-                                        setTasks((prev) => prev.map((h) => {
-                                          if (h.concurrent_id === t.concurrent_id && h.concurrent_items) {
-                                            if (taskId === h.id) {
-                                              // 删除的是组头：用第一个兄弟替代，无兄弟则移除整组
-                                              const siblings = h.concurrent_items;
-                                              if (siblings.length === 0) return null;
-                                              const [newHead, ...rest] = siblings;
-                                              return { ...newHead, concurrent_items: rest, concurrent_id: h.concurrent_id };
-                                            }
-                                            // 删除的是兄弟
-                                            const filtered = h.concurrent_items.filter((x) => x.id !== taskId);
-                                            return { ...h, concurrent_items: filtered };
-                                          }
-                                          return h;
-                                        }).filter(Boolean) as HappyhorseTask[]);
-                                        deleteHappyhorseFromHistory(taskId)
-                                          .catch((e) => {
-                                            alert(`删除失败：${e.message}`);
-                                            loadTasks();
-                                          })
-                                          .finally(() => { deletingRef.current = false; });
-                                      }}
-                                      className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-all"
-                                    >删除</button>
                                   </div>
                                 </div>
                               );
@@ -1607,46 +1580,18 @@ export default function HappyHorsePage() {
                                   }}
                                   className="text-[11px] px-2 py-1 rounded-xl border border-blue-500/40 text-blue-400 hover:bg-blue-500/10 transition-all"
                                 >批量下载({allGroupItems.filter((gi) => gi.status === 'done' && gi.video_url).length})</button>
-                                <button
-                                  onClick={() => {
-                                    if (!confirm(`确定要删除整条批量记录（${allGroupItems.length} 个产物）吗？`)) return;
-                                    deletingRef.current = true;
-                                    setTasks((prev) => prev.filter((h) => h.concurrent_id !== t.concurrent_id));
-                                    Promise.all(allGroupItems.map((gi) => deleteHappyhorseFromHistory(gi.id).catch(() => {})))
-                                      .catch(() => loadTasks())
-                                      .finally(() => { deletingRef.current = false; });
-                                  }}
-                                  className="text-[11px] px-2 py-1 rounded-xl border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-all"
-                                >批量删除</button>
                               </>
                             )}
                             {/* 非批量操作 */}
                             {!isGroup && canPreview && (
                               <button onClick={openPreview} className="text-[11px] px-2 py-1 rounded-xl border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition-all">
-                                {playUrl ? '预览' : '报错'}
+                                                                预览
                               </button>
                             )}
                             {!isGroup && t.status === 'done' && t.video_url && (
                               <button onClick={() => handleDownload(t)} className="text-[11px] px-2 py-1 rounded-xl border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition-all">下载</button>
                             )}
                             <button onClick={() => handleReuse(t)} className="text-[11px] px-2 py-1 rounded-xl border border-purple-500/40 text-purple-400 hover:bg-purple-500/10 transition-all">复用</button>
-                            {!isGroup && (
-                            <button
-                              onClick={() => {
-                                if (!confirm('确定要从历史记录中删除此任务吗？')) return;
-                                const taskId = t.id;
-                                deletingRef.current = true;
-                                setTasks((prev) => prev.filter((x) => x.id !== taskId));
-                                deleteHappyhorseFromHistory(taskId)
-                                  .catch((e) => {
-                                    alert(`删除失败：${e.message}`);
-                                    loadTasks();
-                                  })
-                                  .finally(() => { deletingRef.current = false; });
-                              }}
-                              className="text-[11px] px-2 py-1 rounded-xl border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-all"
-                            >删除</button>
-                            )}
                           </div>
                         </div>
                       </div>
@@ -1693,20 +1638,10 @@ export default function HappyHorsePage() {
               />
             )}
 
-            {(previewVideo.prompt || previewVideo.error) && (
-              <div className={`grid gap-3 ${previewVideo.prompt && previewVideo.error ? 'grid-cols-2' : 'grid-cols-1'}`}>
-                {previewVideo.prompt && (
-                  <div className="bg-[#0f111a]/90 border border-gray-700 rounded-xl px-4 py-3">
-                    <div className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1.5">提示词</div>
-                    <p className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap break-words max-h-28 overflow-y-auto custom-scrollbar">{previewVideo.prompt}</p>
-                  </div>
-                )}
-                {previewVideo.error && (
-                  <div className="bg-red-950/50 border border-red-700/40 rounded-xl px-4 py-3">
-                    <div className="text-[10px] font-bold text-red-400 uppercase tracking-wider mb-1.5">报错信息</div>
-                    <p className="text-sm text-red-300 leading-relaxed whitespace-pre-wrap break-words max-h-28 overflow-y-auto custom-scrollbar">{previewVideo.error}</p>
-                  </div>
-                )}
+            {previewVideo.prompt && (
+              <div className="bg-[#0f111a]/90 border border-gray-700 rounded-xl px-4 py-3">
+                <div className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1.5">提示词</div>
+                <p className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap break-words max-h-28 overflow-y-auto custom-scrollbar">{previewVideo.prompt}</p>
               </div>
             )}
           </div>

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useApp } from '../context/AppContext';
 import * as settingsService from '../services/settingsService';
 import { RATIO_OPTIONS, DURATION_OPTIONS, MODEL_OPTIONS } from '../types/index';
@@ -18,6 +18,22 @@ export default function SettingsPage() {
   });
 
   const [hasChanges, setHasChanges] = useState(false);
+
+  // 首次加载时从后端同步设置到本地编辑状态（解决 useState 初始值在 settings 未返回时取到默认值的问题）
+  const syncedRef = useRef(false);
+  useEffect(() => {
+    if (!syncedRef.current && Object.keys(settings).length > 0) {
+      setLocalSettings({
+        model: settings.model || 'seedance-2.0-fast',
+        ratio: settings.ratio || '9:16',
+        duration: settings.duration || '4',
+        resolution: settings.resolution || '720p',
+        reference_mode: settings.reference_mode || 'reference',
+        max_concurrent: settings.max_concurrent || '5',
+      });
+      syncedRef.current = true;
+    }
+  }, [settings]);
 
   // 激活码兑换
   const [activateCode, setActivateCode] = useState('');

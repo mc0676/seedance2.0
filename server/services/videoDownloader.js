@@ -91,10 +91,10 @@ function audioGenerationToTask(r) {
  *   done       → 仅服务器侧已完成转码时使用，本表不存储 mp3，直接归并到 pending
  *   failed     → status='error'
  */
-function queryAudioRows({ db, projectId, isAdmin, userId, status, skipDownloadableFilter }) {
+function queryAudioRows({ db, projectId, isAdmin, userId, status }) {
   const where = [];
   const params = [];
-  where.push(skipDownloadableFilter ? 'a.deleted_at IS NULL' : 'a.downloadable = 1');
+  where.push('a.deleted_at IS NULL');
   if (projectId) { where.push('a.project_id = ?'); params.push(projectId); }
   // 工作组共享：与视频任务一致——同 project_members 互相可见
   if (!isAdmin && userId !== null) {
@@ -184,10 +184,10 @@ function enhancementRowToTask(r) {
   };
 }
 
-function queryEnhancementRows({ db, projectId, isAdmin, userId, status, skipDownloadableFilter }) {
+function queryEnhancementRows({ db, projectId, isAdmin, userId, status }) {
   const where = [];
   const params = [];
-  where.push(skipDownloadableFilter ? 'e.deleted_at IS NULL' : 'e.downloadable = 1');
+  where.push('e.deleted_at IS NULL');
   if (projectId) { where.push('e.project_id = ?'); params.push(projectId); }
   if (!isAdmin && userId !== null) {
     where.push(`(e.user_id = ? OR EXISTS (
@@ -266,10 +266,10 @@ function happyhorseRowToTask(r) {
   };
 }
 
-function queryHappyhorseRows({ db, projectId, isAdmin, userId, status, skipDownloadableFilter }) {
+function queryHappyhorseRows({ db, projectId, isAdmin, userId, status }) {
   const where = [];
   const params = [];
-  where.push(skipDownloadableFilter ? 'h.deleted_at IS NULL' : 'h.downloadable = 1');
+  where.push('h.deleted_at IS NULL');
   if (projectId) { where.push('h.project_id = ?'); params.push(projectId); }
   if (!isAdmin && userId !== null) {
     where.push(`(h.user_id = ? OR EXISTS (
@@ -566,8 +566,6 @@ export function getDownloadTasks(options = {}) {
     // 当 true 时，type='video' / type='all' 会把 tasks_happyhorse 行作为 model_type='video' 合并进来；
     // 默认 false 让"视频生成"页（SingleTaskPage）的历史卡片只看 Seedance 自己的 tasks 表。
     includeHappyhorse = false,
-    // 当 true 时跳过 downloadable 过滤（供历史记录页使用，只按 deleted_at 判断可见性）
-    skipDownloadableFilter = false,
     // 当 true 且 type='video' 时，按 concurrent_id 合并批次，一个批次显示为一条记录
     groupByConcurrent = false,
   } = options;
@@ -577,12 +575,8 @@ export function getDownloadTasks(options = {}) {
 
   // 默认只显示 task_kind='video'，过滤掉音频生成的中间产物（audio_intermediate）
   whereClauses.push("(t.task_kind IS NULL OR t.task_kind = 'video')");
-  // 下载管理可见性：仅按 downloadable 过滤；历史页仅按 deleted_at 过滤，两者独立
-  if (skipDownloadableFilter) {
-    whereClauses.push('t.deleted_at IS NULL');
-  } else {
-    whereClauses.push('t.downloadable = 1');
-  }
+  // 可见性过滤：仅按 deleted_at 判断
+  whereClauses.push('t.deleted_at IS NULL');
 
   // 项目过滤（前端按当前工作组限定）
   if (projectId) {
@@ -614,7 +608,7 @@ export function getDownloadTasks(options = {}) {
 
   // 图片类型：直接从 image_records 返回
   if (type === 'image') {
-    const imgWhere = [skipDownloadableFilter ? 'ir.deleted_at IS NULL' : 'ir.downloadable = 1'];
+    const imgWhere = ['ir.deleted_at IS NULL'];
     const imgParams = [];
     if (projectId) { imgWhere.push('ir.project_id = ?'); imgParams.push(projectId); }
     if (!isAdmin && userId !== null) {
@@ -643,7 +637,7 @@ export function getDownloadTasks(options = {}) {
 
   // 音频类型：直接从 audio_generations 返回
   if (type === 'audio') {
-    const audioRows = queryAudioRows({ db, projectId, isAdmin, userId, status, skipDownloadableFilter });
+    const audioRows = queryAudioRows({ db, projectId, isAdmin, userId, status });
     const audioTasks = audioRows.map((r) => audioGenerationToTask(r));
     const audioOffset = (page - 1) * pageSize;
     return {
@@ -656,7 +650,7 @@ export function getDownloadTasks(options = {}) {
 
   // 画质增强类型：直接从 video_enhancements 返回
   if (type === 'enhancement') {
-    const enhRows = queryEnhancementRows({ db, projectId, isAdmin, userId, status, skipDownloadableFilter });
+    const enhRows = queryEnhancementRows({ db, projectId, isAdmin, userId, status });
     const enhTasks = enhRows.map((r) => enhancementRowToTask(r));
     const enhOffset = (page - 1) * pageSize;
     return {
@@ -670,7 +664,7 @@ export function getDownloadTasks(options = {}) {
   // HappyHorse 类型：仅在显式按 type='happyhorse' 查询时返回独立列表（兼容旧调用，目前前端不会传这个 type）。
   // 默认下载管理走 type='video' 且 includeHappyhorse=true，HappyHorse 行会被标记成 model_type='video' 合并进视频列表。
   if (type === 'happyhorse') {
-    const hhRows = queryHappyhorseRows({ db, projectId, isAdmin, userId, status, skipDownloadableFilter });
+    const hhRows = queryHappyhorseRows({ db, projectId, isAdmin, userId, status });
     const hhTasks = hhRows.map((r) => happyhorseRowToTask(r));
     const hhOffset = (page - 1) * pageSize;
     return {
@@ -767,7 +761,7 @@ export function getDownloadTasks(options = {}) {
       }
     }
     // 合并图片
-    const imgWhere = [skipDownloadableFilter ? 'ir.deleted_at IS NULL' : 'ir.downloadable = 1'];
+    const imgWhere = ['ir.deleted_at IS NULL'];
     const imgParams = [];
     if (projectId) { imgWhere.push('ir.project_id = ?'); imgParams.push(projectId); }
     if (!isAdmin && userId !== null) {
@@ -786,14 +780,14 @@ export function getDownloadTasks(options = {}) {
     ).all(...imgParams);
     const imgTasks = imgRows.map((r) => imageRecordToTask(r));
     // 合并音频
-    const audioRows = queryAudioRows({ db, projectId, isAdmin, userId, status, skipDownloadableFilter });
+    const audioRows = queryAudioRows({ db, projectId, isAdmin, userId, status });
     const audioTasks = audioRows.map((r) => audioGenerationToTask(r));
     // 合并画质增强
-    const enhRows = queryEnhancementRows({ db, projectId, isAdmin, userId, status, skipDownloadableFilter });
+    const enhRows = queryEnhancementRows({ db, projectId, isAdmin, userId, status });
     const enhTasks = enhRows.map((r) => enhancementRowToTask(r));
     // 合并 HappyHorse（仅当调用方明确请求合并）
     const hhTasks = includeHappyhorse
-      ? queryHappyhorseRows({ db, projectId, isAdmin, userId, status, skipDownloadableFilter })
+      ? queryHappyhorseRows({ db, projectId, isAdmin, userId, status })
           .map((r) => happyhorseRowToTask(r))
       : [];
     const merged = [...videoTasks, ...imgTasks, ...audioTasks, ...enhTasks, ...hhTasks].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
@@ -881,7 +875,7 @@ export function getDownloadTasks(options = {}) {
       assets: allAssetsByTask[task.id] || [],
       enhancements: allEnhancementsByTask[task.id] || [],
     }));
-    const hhRows = queryHappyhorseRows({ db, projectId, isAdmin, userId, status, skipDownloadableFilter });
+    const hhRows = queryHappyhorseRows({ db, projectId, isAdmin, userId, status });
     const hhTasks = hhRows.map((r) => {
       const t = happyhorseRowToTask(r);
       return t;

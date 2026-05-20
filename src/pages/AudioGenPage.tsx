@@ -8,7 +8,6 @@ import { videoUrlToMp3Blob, downloadBlob, ExpiredVideoUrlError, isSignedUrlExpir
 import { formatDateTime, useUserTimezone } from '../utils/datetime';
 import type { AudioGeneration, ProjectAsset } from '../types';
 import { MicIcon, SpinnerIcon, DownloadIcon, SparkleIcon, GearIcon } from '../components/Icons';
-import { deleteAudioGenerationFromHistory } from '../services/downloadService';
 
 const STATUS_BADGE: Record<AudioGeneration['status'], { text: string; cls: string }> = {
   pending: { text: '排队中', cls: 'bg-gray-700/40 text-gray-300 border-gray-600' },
@@ -578,15 +577,6 @@ export default function AudioGenPage() {
                             className="text-[11px] px-2 py-1 rounded-xl border border-purple-500/40 text-purple-400 hover:bg-purple-500/10 transition-all">
                             复用
                           </button>
-                          <button
-                            onClick={() => {
-                              if (!confirm('确定要从历史记录中删除此音频吗？')) return;
-                              deleteAudioGenerationFromHistory(it.id)
-                                .then(() => setItems((prev) => prev.filter((x) => x.id !== it.id)))
-                                .catch((e) => alert(`删除失败：${e.message}`));
-                            }}
-                            className="text-[11px] px-2 py-1 rounded-xl border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-all"
-                          >删除</button>
                         </div>
                       )}
                       {it.status === 'error' && (
@@ -595,15 +585,6 @@ export default function AudioGenPage() {
                             className="self-start text-[11px] px-2 py-1 rounded-xl border border-purple-500/40 text-purple-400 hover:bg-purple-500/10 transition-all">
                             复用并重试
                           </button>
-                          <button
-                            onClick={() => {
-                              if (!confirm('确定要从历史记录中删除此音频吗？')) return;
-                              deleteAudioGenerationFromHistory(it.id)
-                                .then(() => setItems((prev) => prev.filter((x) => x.id !== it.id)))
-                                .catch((e) => alert(`删除失败：${e.message}`));
-                            }}
-                            className="text-[11px] px-2 py-1 rounded-xl border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-all"
-                          >删除</button>
                         </div>
                       )}
                     </div>

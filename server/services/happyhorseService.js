@@ -13,31 +13,13 @@ const DASHSCOPE_BASE_URL = 'https://dashscope.aliyuncs.com/api/v1';
 const SUBMIT_PATH = '/services/aigc/video-generation/video-synthesis';
 const QUERY_PATH = '/tasks';
 
-const DASHSCOPE_ERROR_MAP = [
-  { pattern: /overdue balance|overdue.*account|account.*overdue/i, zh: '阿里云后端异常，请稍后重试' },
-  { pattern: /account.*good.*standing|good.*standing/i,           zh: '阿里云后端异常，请稍后重试' },
-  { pattern: /rate limit|too many requests/i,                      zh: '请求过于频繁，请稍后重试' },
-  { pattern: /sensitive|copyright/i,                               zh: '内容触发安全审核，请修改后重试' },
-  { pattern: /internal.*error|service.*error/i,                    zh: '阿里云后端异常，请稍后重试' },
-  { pattern: /timeout/i,                                           zh: '生成超时，请稍后重试' },
-];
-
-function translateDashScopeError(msg) {
-  if (!msg) return msg;
-  for (const { pattern, zh } of DASHSCOPE_ERROR_MAP) {
-    if (pattern.test(msg)) return zh;
-  }
-  return msg;
-}
-
 async function _parse(res) {
   const text = await res.text();
   let body;
   try { body = JSON.parse(text); } catch { body = { raw: text }; }
   if (!res.ok) {
     const rawMsg = body?.message || body?.error?.message || body?.msg || `DashScope HTTP ${res.status}`;
-    const msg = translateDashScopeError(rawMsg);
-    const err = new Error(msg);
+    const err = new Error(rawMsg);
     err.code = body?.code;
     err.requestId = body?.request_id;
     throw err;

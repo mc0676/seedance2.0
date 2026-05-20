@@ -4,7 +4,6 @@ import { SparkleIcon, GearIcon } from '../components/Icons';
 import { useApp } from '../context/AppContext';
 import { formatShortDateTime, useUserTimezone } from '../utils/datetime';
 import { getCreditBalance, type CreditBalance } from '../services/pricingService';
-import { deleteImageRecordFromHistory } from '../services/downloadService';
 
 async function downloadImageUrl(url: string, filename?: string) {
   try {
@@ -526,15 +525,6 @@ export default function ImageGenPage() {
                           onClick={() => handleReuse(item)}
                           className="text-[11px] px-2 py-1 rounded-xl border border-purple-500/40 text-purple-400 hover:bg-purple-500/10 transition-all"
                         >复用</button>
-                        <button
-                          onClick={() => {
-                            if (!confirm('确定要从历史记录中删除此图片吗？')) return;
-                            deleteImageRecordFromHistory(item.id)
-                              .then(() => setRecords((prev) => prev.filter((x) => x.id !== item.id)))
-                              .catch((e) => alert(`删除失败：${e.message}`));
-                          }}
-                          className="text-[11px] px-2 py-1 rounded-xl border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-all"
-                        >删除</button>
                       </div>
                     </div>
                   </div>
