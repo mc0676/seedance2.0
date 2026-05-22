@@ -1,4 +1,5 @@
 import { getDatabase } from '../database/index.js';
+import { getActiveDiscount } from './discountService.js';
 
 /**
  * 分辨率档位 → 默认像素（按 16:9 标准），其他比例由 ratio 缩放推断。
@@ -69,6 +70,21 @@ export function pickUnitPrice(pricing, { hasVideoInput = false, resolution = '72
 }
 
 /**
+ * 选取计费字段名（用于折扣匹配）
+ */
+export function pickSubKey(pricing, { hasVideoInput = false, resolution = '720p', hasAudio = false }) {
+  if (!pricing) return null;
+  if (pricing.pricing_type === 'seedance15') {
+    return hasAudio ? 'price_audio' : 'price_silent';
+  }
+  const isHigh = resolution === '1080p';
+  if (hasVideoInput) {
+    return isHigh ? 'price_with_video_high' : 'price_with_video_low';
+  }
+  return isHigh ? 'price_no_video_high' : 'price_no_video_low';
+}
+
+/**
  * 元 → 积分（向上取整，1元=100积分）
  */
 export function yuanToCredits(yuan) {
@@ -85,7 +101,7 @@ export function calculateCredits({ tokens, unitPriceYuanPerMTok, draftFactor = 1
 }
 
 /**
- * 一站式估算：返回 {tokens, unitPrice, yuan, credits, lockedCredits}
+ * 一站式估算：返回 {tokens, unitPrice, yuan, credits, lockedCredits, discountedCredits?}
  */
 export function estimate(modelKey, params = {}) {
   const pricing = getModel(modelKey);
@@ -101,8 +117,25 @@ export function estimate(modelKey, params = {}) {
   const credits = calculateCredits({ tokens, unitPriceYuanPerMTok: unitPrice, draftFactor });
   const lockedCredits = Math.ceil(credits * LOCK_BUFFER_RATIO);
   const yuan = credits / 100;
-  console.log(`[计费][estimate] model=${modelKey} resolution=${params.resolution || '720p'} ratio=${params.ratio || '16:9'} outDur=${params.outputDurationSec || 5}s inDur=${params.inputDurationSec || 0}s hasVideo=${!!params.hasVideoInput} hasAudio=${!!params.hasAudio} draft=${!!params.isDraft} fps=${fps} → tokens=${tokens} unitPrice=${unitPrice}元/M draftFactor=${draftFactor} yuan=${yuan} credits=${credits} locked=${lockedCredits}`);
-  return { tokens, unitPrice, draftFactor, yuan, credits, lockedCredits, model: modelKey };
+
+  // 查询活跃折扣
+  const subKey = pickSubKey(pricing, params);
+  let discountedCredits = credits;
+  let discountedLockedCredits = lockedCredits;
+  let hasDiscount = false;
+  if (subKey) {
+    const discount = getActiveDiscount(modelKey, subKey);
+    if (discount && discount.value > 0) {
+      hasDiscount = true;
+      if (discount.type === 'percent') {
+        discountedCredits = Math.ceil(credits * (1 - discount.value / 100));
+        discountedLockedCredits = Math.ceil(discountedCredits * LOCK_BUFFER_RATIO);
+      }
+    }
+  }
+
+  console.log(`[计费][estimate] model=${modelKey} resolution=${params.resolution || '720p'} ratio=${params.ratio || '16:9'} outDur=${params.outputDurationSec || 5}s inDur=${params.inputDurationSec || 0}s hasVideo=${!!params.hasVideoInput} hasAudio=${!!params.hasAudio} draft=${!!params.isDraft} fps=${fps} → tokens=${tokens} unitPrice=${unitPrice}元/M draftFactor=${draftFactor} yuan=${yuan} credits=${credits} locked=${lockedCredits}${hasDiscount ? ` discounted=${discountedCredits}` : ''}`);
+  return { tokens, unitPrice, draftFactor, yuan, credits, lockedCredits, model: modelKey, ...(hasDiscount ? { discountedCredits, discountedLockedCredits } : {}) };
 }
 
 /**
@@ -195,6 +228,7 @@ export default {
   yuanToCredits,
   resolveDimensions,
   pickUnitPrice,
+  pickSubKey,
   listAll,
   listEnabled,
   getModel,

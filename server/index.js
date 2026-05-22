@@ -39,7 +39,7 @@ enhancementWorker.start();
 // 启动 HappyHorse 后台轮询
 happyhorseWorker.start();
 
-// 启动一次性：把存量同项目同名的素材组改名为 `xxx (2)` 等，确保同一工作组内素材组名唯一
+// 启动一次性：把存量同项目同名的素材组改名为 `xxx (2)` 等，确保同一项目组内素材组名唯一
 try {
   const changed = assetService.migrateDeduplicateAssetGroupNames();
   if (changed > 0) console.log(`[启动] 素材组名去重：${changed} 条被自动改名`);
@@ -1178,7 +1178,7 @@ app.post('/api/generate-image', authenticate, async (req, res) => {
   });
 });
 
-// GET /api/image-records - 图片生成历史（按工作组过滤，无限滚动分页）
+// GET /api/image-records - 图片生成历史（按项目组过滤，无限滚动分页）
 app.get('/api/image-records', authenticate, (req, res) => {
   try {
     const db = getDatabase();
@@ -1188,7 +1188,7 @@ app.get('/api/image-records', authenticate, (req, res) => {
     const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
     const conditions = ['deleted_at IS NULL'];
     const params = [];
-    // 工作组共享：管理员看全部；普通用户看自己创建的 + 所在工作组其他成员创建的
+    // 项目组共享：管理员看全部；普通用户看自己创建的 + 所在项目组其他成员创建的
     if (!isAdmin) {
       conditions.push(`(user_id = ? OR EXISTS (
         SELECT 1 FROM project_members pm WHERE pm.project_id = image_records.project_id AND pm.user_id = ?
@@ -1223,7 +1223,7 @@ app.post('/api/image-records/:id/mark-downloaded', authenticate, (req, res) => {
     const id = parseInt(req.params.id);
     if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
     const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
-    // 工作组共享权限：自己创建的 或 同 project_members 任一行的记录都可标记
+    // 项目组共享权限：自己创建的 或 同 project_members 任一行的记录都可标记
     const row = isAdmin
       ? db.prepare('SELECT id FROM image_records WHERE id = ?').get(id)
       : db.prepare(`SELECT id FROM image_records WHERE id = ? AND (
@@ -1387,13 +1387,13 @@ app.post('/api/generate-video', authenticate, upload.array('files', 5), async (r
 
     // 要求前端传入 projectId
     if (!reqProjectId) {
-      return res.status(400).json({ error: '必须指定所属工作组（projectId）' });
+      return res.status(400).json({ error: '必须指定所属项目组（projectId）' });
     }
 
     const isAdmin = ['admin','super_admin'].includes(req.user.role);
     const targetProject = projectService.getProjectById(Number(reqProjectId), req.user.id, isAdmin);
     if (!targetProject) {
-      return res.status(403).json({ error: '工作组不存在或您不是该工作组成员' });
+      return res.status(403).json({ error: '项目组不存在或您不是该项目组成员' });
     }
 
     const totalImages = (Array.isArray(files) ? files.length : 0) + imageUrls.length;
@@ -1748,7 +1748,7 @@ app.get('/api/task/:taskId', authenticate, async (req, res) => {
   const dbTask = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskIdParam);
 
   if (dbTask) {
-    // 检查归属：任务创建者 或 同工作组成员 或 管理员
+    // 检查归属：任务创建者 或 同项目组成员 或 管理员
     const isAdminUser = ['admin', 'super_admin'].includes(req.user.role);
     if (!isAdminUser && dbTask.user_id !== req.user.id) {
       const isMember = db.prepare(
@@ -1909,7 +1909,7 @@ app.use((err, _req, res, _next) => {
 // ============================================================
 
 // -------------------- 项目管理 --------------------
-// GET /api/projects - 获取项目列表（始终只返回当前用户自己的工作组）
+// GET /api/projects - 获取项目列表（始终只返回当前用户自己的项目组）
 app.get('/api/projects', authenticate, (req, res) => {
   try {
     const projects = projectService.getAllProjects(req.user.id, false);
@@ -1919,7 +1919,7 @@ app.get('/api/projects', authenticate, (req, res) => {
   }
 });
 
-// ── 工作组名称去重：全局唯一，重名时自动追加（2）（3）... ────────────
+// ── 项目组名称去重：全局唯一，重名时自动追加（2）（3）... ────────────
 function resolveProjectName(db, excludeId, name) {
   let result = name;
   let suffix = 2;
@@ -1994,7 +1994,7 @@ app.put('/api/projects/:id', authenticate, (req, res) => {
   }
 });
 
-// POST /api/projects/:id/rename - 重命名工作组
+// POST /api/projects/:id/rename - 重命名项目组
 app.post('/api/projects/:id/rename', authenticate, (req, res) => {
   try {
     const db = getDatabase();
@@ -2388,6 +2388,31 @@ app.post('/api/settings/activate', authenticate, (req, res) => {
     res.json({ success: true });
   } catch (error) {
     res.status(400).json({ error: error.message });
+  }
+});
+
+// GET /api/admin/batch-concurrent - 获取批量生成设置（仅系统管理员）
+app.get('/api/admin/batch-concurrent', authenticate, requireSuperAdmin, (req, res) => {
+  try {
+    const maxConcurrent = settingsService.getSetting('max_concurrent') || '5';
+    res.json({ success: true, data: { max_concurrent: maxConcurrent } });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PUT /api/admin/batch-concurrent - 更新批量生成设置（仅系统管理员）
+app.put('/api/admin/batch-concurrent', authenticate, requireSuperAdmin, (req, res) => {
+  try {
+    const { max_concurrent } = req.body;
+    const n = parseInt(max_concurrent, 10);
+    if (isNaN(n) || n < 1 || n > 10) {
+      return res.status(400).json({ error: '批量生成数量上限需在 1-10 之间' });
+    }
+    settingsService.updateSetting('max_concurrent', String(n));
+    res.json({ success: true, data: { max_concurrent: String(n) } });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -2894,11 +2919,28 @@ app.get('/api/auth/me', authenticate, async (req, res) => {
 app.put('/api/auth/me', authenticate, async (req, res) => {
   try {
     const { name, department } = req.body || {};
+    const db = getDatabase();
+    const currentUser = db.prepare('SELECT name FROM users WHERE id = ?').get(req.user.id);
+    const isFirstTimeProfile = !currentUser?.name?.trim(); // 首次补填姓名
+
     await authService.updateOwnProfile(req.user.id, { name, department });
+
+    // 首次补填姓名时，自动创建 "xxx 的项目组"
+    let autoProject = null;
+    if (isFirstTimeProfile && name && String(name).trim()) {
+      const projectName = resolveProjectName(db, null, `${String(name).trim()} 的项目组`);
+      try {
+        autoProject = projectService.createProject({ name: projectName, description: '', settings: {}, user_id: req.user.id });
+      } catch (e) {
+        // 创建失败不阻塞 profile 更新
+        console.error('[auto-project] 自动创建项目组失败:', e.message);
+      }
+    }
+
     // 重新拉一遍 getCurrentUser，把最新字段返回给前端
     const sessionId = req.headers['x-session-id'];
     const fresh = await authService.getCurrentUser(sessionId);
-    res.json({ success: true, data: { user: fresh || req.user } });
+    res.json({ success: true, data: { user: fresh || req.user, autoProject } });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -3329,7 +3371,7 @@ app.get('/api/admin/credits/group-summary', authenticate, requireAdmin, (req, re
   }
 });
 
-// GET /api/admin/credits/project-consumption - 工作组资源消耗排行
+// GET /api/admin/credits/project-consumption - 项目组资源消耗排行
 app.get('/api/admin/credits/project-consumption', authenticate, requireAdmin, (req, res) => {
   try {
     const db = getDatabase();
@@ -4505,7 +4547,7 @@ app.post('/api/video-enhancements', authenticate, async (req, res) => {
     resolution,             // 预设档：'240p' | '360p' | '480p' | '540p' | '720p' | '1080p' | '2k' | '4k'
     resolutionLimit,        // 自定义短边像素 [64, 2160]（与 resolution 互斥）
     targetFps = 30,
-    projectId: reqProjectId, // 当前工作组（外部视频源时必须；taskId 源时以 task.project_id 为准）
+    projectId: reqProjectId, // 当前项目组（外部视频源时必须；taskId 源时以 task.project_id 为准）
   } = req.body;
 
   if (!['aigc', 'short_series', 'ugc', 'old_film', 'common'].includes(scene)) {
@@ -4594,13 +4636,13 @@ app.post('/api/video-enhancements', authenticate, async (req, res) => {
     sourceUrl = videoUrl;
     durationSec = Math.max(1, Math.min(300, Math.round(d)));
     // 外部视频分支：projectId 走前端传入（与图片/音频/视频生成一致）。
-    // 校验是否为当前用户可访问的工作组，避免把记录挂到别的工作组下。
+    // 校验是否为当前用户可访问的项目组，避免把记录挂到别的项目组下。
     const pidNum = parseInt(reqProjectId, 10);
     if (Number.isFinite(pidNum) && pidNum > 0) {
       const allowed = projectService.isProjectMember(pidNum, req.user.id)
         || ['admin', 'super_admin'].includes(req.user.role);
       if (!allowed) {
-        return res.status(403).json({ error: '无权访问该工作组' });
+        return res.status(403).json({ error: '无权访问该项目组' });
       }
       projectId = pidNum;
     }
@@ -4719,7 +4761,7 @@ app.post('/api/video-enhancements', authenticate, async (req, res) => {
   res.json({ success: true, data: row, estimatedCredits });
 });
 
-// GET /api/video-enhancements/list - 列出当前工作组可见的所有增强记录（管理员看全部；普通用户看自己创建的 + 所在工作组其他成员创建的）
+// GET /api/video-enhancements/list - 列出当前项目组可见的所有增强记录（管理员看全部；普通用户看自己创建的 + 所在项目组其他成员创建的）
 app.get('/api/video-enhancements/list', authenticate, (req, res) => {
   try {
     const db = getDatabase();
@@ -4728,8 +4770,8 @@ app.get('/api/video-enhancements/list', authenticate, (req, res) => {
     const offset = (page - 1) * pageSize;
     const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
 
-    // 工作组共享：与视频生成历史一致——同一 project_members 的所有记录互相可见。
-    // 外部增强(project_id IS NULL)：与创建者共享任一工作组的成员均可见，避免外部记录变成"创作者私有黑洞"
+    // 项目组共享：与视频生成历史一致——同一 project_members 的所有记录互相可见。
+    // 外部增强(project_id IS NULL)：与创建者共享任一项目组的成员均可见，避免外部记录变成"创作者私有黑洞"
     const ownership = isAdmin ? '1=1' : `(
       user_id = ? OR EXISTS (
         SELECT 1 FROM project_members pm WHERE pm.project_id = video_enhancements.project_id AND pm.user_id = ?
@@ -4830,11 +4872,11 @@ app.post('/api/happyhorse-tasks', authenticate, async (req, res) => {
       return res.status(400).json({ error: '无效的 mode，应为 t2v / i2v / r2v / video-edit 之一' });
     }
     const pid = parseInt(projectId, 10);
-    if (!Number.isFinite(pid) || pid <= 0) return res.status(400).json({ error: '必须指定所属工作组（projectId）' });
+    if (!Number.isFinite(pid) || pid <= 0) return res.status(400).json({ error: '必须指定所属项目组（projectId）' });
 
     const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
     const project = projectService.getProjectById(pid, req.user.id, isAdmin);
-    if (!project) return res.status(403).json({ error: '工作组不存在或您不是该工作组成员' });
+    if (!project) return res.status(403).json({ error: '项目组不存在或您不是该项目组成员' });
 
     const promptStr = String(prompt || '').trim();
     if (!promptStr && m === 't2v') return res.status(400).json({ error: '请输入文本提示词' });
@@ -4908,7 +4950,7 @@ app.post('/api/happyhorse-tasks', authenticate, async (req, res) => {
     if (!est.creditsPerSecond) {
       return res.status(400).json({ error: '该模式/分辨率未配置计费单价' });
     }
-    const lockedCredits = est.lockedCredits;
+    const lockedCredits = est.discountedLockedCredits ?? est.lockedCredits;
 
     // 批量生成：检查总积分
     if (batchSize > 1) {
@@ -4967,7 +5009,7 @@ app.post('/api/happyhorse-tasks', authenticate, async (req, res) => {
           meta: {
             mode: m, model: HAPPYHORSE_MODE_MODELS[m],
             resolution: resolutionUp, ratio: normalizedRatio, duration: normalizedDuration,
-            estimated_credits: est.credits, credits_per_second: est.creditsPerSecond,
+            estimated_credits: est.discountedCredits ?? est.credits, credits_per_second: est.creditsPerSecond,
           },
         });
       } catch (e) {
@@ -5050,7 +5092,7 @@ app.post('/api/happyhorse-tasks', authenticate, async (req, res) => {
   }
 });
 
-// GET /api/happyhorse-tasks - 列出当前用户/工作组可见的任务（分页）
+// GET /api/happyhorse-tasks - 列出当前用户/项目组可见的任务（分页）
 app.get('/api/happyhorse-tasks', authenticate, (req, res) => {
   try {
     const db = getDatabase();
@@ -5168,6 +5210,54 @@ app.put('/api/admin/happyhorse-pricing', authenticate, requireAdmin, (req, res) 
 });
 
 // ============================================================
+// 模型折扣管理（模型计费 + HappyHorse 共用）
+// ============================================================
+import * as discountService from './services/discountService.js';
+
+app.get('/api/admin/discounts', authenticate, requireAdmin, (req, res) => {
+  try {
+    const discounts = discountService.getDiscounts();
+    res.json({ success: true, data: { discounts } });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/discounts/active', authenticate, (req, res) => {
+  try {
+    const discounts = discountService.getActiveDiscounts();
+    res.json({ success: true, data: { discounts } });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/admin/discounts', authenticate, requireSuperAdmin, (req, res) => {
+  try {
+    const items = Array.isArray(req.body?.discounts) ? req.body.discounts : [];
+    const tx = getDatabase().transaction(() => {
+      // 全量替换：先清空旧数据，再插入新数据
+      getDatabase().prepare('DELETE FROM model_discounting').run();
+      for (const it of items) {
+        discountService.upsertDiscount({
+          model: it.model,
+          subKey: it.sub_key ?? it.subKey ?? '',
+          type: it.type,
+          value: it.value,
+          startDate: it.start_date ?? it.startDate,
+          endDate: it.end_date ?? it.endDate,
+        });
+      }
+    });
+    tx();
+    res.json({ success: true, data: { discounts: discountService.getDiscounts() } });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+app.delete('/api/admin/discounts/:id', authenticate, requireSuperAdmin, (req, res) => {
+  try {
+    discountService.deleteDiscount(req.params.id);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ============================================================
 // 音频生成（参考图 + 语气提示词 → seedance 视频，前端转 mp3）
 // 默认值经过优化以最小化中转资源消耗，可通过 system_config 覆盖（管理后台 → 音频生成中转配置）
 // ============================================================
@@ -5202,7 +5292,7 @@ app.post('/api/audio-generations', authenticate, async (req, res) => {
   try {
     const { projectId: reqProjectId, referenceImageUrl, referenceAssetUri, voicePrompt } = req.body || {};
 
-    if (!reqProjectId) return res.status(400).json({ error: '必须指定所属工作组（projectId）' });
+    if (!reqProjectId) return res.status(400).json({ error: '必须指定所属项目组（projectId）' });
     if (!referenceImageUrl || typeof referenceImageUrl !== 'string') {
       return res.status(400).json({ error: '请上传参考图（referenceImageUrl 必填）' });
     }
@@ -5217,7 +5307,7 @@ app.post('/api/audio-generations', authenticate, async (req, res) => {
     const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
     const targetProject = projectService.getProjectById(Number(reqProjectId), req.user.id, isAdmin);
     if (!targetProject) {
-      return res.status(403).json({ error: '工作组不存在或您不是该工作组成员' });
+      return res.status(403).json({ error: '项目组不存在或您不是该项目组成员' });
     }
 
     if (!permissionService.hasPermission(req.user.id, 'generate_video_seedance')) {
@@ -5688,9 +5778,9 @@ app.put('/api/admin/volc-native/assets/:id', authenticate, requireAdmin, async (
   }
 });
 
-// ── 工作组资产库（普通用户可访问）──
+// ── 项目组资产库（普通用户可访问）──
 // GET /api/volc-native/asset-groups
-// projectId 参数：仅返回该项目绑定的素材组（隔离工作组）；不传 + 管理员则返回全部
+// projectId 参数：仅返回该项目绑定的素材组（隔离项目组）；不传 + 管理员则返回全部
 app.get('/api/volc-native/asset-groups', authenticate, async (req, res) => {
   try {
     const db = getDatabase();
@@ -5783,7 +5873,7 @@ app.get('/api/volc-native/asset-groups/check-name', authenticate, (req, res) => 
     }
     const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
     const project = projectService.getProjectById(projectId, req.user.id, isAdmin);
-    if (!project) return res.status(404).json({ error: '工作组不存在或无权访问' });
+    if (!project) return res.status(404).json({ error: '项目组不存在或无权访问' });
     const suggestedName = assetService.resolveUniqueAssetGroupName(projectId, name);
     res.json({ success: true, data: { exists: suggestedName !== name, suggestedName } });
   } catch (e) {
@@ -5798,12 +5888,12 @@ app.post('/api/volc-native/asset-groups', authenticate, async (req, res) => {
     const db = getDatabase();
     const { name, description = '', projectName = 'default', projectId } = req.body;
     if (!name) return res.status(400).json({ error: 'name 必填' });
-    if (!projectId) return res.status(400).json({ error: 'projectId 必填（素材组必须绑定到一个工作组）' });
+    if (!projectId) return res.status(400).json({ error: 'projectId 必填（素材组必须绑定到一个项目组）' });
     const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
     const project = projectService.getProjectById(projectId, req.user.id, isAdmin);
-    if (!project) return res.status(404).json({ error: '工作组不存在或无权访问' });
+    if (!project) return res.status(404).json({ error: '项目组不存在或无权访问' });
 
-    // 同工作组内名字唯一：若撞名则自动加 (2)/(3)... 后缀；前端理应已展示建议名
+    // 同项目组内名字唯一：若撞名则自动加 (2)/(3)... 后缀；前端理应已展示建议名
     const finalName = assetService.resolveUniqueAssetGroupName(projectId, String(name).trim());
 
     const result = await volcArkAssetRequest('CreateAssetGroup', {
@@ -5812,7 +5902,7 @@ app.post('/api/volc-native/asset-groups', authenticate, async (req, res) => {
 
     const volcGroupId = result?.Id;
     if (volcGroupId) {
-      // 绑定到当前工作组
+      // 绑定到当前项目组
       db.prepare(`
         INSERT OR REPLACE INTO asset_groups (project_id, volc_group_id, name, updated_at)
         VALUES (?, ?, ?, CURRENT_TIMESTAMP)
@@ -5837,13 +5927,13 @@ app.patch('/api/volc-native/asset-groups/:volcGroupId/rename', authenticate, (re
     if (!Number.isFinite(projectId) || projectId <= 0) return res.status(400).json({ error: 'projectId 必填' });
     const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
     const project = projectService.getProjectById(projectId, req.user.id, isAdmin);
-    if (!project) return res.status(404).json({ error: '工作组不存在或无权访问' });
+    if (!project) return res.status(404).json({ error: '项目组不存在或无权访问' });
 
     const db = getDatabase();
     const row = db.prepare(
       'SELECT id, name FROM asset_groups WHERE project_id = ? AND volc_group_id = ?'
     ).get(projectId, volcGroupId);
-    if (!row) return res.status(404).json({ error: '该素材组未绑定到此工作组' });
+    if (!row) return res.status(404).json({ error: '该素材组未绑定到此项目组' });
 
     // 自身名不变直接返回
     if (row.name === rawName) {
@@ -5995,7 +6085,7 @@ app.delete('/api/projects/:id/members/:userId', authenticate, (req, res) => {
     ).get(projectId, userId);
     if (!target) return res.status(404).json({ error: '成员不存在' });
     if (target.role === 'owner') {
-      return res.status(400).json({ error: '不能移除工作组所有者' });
+      return res.status(400).json({ error: '不能移除项目组所有者' });
     }
 
     db.prepare('DELETE FROM project_members WHERE project_id = ? AND user_id = ?').run(projectId, userId);

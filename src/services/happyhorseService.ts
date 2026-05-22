@@ -101,6 +101,24 @@ export async function getHappyhorsePricing(): Promise<HappyhorsePricingItem[]> {
   return out.pricing;
 }
 
+export interface DiscountItem {
+  model: string;
+  sub_key: string;
+  type: 'percent' | 'number';
+  value: number;
+  start_date: string;
+  end_date: string;
+}
+
+export async function fetchActiveDiscounts(): Promise<DiscountItem[]> {
+  try {
+    const res = await fetch(`${API_BASE}/discounts/active`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!data.success) return [];
+    return data.data.discounts || [];
+  } catch { return []; }
+}
+
 // 与后端 happyhorsePricingService.estimate 同步
 export const HAPPYHORSE_VIDEO_EDIT_MAX_SECONDS = 30;
 export const HAPPYHORSE_LOCK_BUFFER = 1.2;
@@ -110,7 +128,8 @@ export function estimateHappyhorseCredits(
   resolution: HappyhorseResolution,
   durationSec: number | undefined,
   pricing: HappyhorsePricingItem[] | null,
-): { credits: number; lockedCredits: number; rate: number } {
+  discounts?: DiscountItem[],
+): { credits: number; lockedCredits: number; rate: number; discountedCredits?: number; discountedLockedCredits?: number } {
   if (!pricing) return { credits: 0, lockedCredits: 0, rate: 0 };
   const row = pricing.find((x) => x.mode === mode && x.resolution === resolution);
   const rate = row?.credits_per_second || 0;
@@ -123,7 +142,18 @@ export function estimateHappyhorseCredits(
   }
   const credits = Math.max(0, Math.ceil(sec * rate));
   const lockedCredits = Math.max(credits, Math.ceil(credits * HAPPYHORSE_LOCK_BUFFER));
-  return { credits, lockedCredits, rate };
+
+  let discountedCredits: number | undefined;
+  let discountedLockedCredits: number | undefined;
+  if (discounts && discounts.length > 0) {
+    const discount = discounts.find((d) => d.model === mode && d.sub_key === resolution);
+    if (discount && discount.value > 0 && discount.type === 'percent') {
+      discountedCredits = Math.ceil(credits * (1 - discount.value / 100));
+      discountedLockedCredits = Math.ceil(discountedCredits * HAPPYHORSE_LOCK_BUFFER);
+    }
+  }
+
+  return { credits, lockedCredits, rate, ...(discountedCredits != null ? { discountedCredits, discountedLockedCredits } : {}) };
 }
 
 const DASHSCOPE_ERROR_MAP: { pattern: RegExp; zh: string }[] = [

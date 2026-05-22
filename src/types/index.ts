@@ -492,6 +492,7 @@ export interface HappyhorseTask {
 
 export interface HappyhorsePricingItem {
   mode: HappyhorseMode;
+  model: string;
   resolution: HappyhorseResolution;
   credits_per_second: number;
 }

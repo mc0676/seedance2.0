@@ -30,11 +30,11 @@ export default function ProjectSelector() {
 
   async function handleDelete(p: Project, e: React.MouseEvent) {
     e.stopPropagation();
-    if (!confirm(`确定删除工作组「${p.name}」？此操作不可恢复，工作组内所有素材和任务也将一并删除。`)) return;
+    if (!confirm(`确定删除项目组「${p.name}」？此操作不可恢复，项目组内所有素材和任务也将一并删除。`)) return;
     setDeletingId(p.id);
     try {
       await deleteProjectAction(p.id);
-      // 如果删除的是当前选中的工作组，自动切换到剩余的第一个
+      // 如果删除的是当前选中的项目组，自动切换到剩余的第一个
       if (currentProject?.id === p.id) {
         const remaining = projects.filter((proj) => proj.id !== p.id);
         if (remaining.length > 0) {
@@ -91,7 +91,7 @@ export default function ProjectSelector() {
         className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 transition-colors text-sm"
       >
         <div className="flex items-center gap-2 min-w-0">
-          <span className="text-xs text-gray-400 shrink-0">工作组</span>
+          <span className="text-xs text-gray-400 shrink-0">项目组</span>
           {currentProject ? (
             <span className="truncate text-white font-medium">{currentProject.name}</span>
           ) : (
@@ -130,7 +130,7 @@ export default function ProjectSelector() {
                       onClick={(e) => handleDelete(p, e)}
                       disabled={deletingId === p.id}
                       className="px-2 py-2 text-gray-600 hover:text-red-400 hover:bg-red-500/10 transition-colors text-sm shrink-0 disabled:opacity-50"
-                      title="删除工作组"
+                      title="删除项目组"
                     >
                       ×
                     </button>
@@ -147,7 +147,7 @@ export default function ProjectSelector() {
                   autoFocus
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
-                  placeholder="工作组名称"
+                  placeholder="项目组名称"
                   className="w-full px-2 py-1.5 text-sm bg-gray-700 border border-gray-600 rounded text-white placeholder-gray-400 focus:outline-none focus:border-blue-500"
                 />
                 <input
@@ -182,7 +182,7 @@ export default function ProjectSelector() {
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
                 </svg>
-                新建工作组
+                新建项目组
               </button>
             )}
           </div>

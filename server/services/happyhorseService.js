@@ -44,6 +44,8 @@ export async function submitTask({ apiKey, model, input, parameters }) {
   const payload = { model, input };
   if (parameters && typeof parameters === 'object') payload.parameters = parameters;
 
+  console.log(`[HappyHorse][提交] model=${model} prompt=${(input.prompt || '').slice(0, 80)} params=${JSON.stringify({ resolution: parameters?.resolution, ratio: parameters?.ratio, duration: parameters?.duration, watermark: parameters?.watermark, audio_setting: parameters?.audio_setting })}`);
+
   const res = await fetch(`${DASHSCOPE_BASE_URL}${SUBMIT_PATH}`, {
     method: 'POST',
     headers: {
@@ -58,6 +60,7 @@ export async function submitTask({ apiKey, model, input, parameters }) {
   if (!taskId) {
     throw new Error(body?.message || body?.output?.message || '提交 HappyHorse 任务失败：未返回 task_id');
   }
+  console.log(`[HappyHorse][提交响应] task_id=${taskId} request_id=${body?.request_id || '-'}`);
   return { task_id: taskId, request_id: body?.request_id };
 }
 
@@ -79,7 +82,7 @@ export async function getTask({ apiKey, taskId }) {
   });
   const body = await _parse(res);
   const output = body?.output || {};
-  return {
+  const result = {
     task_id: output.task_id || taskId,
     task_status: String(output.task_status || 'UNKNOWN').toUpperCase(),
     video_url: output.video_url || null,
@@ -92,6 +95,13 @@ export async function getTask({ apiKey, taskId }) {
     message: output.message || null,
     request_id: body?.request_id || null,
   };
+
+  if (result.task_status === 'SUCCEEDED' || result.task_status === 'FAILED' || result.task_status === 'CANCELED') {
+    const u = result.usage || {};
+    console.log(`[HappyHorse][完成] task_id=${result.task_id} status=${result.task_status} video_url=${result.video_url || '-'} usage={duration:${u.duration ?? '-'}, output:${u.output_video_duration ?? '-'}s, input:${u.input_video_duration ?? '-'}s} message=${result.message || '-'}`);
+  }
+
+  return result;
 }
 
 export default { submitTask, getTask };

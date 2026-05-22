@@ -11,6 +11,10 @@ export interface PricingEstimate {
   lockedCredits: number;
   model: string;
   warn?: string;
+  /** 折扣后积分（仅存在活跃折扣时返回） */
+  discountedCredits?: number;
+  /** 折扣后锁定积分 */
+  discountedLockedCredits?: number;
 }
 
 export interface CreditBalance {

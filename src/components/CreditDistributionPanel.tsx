@@ -261,7 +261,11 @@ export default function CreditDistributionPanel() {
                         )}
                       </td>
                       <td className="py-2.5 pr-3 text-right">
-                        <span className="text-emerald-400 font-medium">+{r.credits_amount}</span>
+                        {r.credits_amount >= 0 ? (
+                          <span className="text-emerald-400 font-medium">+{r.credits_amount}</span>
+                        ) : (
+                          <span className="text-red-400 font-medium">{r.credits_amount}</span>
+                        )}
                       </td>
                       <td className="py-2.5">
                         <span className={`px-2 py-0.5 rounded-full text-xs ${METHOD_COLORS[r.method] || 'bg-gray-500/20 text-gray-400'}`}>

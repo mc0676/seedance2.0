@@ -10,8 +10,10 @@ import {
   listMyHappyhorseTasks,
   getHappyhorsePricing,
   estimateHappyhorseCredits,
+  fetchActiveDiscounts,
   translateDashScopeError,
 } from '../services/happyhorseService';
+import type { DiscountItem } from '../services/happyhorseService';
 import type {
   HappyhorseMode, HappyhorseResolution, HappyhorseRatio,
   HappyhorseMediaItem, HappyhorseTask, HappyhorsePricingItem,
@@ -96,12 +98,16 @@ export default function HappyHorsePage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [pricing, setPricing] = useState<HappyhorsePricingItem[] | null>(null);
+  const [discounts, setDiscounts] = useState<DiscountItem[]>([]);
+  const [discountExpired, setDiscountExpired] = useState(false);
   const [balance, setBalance] = useState<{ credits: number; unlimited: boolean; locked: number; available: number } | null>(null);
   const imgInputRef = useRef<HTMLInputElement | null>(null);
   const videoInputRef = useRef<HTMLInputElement | null>(null);
   const editorRef = useRef<HTMLDivElement | null>(null);
   // video-edit：已上传待编辑视频的真实时长（秒），用于精确预估积分
   const [editVideoDuration, setEditVideoDuration] = useState<number | null>(null);
+  // 参数变化时重置折扣过期提示
+  useEffect(() => { setDiscountExpired(false); }, [mode, resolution, duration, editVideoDuration]);
   // 批量生成
   const maxConcurrent = Math.max(1, parseInt(state.settings.max_concurrent || '5', 10) || 5);
   const [batchSize, setBatchSize] = useState(1);
@@ -126,6 +132,7 @@ export default function HappyHorsePage() {
   // 加载计费表
   useEffect(() => {
     getHappyhorsePricing().then(setPricing).catch(() => setPricing([]));
+    fetchActiveDiscounts().then(setDiscounts).catch(() => setDiscounts([]));
   }, []);
 
   // 余额轮询
@@ -745,10 +752,11 @@ export default function HappyHorsePage() {
     } else {
       dur = duration;
     }
-    return estimateHappyhorseCredits(mode, resolution, dur, pricing);
-  }, [mode, resolution, duration, pricing, editVideoDuration]);
+    return estimateHappyhorseCredits(mode, resolution, dur, pricing, discounts);
+  }, [mode, resolution, duration, pricing, discounts, editVideoDuration]);
 
-  const creditInsufficient = !!balance && !balance.unlimited && estimate.lockedCredits * batchSize > balance.available;
+  const effLocked = estimate.discountedLockedCredits != null ? estimate.discountedLockedCredits : estimate.lockedCredits;
+  const creditInsufficient = !!balance && !balance.unlimited && effLocked * batchSize > balance.available;
 
   // ── 上传 ─────────────────────────────────────────────────
   async function handleUploadImage(files: FileList | null) {
@@ -892,7 +900,7 @@ export default function HappyHorsePage() {
 
   // ── 提交 ─────────────────────────────────────────────────
   async function handleSubmit() {
-    if (!projectId) { setSubmitError('请先选择工作组'); return; }
+    if (!projectId) { setSubmitError('请先选择项目组'); return; }
     if (mode === 't2v' && !prompt.trim()) { setSubmitError('请输入提示词'); return; }
     if (mode === 'i2v' && !media.some((m) => m.type === 'first_frame')) { setSubmitError('请上传首帧图片'); return; }
     if (mode === 'r2v' && media.filter((m) => m.type === 'reference_image').length < 1) { setSubmitError('请至少上传 1 张参考图'); return; }
@@ -901,6 +909,23 @@ export default function HappyHorsePage() {
     if (mode === 'video-edit' && (!editVideoDuration || editVideoDuration <= 0)) {
       setSubmitError('无法识别视频时长，无法预估积分。请重新上传视频后再生成。');
       return;
+    }
+
+    // 折扣过期检查
+    if (estimate.discountedCredits != null && !discountExpired) {
+      try {
+        const freshDiscounts = await fetchActiveDiscounts();
+        const freshEst = estimateHappyhorseCredits(mode, resolution,
+          mode === 'video-edit' ? (editVideoDuration && editVideoDuration > 0 ? Math.min(15, editVideoDuration) * 2 : undefined) : duration,
+          pricing, freshDiscounts);
+        if (freshEst.discountedCredits == null || freshEst.discountedCredits === freshEst.credits) {
+          setDiscounts(freshDiscounts);
+          setDiscountExpired(true);
+          setSubmitting(false);
+          return;
+        }
+        setDiscounts(freshDiscounts);
+      } catch { /* 网络错误，继续用旧折扣提交 */ }
     }
 
     setSubmitting(true); setSubmitError(null);
@@ -1359,7 +1384,7 @@ export default function HappyHorsePage() {
                 ) : uploading ? (
                   <><span className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />上传中...</>
                 ) : creditInsufficient ? (
-                  <>⚠️ 可用积分不足（可用 {balance!.available}，需 {estimate.lockedCredits * batchSize}）</>
+                  <>⚠️ 可用积分不足（可用 {balance!.available}，需 {effLocked * batchSize}）</>
                 ) : videoEditDurationUnknown ? (
                   <>⚠️ 请重新上传视频</>
                 ) : modeInputMissing ? (
@@ -1393,12 +1418,32 @@ export default function HappyHorsePage() {
                   )}
                 </span>
                 {mode === 'video-edit' && (!editVideoDuration || editVideoDuration <= 0) ? (
-                  <span className="text-amber-400">请先上传视频后再预估积分</span>
+                  <span className="text-amber-400">本功能根据视频的长度计算消耗的积分，请先上传视频</span>
                 ) : estimate.credits > 0 ? (
+                  discountExpired ? (
+                    <span className="text-amber-400">
+                      折扣已过期！请确认积分消耗：本次预计消耗 <span className="text-purple-300 font-semibold">{estimate.credits * batchSize}</span> 积分
+                      <span className="ml-2 text-gray-500">（锁定 {estimate.lockedCredits * batchSize}）</span>
+                    </span>
+                  ) : (
                   <span>
-                    本次预计消耗 <span className="text-purple-300 font-semibold">{estimate.credits * batchSize}</span> 积分
-                    <span className="ml-2 text-gray-500">（锁定 {estimate.lockedCredits * batchSize}）</span>
+                    {estimate.discountedCredits != null && estimate.discountedCredits !== estimate.credits ? (
+                      <>
+                        本次预计消耗 <span className="text-emerald-300 font-semibold">{estimate.discountedCredits * batchSize}</span>
+                        <span className="ml-1 text-gray-500">（折扣前 {estimate.credits * batchSize}）</span> 积分
+                      </>
+                    ) : (
+                      <>
+                        本次预计消耗 <span className="text-purple-300 font-semibold">{estimate.credits * batchSize}</span> 积分
+                      </>
+                    )}
+                    {estimate.discountedLockedCredits != null && estimate.discountedLockedCredits !== estimate.lockedCredits ? (
+                      <span className="ml-2 text-gray-500">（锁定 {estimate.discountedLockedCredits * batchSize}）</span>
+                    ) : (
+                      <span className="ml-2 text-gray-500">（锁定 {estimate.lockedCredits * batchSize}）</span>
+                    )}
                   </span>
+                  )
                 ) : (
                   <span>{pricing === null ? '加载计费中...' : '请选择参数'}</span>
                 )}

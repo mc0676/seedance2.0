@@ -250,7 +250,8 @@ export default function SingleTaskPage() {
   const [generation, setGeneration] = useState<GenerationState>({ status: 'idle' });
   const [uploading, setUploading] = useState(false);
   const [showMention, setShowMention] = useState(false);
-  const [estimate, setEstimate] = useState<{ credits: number; lockedCredits: number; tokens: number; warn?: string } | null>(null);
+  const [estimate, setEstimate] = useState<{ credits: number; lockedCredits: number; tokens: number; warn?: string; discountedCredits?: number; discountedLockedCredits?: number } | null>(null);
+  const [discountExpired, setDiscountExpired] = useState(false);
   const [balance, setBalance] = useState<{ credits: number; unlimited: boolean; locked: number; available: number } | null>(null);
   const [runtimeModels, setRuntimeModels] = useState<RuntimeModelOption[]>([]);
   // 批量生成
@@ -875,7 +876,8 @@ export default function SingleTaskPage() {
       })
         .then((r) => {
           if (!ctrl.signal.aborted && reqId === estimateRequestRef.current) {
-            setEstimate({ credits: r.credits, lockedCredits: r.lockedCredits, tokens: r.tokens, warn: r.warn });
+            setEstimate({ credits: r.credits, lockedCredits: r.lockedCredits, tokens: r.tokens, warn: r.warn, discountedCredits: r.discountedCredits, discountedLockedCredits: r.discountedLockedCredits });
+            setDiscountExpired(false);
           }
         })
         .catch(() => { if (!ctrl.signal.aborted && reqId === estimateRequestRef.current) setEstimate(null); });
@@ -1388,9 +1390,32 @@ export default function SingleTaskPage() {
     const comboError = validateMediaCombination(!!prompt.trim(), activeImages.length, videos.length, audios.length);
     if (comboError) { alert(comboError); return; }
 
+    // 折扣过期检查：refresh estimate，若之前有折扣但现在过期则拦截
+    if (estimate?.discountedCredits != null && !discountExpired) {
+      try {
+        const fresh = await estimatePricing({
+          model,
+          outputDurationSec: Number(duration),
+          ratio,
+          resolution,
+          hasVideoInput: videos.length > 0,
+          hasAudio: audios.length > 0,
+          isDraft: false,
+        });
+        if (fresh.discountedCredits == null || fresh.discountedCredits === fresh.credits) {
+          setEstimate({ credits: fresh.credits, lockedCredits: fresh.lockedCredits, tokens: fresh.tokens, warn: fresh.warn });
+          setDiscountExpired(true);
+          return;
+        }
+        // 折扣依然有效，用最新值更新
+        setEstimate({ credits: fresh.credits, lockedCredits: fresh.lockedCredits, tokens: fresh.tokens, warn: fresh.warn, discountedCredits: fresh.discountedCredits, discountedLockedCredits: fresh.discountedLockedCredits });
+      } catch { /* 网络错误，继续用旧 estimate 提交 */ }
+    }
+
     // 积分余额预检（避免提交后才被后端拒绝）
     if (balance && !balance.unlimited && estimate && estimate.lockedCredits > 0) {
-      const totalNeeded = estimate.lockedCredits * batchSize;
+      const effLocked = estimate.discountedLockedCredits != null ? estimate.discountedLockedCredits : estimate.lockedCredits;
+      const totalNeeded = effLocked * batchSize;
       if (balance.available < totalNeeded) {
         alert(batchSize > 1
           ? `批量生成 ${batchSize} 个任务积分不足（可用 ${balance.available}，需要 ${totalNeeded}）`
@@ -1575,7 +1600,8 @@ export default function SingleTaskPage() {
 
   const activeImages = referenceMode === 'first_last_frame' ? [...firstFrameImages, ...lastFrameImages] : images;
   const canGenerate = (prompt.trim() || activeImages.length > 0 || videos.length > 0 || audios.length > 0 || assetSelections.length > 0) && !isGenerating && !uploading;
-  const creditInsufficient = !!(balance && !balance.unlimited && estimate && estimate.lockedCredits > 0 && balance.available < estimate.lockedCredits * batchSize);
+  const effectiveLocked = estimate?.discountedLockedCredits != null ? estimate.discountedLockedCredits : (estimate?.lockedCredits ?? 0);
+  const creditInsufficient = !!(balance && !balance.unlimited && effectiveLocked > 0 && balance.available < effectiveLocked * batchSize);
   const currentModelLabel = runtimeModels.find((m) => m.model_key === model)?.label
     || MODEL_OPTIONS.find((m) => m.value === model)?.label
     || 'Seedance 2.0';
@@ -1817,7 +1843,7 @@ export default function SingleTaskPage() {
                 onPaste={handleEditorPaste}
                 onCopy={handleEditorCopy}
                 onCut={handleEditorCut}
-                data-placeholder="描述你想要生成的视频场景。输入 @ 可引用本次上传的素材或工作组素材组里的素材..."
+                data-placeholder="描述你想要生成的视频场景。输入 @ 可引用本次上传的素材或项目组素材组里的素材..."
                 className="prompt-editor w-full text-sm focus:outline-none min-h-[100px] text-gray-200 leading-relaxed bg-[#0d0f1a] rounded-xl px-4 py-3"
                 suppressContentEditableWarning
               />
@@ -2055,7 +2081,7 @@ export default function SingleTaskPage() {
                 ) : uploading ? (
                   <><span className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />上传中...</>
                 ) : creditInsufficient ? (
-                  <>⚠️ 可用积分不足（可用 {balance!.available}，需 {estimate!.lockedCredits * batchSize}）</>
+                  <>⚠️ 可用积分不足（可用 {balance!.available}，需 {effectiveLocked * batchSize}）</>
                 ) : (
                   <><SparkleIcon className="w-4 h-4" />生成视频</>
                 )}
@@ -2087,10 +2113,30 @@ export default function SingleTaskPage() {
                   )}
                 </span>
                 {estimate && estimate.credits > 0 ? (
+                  discountExpired ? (
+                    <span className="text-amber-400">
+                      折扣已过期！请确认积分消耗：本次预计消耗 <span className="text-purple-300 font-semibold">{estimate.credits * batchSize}</span> 积分
+                      <span className="ml-2 text-gray-500">（锁定 {estimate.lockedCredits * batchSize}）</span>
+                    </span>
+                  ) : (
                   <span>
-                    本次预计消耗 <span className="text-purple-300 font-semibold">{estimate.credits * batchSize}</span> 积分
-                    <span className="ml-2 text-gray-500">（锁定 {estimate.lockedCredits * batchSize}）</span>
+                    {estimate.discountedCredits != null && estimate.discountedCredits !== estimate.credits ? (
+                      <>
+                        本次预计消耗 <span className="text-emerald-300 font-semibold">{estimate.discountedCredits * batchSize}</span>
+                        <span className="ml-1 text-gray-500">（折扣前 {estimate.credits * batchSize}）</span>
+                      </>
+                    ) : (
+                      <>
+                        本次预计消耗 <span className="text-purple-300 font-semibold">{estimate.credits * batchSize}</span> 积分
+                      </>
+                    )}
+                    {estimate.discountedLockedCredits != null && estimate.discountedLockedCredits !== estimate.lockedCredits ? (
+                      <span className="ml-2 text-gray-500">（锁定 {estimate.discountedLockedCredits * batchSize}）</span>
+                    ) : (
+                      <span className="ml-2 text-gray-500">（锁定 {estimate.lockedCredits * batchSize}）</span>
+                    )}
                   </span>
+                  )
                 ) : (
                   <span>请选择模型与时长</span>
                 )}
@@ -2372,7 +2418,7 @@ export default function SingleTaskPage() {
                               setAssetSyncing(false);
                             }
                           } else if (assetRefs.length > 0 && !sameProject) {
-                            alert(`此任务属于其他工作组，请先切换到对应工作组再复用`);
+                            alert(`此任务属于其他项目组，请先切换到对应项目组再复用`);
                             return;
                           }
 

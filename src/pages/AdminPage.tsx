@@ -46,6 +46,7 @@ import {
 import DepartmentSelect from '../components/DepartmentSelect';
 import AnalyticsPanels from '../components/AnalyticsPanels';
 import CreditDistributionPanel from '../components/CreditDistributionPanel';
+import DiscountModal from '../components/DiscountModal';
 import type { User, FeatureKey, ModelPricing } from '../types';
 import { UsersIcon, ShieldIcon, CheckIcon, SparkleIcon, PlusIcon } from '../components/Icons';
 
@@ -342,7 +343,17 @@ export default function AdminPage() {
   const [happyhorseKeyConfigured, setHappyhorseKeyConfigured] = useState(false);
   const [happyhorseKeyEditing, setHappyhorseKeyEditing] = useState(false);
   const [happyhorseKeyDraft, setHappyhorseKeyDraft] = useState('');
-  const [happyhorsePricing, setHappyhorsePricing] = useState<Array<{ mode: string; resolution: string; credits_per_second: number }>>([]);
+  const [happyhorsePricing, setHappyhorsePricing] = useState<Array<{ mode: string; model: string; resolution: string; credits_per_second: number }>>([]);
+  const [activeHappyhorseTab, setActiveHappyhorseTab] = useState<string>('t2v');
+
+  // 批量生成设置
+  const [batchMaxConcurrent, setBatchMaxConcurrent] = useState<string>('5');
+  const [batchSaving, setBatchSaving] = useState(false);
+
+  // 折扣管理
+  interface DiscountItem { id?: number; model: string; sub_key: string; type: 'percent' | 'number'; value: number; start_date: string; end_date: string; }
+  const [discounts, setDiscounts] = useState<DiscountItem[]>([]);
+  const [discountModalScope, setDiscountModalScope] = useState<'model' | 'happyhorse' | null>(null);
 
   // 音频生成中转配置
   const [audioCfg, setAudioCfg] = useState<AudioGenConfig | null>(null);
@@ -756,23 +767,34 @@ export default function AdminPage() {
     // 权限元数据
     listFeatureKeys().then(setFeatureKeys).catch(() => {});
     getDefaultPermissions().catch(() => {});
+    // 只读数据：管理员可查看
+    listAllModelPricing().then((list) => { setModelPricings(list); setActiveModelTab(list[0]?.model_key ?? ''); }).catch(() => {});
+    fetchEnhancementPricing().then(setEnhancementPricing).catch(() => {});
+    fetch('/api/admin/happyhorse-pricing', { headers: getAuthHeaders() })
+      .then((r) => r.json())
+      .then((j) => { if (j?.success) setHappyhorsePricing(j.data.pricing || []); })
+      .catch(() => {});
+    // 折扣数据（管理员可查看）
+    fetch('/api/admin/discounts', { headers: getAuthHeaders() })
+      .then((r) => r.json())
+      .then((j) => { if (j?.success) setDiscounts(j.data.discounts || []); })
+      .catch(() => {});
+    getAudioGenConfig().then((d) => { setAudioCfg(d.config); setAudioCfgOptions(d.options); }).catch(() => {});
     if (isSuperAdmin) {
-      listAllModelPricing().then((list) => { setModelPricings(list); setActiveModelTab(list[0]?.model_key ?? ''); }).catch(() => {});
       loadVolcKeyGroups();
       getWuyinKey().then((d) => setWuyinKey(d.key)).catch(() => {});
       getMediaKitKey().then((d) => setMediaKitKey(d.key)).catch(() => {});
-      fetchEnhancementPricing().then(setEnhancementPricing).catch(() => {});
       // HappyHorse
       fetch('/api/admin/happyhorse-key', { headers: getAuthHeaders() })
         .then((r) => r.json())
         .then((j) => { if (j?.success) { setHappyhorseKeyMasked(j.data.masked || ''); setHappyhorseKeyConfigured(!!j.data.configured); } })
         .catch(() => {});
-      fetch('/api/admin/happyhorse-pricing', { headers: getAuthHeaders() })
-        .then((r) => r.json())
-        .then((j) => { if (j?.success) setHappyhorsePricing(j.data.pricing || []); })
-        .catch(() => {});
-      getAudioGenConfig().then((d) => { setAudioCfg(d.config); setAudioCfgOptions(d.options); }).catch(() => {});
       loadVolcAkSk();
+      // 批量生成设置
+      fetch('/api/admin/batch-concurrent', { headers: getAuthHeaders() })
+        .then((r) => r.json())
+        .then((j) => { if (j?.success) setBatchMaxConcurrent(j.data.max_concurrent || '5'); })
+        .catch(() => {});
     }
   }, []);
 
@@ -913,6 +935,43 @@ export default function AdminPage() {
       if (!j?.success) throw new Error(j?.error || '保存失败');
       setHappyhorsePricing(j.data.pricing || []);
     } catch (e) { alert(e instanceof Error ? e.message : '保存失败'); }
+  };
+
+  // 精确匹配折扣
+  const getActiveDiscount = (model: string, subKey: string): DiscountItem | undefined => {
+    const d = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const now = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    return discounts.find((d) => d.model === model && d.sub_key === subKey && d.start_date <= now && d.end_date >= now);
+  };
+
+  // 计算折扣后的显示数据
+  const getDiscountedDisplay = (model: string, subKey: string, originalPrice: number) => {
+    const discount = getActiveDiscount(model, subKey);
+    if (!discount || discount.value <= 0) return { discounted: false, price: originalPrice, percent: 0 };
+    let discounted: number;
+    if (discount.type === 'percent') {
+      discounted = Math.ceil(originalPrice * (1 - discount.value / 100));
+    } else {
+      discounted = Math.ceil(discount.value);
+    }
+    const percent = discount.type === 'percent' ? discount.value : Math.round((1 - discount.value / originalPrice) * 100 * 100) / 100;
+    return { discounted: true, price: discounted, percent };
+  };
+
+  // 折扣价格渲染
+  const renderDiscountedPrice = (model: string, subKey: string, originalPrice: number) => {
+    const d = getDiscountedDisplay(model, subKey, originalPrice);
+    if (!d.discounted) return <div className="text-amber-400 text-sm">{originalPrice}</div>;
+    return (
+      <div className="flex items-center gap-2">
+        <span className="text-gray-500 text-sm line-through">{originalPrice}</span>
+        <span className="text-emerald-400 text-sm font-semibold">{d.price}</span>
+        <span className="px-1.5 py-0.5 rounded-md bg-emerald-500/15 text-emerald-400 text-[10px] font-medium">
+          -{d.percent.toFixed(2)}%
+        </span>
+      </div>
+    );
   };
 
 
@@ -1102,7 +1161,7 @@ export default function AdminPage() {
   };
 
   const handleToggleUnlimited = async (user: User) => {
-    const current = (user as any).unlimited_credits || user.unlimitedCredits;
+    const current = (user as any).unlimitedCredits || user.unlimitedCredits;
     try {
       await toggleUnlimitedCredits(user.id, !current);
       loadUsers(currentPage);
@@ -1145,7 +1204,7 @@ export default function AdminPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
             <StatCard title="总用户数" value={stats.totalUsers} icon={UsersIcon} color="bg-gradient-to-br from-blue-500 to-cyan-500" />
             <StatCard title="活跃用户" value={stats.activeUsers} icon={CheckIcon} color="bg-gradient-to-br from-green-500 to-emerald-500" />
-            <StatCard title="总工作组数" value={stats.totalProjects} icon={SparkleIcon} color="bg-gradient-to-br from-purple-500 to-pink-500" />
+            <StatCard title="总项目组数" value={stats.totalProjects} icon={SparkleIcon} color="bg-gradient-to-br from-purple-500 to-pink-500" />
             <StatCard title="总任务数" value={stats.totalTasks} icon={ShieldIcon} color="bg-gradient-to-br from-amber-500 to-orange-500" />
             <StatCard title="今日签到" value={stats.todayCheckIns} icon={CheckIcon} color="bg-gradient-to-br from-rose-500 to-red-500" />
             <StatCard title="发放积分" value={stats.totalCreditsIssued} icon={SparkleIcon} color="bg-gradient-to-br from-indigo-500 to-violet-500" />
@@ -1393,8 +1452,8 @@ export default function AdminPage() {
                       <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">邮箱</th>
                       <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">姓名</th>
                       <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">小组</th>
-                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">角色</th>
-                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">状态</th>
+                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase min-w-[5em]">角色</th>
+                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase min-w-[2em]">状态</th>
                       <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">积分</th>
                       {isSuperAdmin && <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">无限额度</th>}
                       <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase">注册时间</th>
@@ -1415,7 +1474,7 @@ export default function AdminPage() {
                         <td className="px-6 py-4 text-sm text-gray-300">
                           {user.department || <span className="text-amber-500/80 text-xs">未填</span>}
                         </td>
-                        <td className="px-6 py-4 text-sm">
+                        <td className="px-6 py-4 text-sm whitespace-nowrap">
                           <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                             user.role === 'super_admin' ? 'bg-red-500/20 text-red-400' :
                             user.role === 'admin' ? 'bg-amber-500/20 text-amber-400' :
@@ -1424,13 +1483,13 @@ export default function AdminPage() {
                             {user.role === 'super_admin' ? '系统管理员' : user.role === 'admin' ? '普通管理员' : '普通用户'}
                           </span>
                         </td>
-                        <td className="px-6 py-4 text-sm">
+                        <td className="px-6 py-4 text-sm whitespace-nowrap">
                           <span className={`px-2 py-1 rounded-full text-xs font-medium ${user.status === 'active' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
                             {user.status === 'active' ? '正常' : '禁用'}
                           </span>
                         </td>
                         <td className="px-6 py-4 text-sm text-white">
-                          {(user as any).unlimited_credits || user.unlimitedCredits ? (
+                          {(user as any).unlimitedCredits || user.unlimitedCredits ? (
                             <span className="text-amber-400 font-semibold">∞</span>
                           ) : (
                             user.credits
@@ -1440,9 +1499,9 @@ export default function AdminPage() {
                           <td className="px-6 py-4 text-sm">
                             <button
                               onClick={() => handleToggleUnlimited(user)}
-                              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${(user as any).unlimited_credits || user.unlimitedCredits ? 'bg-amber-500' : 'bg-gray-700'}`}
+                              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${(user as any).unlimitedCredits || user.unlimitedCredits ? 'bg-amber-500' : 'bg-gray-700'}`}
                             >
-                              <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${(user as any).unlimited_credits || user.unlimitedCredits ? 'translate-x-5' : 'translate-x-1'}`} />
+                              <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${(user as any).unlimitedCredits || user.unlimitedCredits ? 'translate-x-5' : 'translate-x-1'}`} />
                             </button>
                           </td>
                         )}
@@ -1582,14 +1641,22 @@ export default function AdminPage() {
         </div>
         )}
 
-        {/* 模型计费、素材库、Key组、速创Key、全局任务（仅系统管理员） */}
-        {isSuperAdmin && (<>
 
         {/* 模型计费管理 */}
         <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
-          <div className="mb-4">
-            <h2 className="text-xl font-semibold text-white">模型计费管理</h2>
-            <p className="text-xs text-gray-500 mt-1">每次生成任务按 model 扣减积分；1 元 ≈ 100 积分</p>
+          <div className="mb-4 flex items-center justify-between">
+            <div>
+              <h2 className="text-xl font-semibold text-white">模型计费管理</h2>
+              <p className="text-xs text-gray-500 mt-1">每次生成任务按 model 扣减积分；1 元 ≈ 100 积分</p>
+            </div>
+            {isSuperAdmin && (
+            <button
+              onClick={() => setDiscountModalScope('model')}
+              className="px-4 py-2 bg-amber-600/20 border border-amber-500/40 hover:bg-amber-600/30 rounded-lg text-amber-400 text-sm font-medium transition-all"
+            >
+              折扣设置
+            </button>
+            )}
           </div>
 
           <div className="flex gap-1 mb-4 flex-wrap">
@@ -1603,10 +1670,12 @@ export default function AdminPage() {
                 {!m.enabled && <span className="ml-1 text-xs text-gray-500">(禁用)</span>}
               </button>
             ))}
+            {isSuperAdmin && (
             <button
               onClick={() => setActiveModelTab('__new__')}
               className={`px-4 py-2 rounded-xl text-sm font-medium transition-colors ${activeModelTab === '__new__' ? 'bg-green-600 text-white' : 'bg-[#0f111a] border border-gray-700 text-gray-400 hover:text-white'}`}
             >+ 添加模型</button>
+            )}
           </div>
 
           {activeModelTab === '__new__' ? (
@@ -1639,25 +1708,27 @@ export default function AdminPage() {
                     <div className="text-xs text-gray-500 font-mono mt-0.5">{m.model_key}</div>
                   </div>
                   <div className="flex items-center gap-3">
+                    {isSuperAdmin && (
                     <div className="flex items-center gap-2">
                       <span className="text-xs text-gray-400">启用</span>
                       <button onClick={() => handleToggleModelEnabled(m)} className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${m.enabled ? 'bg-green-500' : 'bg-gray-700'}`}>
                         <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${m.enabled ? 'translate-x-5' : 'translate-x-1'}`} />
                       </button>
                     </div>
-                    {!isEditing && <button onClick={() => setEditingModel({ ...m })} className="btn-edit">编辑</button>}
-                    <button onClick={() => handleDeleteModel(m.model_key)} className="btn-danger">删除</button>
+                    )}
+                    {isSuperAdmin && !isEditing && <button onClick={() => setEditingModel({ ...m })} className="btn-edit">编辑</button>}
+                    {isSuperAdmin && <button onClick={() => handleDeleteModel(m.model_key)} className="btn-danger">删除</button>}
                   </div>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div><label className="block text-xs text-gray-400 mb-1">展示名</label>{isEditing ? <input className="w-full px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm" value={ev.label} onChange={(e) => update({ label: e.target.value })} /> : <div className="text-white text-sm">{m.label}</div>}</div>
                   <div><label className="block text-xs text-gray-400 mb-1">排序</label>{isEditing ? <input type="number" className="w-full px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm" value={ev.sort_order} onChange={(e) => update({ sort_order: Number(e.target.value) })} /> : <div className="text-white text-sm">{m.sort_order}</div>}</div>
-                  <div><label className="block text-xs text-gray-400 mb-1">无视频/720p 单价</label>{isEditing ? <input type="number" step="0.01" className="w-full px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm" value={ev.price_no_video_low} onChange={(e) => update({ price_no_video_low: Number(e.target.value) })} /> : <div className="text-amber-400 text-sm">{m.price_no_video_low}</div>}</div>
-                  <div><label className="block text-xs text-gray-400 mb-1">无视频/1080p 单价</label>{isEditing ? <input type="number" step="0.01" className="w-full px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm" value={ev.price_no_video_high} onChange={(e) => update({ price_no_video_high: Number(e.target.value) })} /> : <div className="text-amber-400 text-sm">{m.price_no_video_high || '—'}</div>}</div>
-                  <div><label className="block text-xs text-gray-400 mb-1">含视频/720p 单价</label>{isEditing ? <input type="number" step="0.01" className="w-full px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm" value={ev.price_with_video_low} onChange={(e) => update({ price_with_video_low: Number(e.target.value) })} /> : <div className="text-amber-400 text-sm">{m.price_with_video_low}</div>}</div>
-                  <div><label className="block text-xs text-gray-400 mb-1">含视频/1080p 单价</label>{isEditing ? <input type="number" step="0.01" className="w-full px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm" value={ev.price_with_video_high} onChange={(e) => update({ price_with_video_high: Number(e.target.value) })} /> : <div className="text-amber-400 text-sm">{m.price_with_video_high || '—'}</div>}</div>
-                  <div><label className="block text-xs text-gray-400 mb-1">有声单价</label>{isEditing ? <input type="number" step="0.01" className="w-full px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm" value={ev.price_audio} onChange={(e) => update({ price_audio: Number(e.target.value) })} /> : <div className="text-amber-400 text-sm">{m.price_audio || '—'}</div>}</div>
-                  <div><label className="block text-xs text-gray-400 mb-1">无声单价</label>{isEditing ? <input type="number" step="0.01" className="w-full px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm" value={ev.price_silent} onChange={(e) => update({ price_silent: Number(e.target.value) })} /> : <div className="text-amber-400 text-sm">{m.price_silent || '—'}</div>}</div>
+                  <div><label className="block text-xs text-gray-400 mb-1">无视频/720p 单价</label>{isEditing ? <input type="number" step="0.01" className="w-full px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm" value={ev.price_no_video_low} onChange={(e) => update({ price_no_video_low: Number(e.target.value) })} /> : renderDiscountedPrice(m.model_key, 'price_no_video_low', m.price_no_video_low)}</div>
+                  <div><label className="block text-xs text-gray-400 mb-1">无视频/1080p 单价</label>{isEditing ? <input type="number" step="0.01" className="w-full px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm" value={ev.price_no_video_high} onChange={(e) => update({ price_no_video_high: Number(e.target.value) })} /> : (m.price_no_video_high ? renderDiscountedPrice(m.model_key, 'price_no_video_high', m.price_no_video_high) : <div className="text-gray-500 text-sm">—</div>)}</div>
+                  <div><label className="block text-xs text-gray-400 mb-1">含视频/720p 单价</label>{isEditing ? <input type="number" step="0.01" className="w-full px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm" value={ev.price_with_video_low} onChange={(e) => update({ price_with_video_low: Number(e.target.value) })} /> : renderDiscountedPrice(m.model_key, 'price_with_video_low', m.price_with_video_low)}</div>
+                  <div><label className="block text-xs text-gray-400 mb-1">含视频/1080p 单价</label>{isEditing ? <input type="number" step="0.01" className="w-full px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm" value={ev.price_with_video_high} onChange={(e) => update({ price_with_video_high: Number(e.target.value) })} /> : (m.price_with_video_high ? renderDiscountedPrice(m.model_key, 'price_with_video_high', m.price_with_video_high) : <div className="text-gray-500 text-sm">—</div>)}</div>
+                  <div><label className="block text-xs text-gray-400 mb-1">有声单价</label>{isEditing ? <input type="number" step="0.01" className="w-full px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm" value={ev.price_audio} onChange={(e) => update({ price_audio: Number(e.target.value) })} /> : (m.price_audio ? renderDiscountedPrice(m.model_key, 'price_audio', m.price_audio) : <div className="text-gray-500 text-sm">—</div>)}</div>
+                  <div><label className="block text-xs text-gray-400 mb-1">无声单价</label>{isEditing ? <input type="number" step="0.01" className="w-full px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm" value={ev.price_silent} onChange={(e) => update({ price_silent: Number(e.target.value) })} /> : (m.price_silent ? renderDiscountedPrice(m.model_key, 'price_silent', m.price_silent) : <div className="text-gray-500 text-sm">—</div>)}</div>
                   <div className="md:col-span-2"><label className="block text-xs text-gray-400 mb-1">描述</label>{isEditing ? <input className="w-full px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm" value={ev.description || ''} onChange={(e) => update({ description: e.target.value })} /> : <div className="text-gray-400 text-sm">{m.description || '—'}</div>}</div>
                 </div>
                 {isEditing && (
@@ -1702,13 +1773,15 @@ export default function AdminPage() {
                   {volcAssetsLoading ? '加载中...' : '刷新'}
                 </button>
               )}
+              {isSuperAdmin && (
               <button onClick={() => { setVolcAkSkEditing(v => !v); setVolcAkIdDraft(volcAkId); setVolcSkKeyDraft(volcSkKey); }}
                 className="px-3 py-1.5 bg-[#0f111a] border border-gray-700 rounded-xl text-gray-400 hover:text-white text-xs">配置 AK/SK</button>
+              )}
             </div>
           </div>
 
-          {/* AK/SK 配置面板 */}
-          {volcAkSkEditing && (
+          {/* AK/SK 配置面板（仅系统管理员） */}
+          {isSuperAdmin && volcAkSkEditing && (
             <div className="mb-4 p-4 bg-[#0f111a] border border-gray-700 rounded-xl space-y-3">
               <div><label className="block text-xs text-gray-400 mb-1">Access Key ID</label>
                 <input value={volcAkIdDraft} onChange={(e) => setVolcAkIdDraft(e.target.value)}
@@ -1723,8 +1796,8 @@ export default function AdminPage() {
             </div>
           )}
 
-          {/* 编辑素材组弹层 */}
-          {editingGroup && (
+          {/* 编辑素材组弹层（仅系统管理员） */}
+          {isSuperAdmin && editingGroup && (
             <div className="mb-4 p-4 bg-[#0f111a] border border-purple-500/30 rounded-xl space-y-3">
               <h3 className="text-sm font-medium text-white">编辑素材组 · <span className="text-gray-400 font-mono text-xs">{editingGroup.Id}</span></h3>
               <input value={editGroupName} onChange={(e) => setEditGroupName(e.target.value)} placeholder="名称 *"
@@ -1739,8 +1812,8 @@ export default function AdminPage() {
             </div>
           )}
 
-          {/* 编辑素材弹层 */}
-          {editingAsset && (
+          {/* 编辑素材弹层（仅系统管理员） */}
+          {isSuperAdmin && editingAsset && (
             <div className="mb-4 p-4 bg-[#0f111a] border border-purple-500/30 rounded-xl space-y-3">
               <h3 className="text-sm font-medium text-white">编辑素材名称 · <span className="text-gray-400 font-mono text-xs">{editingAsset.Id}</span></h3>
               <input value={editAssetName} onChange={(e) => setEditAssetName(e.target.value)} placeholder="新名称"
@@ -1816,10 +1889,14 @@ export default function AdminPage() {
                           <p className="text-gray-600 text-xs font-mono truncate" title={g.Id}>{g.Id}</p>
                           {g.CreateTime && <p className="text-gray-600 text-xs">{formatDateTime(g.CreateTime)}</p>}
                           <div className="mt-auto pt-1 flex items-center justify-between gap-2" onClick={(e) => e.stopPropagation()}>
+                            {isSuperAdmin && (
                             <button onClick={() => { setEditingGroup(g); setEditGroupName(g.Name); setEditGroupDesc(g.Description || ''); setEditingAsset(null); }}
                               className="btn-edit">编辑</button>
+                            )}
+                            {isSuperAdmin && (
                             <button onClick={() => handleDeleteGroup(g)}
                               className="btn-danger">删除</button>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -1893,10 +1970,14 @@ export default function AdminPage() {
                             <div className="mt-auto pt-1 flex items-center gap-1 flex-wrap">
                               <button onClick={() => handleGetAsset(a)} disabled={detailLoading}
                                 className="btn-edit disabled:opacity-50">详情</button>
+                              {isSuperAdmin && (
                               <button onClick={() => { setEditingAsset(a); setEditAssetName(a.Name || ''); setEditingGroup(null); }}
                                 className="btn-edit">编辑</button>
+                              )}
+                              {isSuperAdmin && (
                               <button onClick={() => handleDeleteAsset(a)}
                                 className="btn-danger">删除</button>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -1918,7 +1999,8 @@ export default function AdminPage() {
           )}
         </div>
 
-        {/* 火山Key组管理 */}
+        {/* 火山Key组管理（仅系统管理员） */}
+        {isSuperAdmin && (<>
         <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
           <div className="mb-4">
             <h2 className="text-xl font-semibold text-white">火山Key组管理</h2>
@@ -1995,11 +2077,13 @@ export default function AdminPage() {
             </div>
           )}
         </div>
+        </>)}
 
         {/* MediaKit API Key 管理 */}
         <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
           <h2 className="text-xl font-semibold text-white mb-2">火山 AI MediaKit Key</h2>
           <p className="text-xs text-gray-500 mb-4">用于视频画质增强（mediakit.cn-beijing.volces.com）</p>
+          {isSuperAdmin && (<>
           {mediaKitKeyEditing ? (
             <div className="flex gap-2">
               <input
@@ -2016,6 +2100,7 @@ export default function AdminPage() {
               <button onClick={() => { setMediaKitKeyDraft(mediaKitKey); setMediaKitKeyEditing(true); }} className="btn-edit">修改</button>
             </div>
           )}
+          </>)}
 
           {/* 计费配置 */}
           <div className="mt-6">
@@ -2033,6 +2118,7 @@ export default function AdminPage() {
                     <div className="text-[10px] text-gray-500">enhancement_base_credits_per_minute</div>
                   </div>
                   <div className="flex items-center gap-1 text-xs text-gray-400">
+                    {isSuperAdmin ? (
                     <input
                       type="number"
                       min={0}
@@ -2046,26 +2132,40 @@ export default function AdminPage() {
                       }}
                       className="w-24 px-2 py-1 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm"
                     />
+                    ) : (
+                    <span className="text-amber-400 text-sm">{enhancementPricing.baseCreditsPerMinute}</span>
+                    )}
                     <span>积分/分钟</span>
                   </div>
+                  {isSuperAdmin && (
                   <button
                     onClick={() => void handleUpdateEnhancementBaseRate(enhancementPricing.defaultBaseCreditsPerMinute)}
                     className="ml-auto text-[11px] px-2 py-1 rounded border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition-all"
                   >
                     恢复默认 ({enhancementPricing.defaultBaseCreditsPerMinute})
                   </button>
+                  )}
                 </div>
-                <details className="bg-[#0f111a] rounded-xl px-3 py-2 text-xs text-gray-400">
-                  <summary className="cursor-pointer text-gray-300">查看完整 16 项系数表</summary>
-                  <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-0.5 font-mono">
-                    {enhancementPricing.coefficients.map((c) => (
-                      <div key={`${c.tool_version}-${c.resolution_tier}-${c.fps_tier}`} className="flex justify-between">
-                        <span>{c.tool_version === 'standard' ? '标准' : '专业'} · {c.resolution_tier} · {c.fps_tier === 'le30' ? '≤30fps' : '>30fps'}</span>
+                <div className="bg-[#0f111a] rounded-xl px-3 py-2 text-xs text-gray-400">
+                  <div className="text-gray-300 mb-2">完整 16 项系数表</div>
+                  <div className="grid grid-cols-2 gap-x-6 gap-y-0.5 font-mono">
+                    {enhancementPricing.coefficients.filter((c) => c.tool_version === 'standard').map((c) => (
+                      <div key={`std-${c.resolution_tier}-${c.fps_tier}`} className="flex justify-between">
+                        <span>标准 · {c.resolution_tier} · {c.fps_tier === 'le30' ? '≤30fps' : '>30fps'}</span>
                         <span className="text-gray-300">×{c.coefficient}</span>
                       </div>
                     ))}
                   </div>
-                </details>
+                  <div className="my-3 border-t border-gray-700/50" />
+                  <div className="grid grid-cols-2 gap-x-6 gap-y-0.5 font-mono">
+                    {enhancementPricing.coefficients.filter((c) => c.tool_version === 'professional').map((c) => (
+                      <div key={`pro-${c.resolution_tier}-${c.fps_tier}`} className="flex justify-between">
+                        <span>专业 · {c.resolution_tier} · {c.fps_tier === 'le30' ? '≤30fps' : '>30fps'}</span>
+                        <span className="text-gray-300">×{c.coefficient}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
             )}
             {!enhancementPricing && (
@@ -2078,6 +2178,7 @@ export default function AdminPage() {
         <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
           <h2 className="text-xl font-semibold text-white mb-2">HappyHorse API Key</h2>
           <p className="text-xs text-gray-500 mb-4">用于 HappyHorse 视频生成（dashscope.aliyuncs.com，阿里云百炼）</p>
+          {isSuperAdmin && (<>
           {happyhorseKeyEditing ? (
             <div className="flex gap-2">
               <input
@@ -2097,42 +2198,95 @@ export default function AdminPage() {
               <button onClick={() => { setHappyhorseKeyDraft(''); setHappyhorseKeyEditing(true); }} className="btn-edit">修改</button>
             </div>
           )}
+          </>)}
 
           <div className="mt-6">
-            <h3 className="text-sm font-semibold text-white mb-2">HappyHorse 模型计费管理</h3>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-sm font-semibold text-white">HappyHorse 模型计费管理</h3>
+              {isSuperAdmin && (
+              <button
+                onClick={() => setDiscountModalScope('happyhorse')}
+                className="px-3 py-1.5 bg-amber-600/20 border border-amber-500/40 hover:bg-amber-600/30 rounded-lg text-amber-400 text-xs font-medium transition-all"
+              >
+                折扣设置
+              </button>
+              )}
+            </div>
             <p className="text-xs text-gray-500 mb-3">单价：积分/秒。1 元 = 100 积分。video-edit 按"输入+输出"秒数计费，其他按"输出"秒数计费。</p>
             {happyhorsePricing.length === 0 ? (
               <div className="text-xs text-gray-600">加载中...</div>
             ) : (
-              <div className="grid grid-cols-2 gap-2">
-                {happyhorsePricing.map((p) => (
-                  <div key={`${p.mode}-${p.resolution}`} className="flex items-center gap-2 bg-[#0f111a] rounded-xl px-3 py-2">
-                    <div className="flex-1 text-sm text-white">
-                      <span className="font-mono">{p.mode}</span>
-                      <span className="text-gray-500 mx-1">·</span>
-                      <span>{p.resolution}</span>
-                    </div>
-                    <input
-                      type="number"
-                      min={0}
-                      defaultValue={p.credits_per_second}
-                      onBlur={(e) => {
-                        const v = parseInt(e.target.value, 10);
-                        if (Number.isFinite(v) && v !== p.credits_per_second) {
-                          void handleUpdateHappyhorsePrice(p.mode, p.resolution, v);
-                        }
-                      }}
-                      className="w-20 px-2 py-1 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm"
-                    />
-                    <span className="text-xs text-gray-500">积分/秒</span>
+              <>
+                {/* Tab 按钮 */}
+                <div className="flex gap-1 mb-4 flex-wrap">
+                  {(['t2v', 'i2v', 'r2v', 'video-edit'] as const).map((mode) => {
+                    const modelName = happyhorsePricing.find((p) => p.mode === mode)?.model || mode;
+                    return (
+                      <button
+                        key={mode}
+                        onClick={() => setActiveHappyhorseTab(mode)}
+                        className={`px-4 py-2 rounded-xl text-sm font-medium transition-colors ${
+                          activeHappyhorseTab === mode
+                            ? 'bg-purple-600 text-white'
+                            : 'bg-[#0f111a] border border-gray-700 text-gray-400 hover:text-white'
+                        }`}
+                      >
+                        {modelName}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Tab 内容：当前选中模式的定价卡 */}
+                <div className="bg-[#0f111a] rounded-xl p-5 border border-gray-800">
+                  <div className="text-white font-medium mb-4">
+                    {happyhorsePricing.find((p) => p.mode === activeHappyhorseTab)?.model || activeHappyhorseTab}
                   </div>
-                ))}
-              </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    {happyhorsePricing
+                      .filter((p) => p.mode === activeHappyhorseTab)
+                      .map((p) => (
+                        <div key={p.resolution} className="bg-[#1c1f2e] rounded-xl p-4 border border-gray-700">
+                          <div className="text-xs text-gray-400 mb-2">分辨率</div>
+                          <div className="text-white text-sm font-medium mb-3">{p.resolution}</div>
+                          <div className="text-xs text-gray-400 mb-1">单价（积分/秒）</div>
+                          {isSuperAdmin ? (
+                            <>
+                            <input
+                              type="number"
+                              min={0}
+                              defaultValue={p.credits_per_second}
+                              onBlur={(e) => {
+                                const v = parseInt(e.target.value, 10);
+                                if (Number.isFinite(v) && v !== p.credits_per_second) {
+                                  void handleUpdateHappyhorsePrice(p.mode, p.resolution, v);
+                                }
+                              }}
+                              className="w-full px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-white text-sm focus:outline-none focus:border-purple-500"
+                            />
+                            {getDiscountedDisplay(p.mode, p.resolution, p.credits_per_second).discounted && (
+                              <div className="mt-2 flex items-center gap-2">
+                                <span className="text-emerald-400 text-xs">{getDiscountedDisplay(p.mode, p.resolution, p.credits_per_second).price} 积分/秒</span>
+                                <span className="px-1.5 py-0.5 rounded-md bg-emerald-500/15 text-emerald-400 text-[10px] font-medium">
+                                  -{getDiscountedDisplay(p.mode, p.resolution, p.credits_per_second).percent.toFixed(2)}%
+                                </span>
+                              </div>
+                            )}
+                            </>
+                          ) : (
+                            renderDiscountedPrice(p.mode, p.resolution, p.credits_per_second)
+                          )}
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              </>
             )}
           </div>
         </div>
 
-        {/* 速创API Key 管理 */}
+        {/* 速创API Key 管理（仅系统管理员） */}
+        {isSuperAdmin && (<>
         <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
           <h2 className="text-xl font-semibold text-white mb-2">速创API Key</h2>
           <p className="text-xs text-gray-500 mb-4">用于 Nano Banana 2 / GPT-Image-2 生图接口（api.wuyinkeji.com）</p>
@@ -2263,6 +2417,7 @@ export default function AdminPage() {
             </>
           )}
         </div>
+        </>)}
 
             {/* 音频生成中转视频配置 */}
             <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
@@ -2270,7 +2425,7 @@ export default function AdminPage() {
                 <p className="text-xs text-gray-500 mb-4">音频生成会先生成一段中转视频再提取音轨,这里配置中转视频的参数,降低消耗。默认:Seedance
                     2.0 Fast / 1:1 / 480p / 4 秒</p>
                 {audioCfg && audioCfgOptions ? (
-                    audioCfgEditing && audioCfgDraft ? (
+                    isSuperAdmin && audioCfgEditing && audioCfgDraft ? (
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <label className="block">
                                 <span className="text-xs text-gray-400 block mb-1">模型</span>
@@ -2331,11 +2486,11 @@ export default function AdminPage() {
                                 className="flex-1 min-w-0 px-3 py-2 bg-[#0f111a] rounded text-gray-300 text-sm font-mono">
                                 {audioCfg.model} · {audioCfg.ratio} · {audioCfg.resolution} · {audioCfg.duration}s
                             </code>
-                            <button onClick={() => {
+                            {isSuperAdmin && <button onClick={() => {
                                 setAudioCfgDraft(audioCfg);
                                 setAudioCfgEditing(true);
                             }} className="btn-edit">修改
-                            </button>
+                            </button>}
                         </div>
                     )
                 ) : (
@@ -2343,7 +2498,56 @@ export default function AdminPage() {
                 )}
             </div>
 
-        </>)}
+        {/* 批量生成设置 */}
+        {isSuperAdmin && (
+          <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
+            <h2 className="text-xl font-semibold text-white mb-2">批量生成设置</h2>
+            <p className="text-xs text-gray-500 mb-4">
+              控制视频生成和 HappyHorse 模块点击一次按钮可同时生成的任务数。数量越大，积分消耗越快。
+            </p>
+            <label className="block text-sm font-medium text-gray-400 mb-2">
+              每次批量生成数量上限
+            </label>
+            <div className="flex flex-wrap gap-2 mb-4">
+              {([1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const).map((n) => (
+                <button
+                  key={n}
+                  onClick={() => setBatchMaxConcurrent(String(n))}
+                  className={`px-3 py-2 rounded-xl text-sm font-medium border transition-all ${
+                    batchMaxConcurrent === String(n)
+                      ? 'border-purple-500 bg-purple-500/10 text-purple-400'
+                      : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
+                  }`}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={async () => {
+                setBatchSaving(true);
+                try {
+                  const res = await fetch('/api/admin/batch-concurrent', {
+                    method: 'PUT',
+                    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+                    body: JSON.stringify({ max_concurrent: batchMaxConcurrent }),
+                  });
+                  const data = await res.json();
+                  if (!data.success) throw new Error(data.error || '保存失败');
+                  alert('已保存');
+                } catch (e) {
+                  alert(e instanceof Error ? e.message : '保存失败');
+                } finally {
+                  setBatchSaving(false);
+                }
+              }}
+              disabled={batchSaving}
+              className="px-6 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:from-gray-700 disabled:to-gray-700 disabled:text-gray-500 rounded-xl transition-all font-medium shadow-lg shadow-purple-900/20 text-sm"
+            >
+              {batchSaving ? '保存中...' : '保存设置'}
+            </button>
+          </div>
+        )}
 
         {/* 用户编辑弹窗 */}
         {showUserModal && selectedUser && (
@@ -2375,6 +2579,7 @@ export default function AdminPage() {
                   <p className="text-[10px] text-gray-500">点击下方「保存」按钮统一提交姓名、小组、积分等所有改动。</p>
                 </div>
 
+                {isSuperAdmin && (
                 <div>
                   <label className="block text-sm font-medium text-gray-300 mb-2">修改积分</label>
                   <div className="flex gap-2">
@@ -2396,7 +2601,29 @@ export default function AdminPage() {
                       min="0"
                     />
                   </div>
+                  {(() => {
+                    const currentCredits = selectedUser?.credits ?? 0;
+                    const num = parseInt(editCredits) || 0;
+                    if (num <= 0) return null;
+                    if (editOperation === 'subtract' && num > currentCredits) {
+                      return (
+                        <p className="mt-2 text-xs text-amber-400">
+                          该用户剩余积分 {currentCredits}，无法扣除 {num}，将扣除 {currentCredits}
+                        </p>
+                      );
+                    }
+                    if (editOperation === 'set' && num < currentCredits) {
+                      const deduct = currentCredits - num;
+                      return (
+                        <p className="mt-2 text-xs text-amber-400">
+                          将从 {currentCredits} 调整为 {num}，减少 {deduct} 积分
+                        </p>
+                      );
+                    }
+                    return null;
+                  })()}
                 </div>
+                )}
 
                 {/* 功能权限编辑（仅系统管理员可见） */}
                 {isSuperAdmin && (
@@ -2436,6 +2663,41 @@ export default function AdminPage() {
             </div>
           </div>
         )}
+
+      {/* 折扣设置弹窗 */}
+      {discountModalScope && (
+        <DiscountModal
+          scope={discountModalScope}
+          modelPricings={discountModalScope === 'model' ? modelPricings : undefined}
+          happyhorsePricing={discountModalScope === 'happyhorse' ? happyhorsePricing : undefined}
+          onClose={(saved) => {
+            const scrollY = window.scrollY;
+            setDiscountModalScope(null);
+            if (saved) {
+              // 刷新折扣 + 定价数据
+              Promise.all([
+                fetch('/api/admin/discounts', { headers: getAuthHeaders() }).then(r => r.json()),
+                discountModalScope === 'happyhorse'
+                  ? fetch('/api/admin/happyhorse-pricing', { headers: getAuthHeaders() }).then(r => r.json())
+                  : listAllModelPricing().then(list => ({ success: true, data: { pricing: list } })),
+              ]).then(([discJ, priceJ]) => {
+                if (discJ?.success) {
+                  setDiscounts(discJ.data.discounts || []);
+                }
+                if (priceJ?.success) {
+                  if (discountModalScope === 'happyhorse') {
+                    setHappyhorsePricing(priceJ.data.pricing || []);
+                  } else {
+                    setModelPricings(priceJ.data.pricing || []);
+                  }
+                }
+                // 恢复滚动位置
+                requestAnimationFrame(() => window.scrollTo(0, scrollY));
+              }).catch(() => {});
+            }
+          }}
+        />
+      )}
       </div>
     </div>
   );

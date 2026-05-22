@@ -487,19 +487,38 @@ CREATE INDEX IF NOT EXISTS idx_tasks_happyhorse_concurrent_id ON tasks_happyhors
 -- HappyHorse 计费表（mode × resolution → 积分/秒），命名沿用 model_pricing_* 规范
 CREATE TABLE IF NOT EXISTS model_pricing_happyhorse (
   mode TEXT NOT NULL CHECK (mode IN ('t2v', 'i2v', 'r2v', 'video-edit')),
+  model TEXT NOT NULL DEFAULT '',
   resolution TEXT NOT NULL CHECK (resolution IN ('720P', '1080P')),
   credits_per_second INTEGER NOT NULL,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (mode, resolution)
 );
-INSERT OR IGNORE INTO model_pricing_happyhorse (mode, resolution, credits_per_second) VALUES
-  ('t2v', '720P', 90), ('t2v', '1080P', 160),
-  ('i2v', '720P', 90), ('i2v', '1080P', 160),
-  ('r2v', '720P', 90), ('r2v', '1080P', 160),
-  ('video-edit', '720P', 90), ('video-edit', '1080P', 160);
+INSERT OR IGNORE INTO model_pricing_happyhorse (mode, model, resolution, credits_per_second) VALUES
+  ('t2v',    'happyhorse-1.0-t2v',        '720P',  90), ('t2v',    'happyhorse-1.0-t2v',        '1080P', 160),
+  ('i2v',    'happyhorse-1.0-i2v',        '720P',  90), ('i2v',    'happyhorse-1.0-i2v',        '1080P', 160),
+  ('r2v',    'happyhorse-1.0-r2v',        '720P',  90), ('r2v',    'happyhorse-1.0-r2v',        '1080P', 160),
+  ('video-edit', 'happyhorse-1.0-video-edit', '720P',  90), ('video-edit', 'happyhorse-1.0-video-edit', '1080P', 160);
 
 INSERT OR IGNORE INTO system_config (key, value, description) VALUES
   ('happyhorse_api_key', '', 'HappyHorse (阿里云百炼 DashScope) API Key');
+
+-- 模型折扣管理（支持模型计费 + HappyHorse 计费）
+-- model: model_key（模型计费）或 mode（HappyHorse），始终为具体值，不使用通配符
+-- sub_key: 定价字段名如 price_no_video_low（模型计费）或分辨率如 720P（HappyHorse）
+-- type: percent=按比例折扣 / number=按绝对价格
+-- UNIQUE(model, sub_key) 保证同一目标不会出现两个折扣
+CREATE TABLE IF NOT EXISTS model_discounting (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  model TEXT NOT NULL,
+  sub_key TEXT NOT NULL DEFAULT '',
+  type TEXT NOT NULL CHECK (type IN ('percent', 'number')),
+  value REAL NOT NULL,
+  start_date DATETIME NOT NULL,
+  end_date DATETIME NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (model, sub_key)
+);
 
 -- 视频画质增强（火山 AI MediaKit）
 CREATE TABLE IF NOT EXISTS video_enhancements (

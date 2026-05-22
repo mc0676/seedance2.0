@@ -11,7 +11,7 @@ import {
   CreditDetailItem,
 } from '../services/authService';
 
-const ANALYTICS_TABS = ['趋势图', '当日排行', '消耗明细', '小组汇总', '工作组消耗', '失败分析', '用户活跃度'] as const;
+const ANALYTICS_TABS = ['趋势图', '当日排行', '消耗明细', '小组汇总', '项目组消耗', '失败分析', '用户活跃度'] as const;
 
 const CACHE_TTL = 5 * 60 * 1000; // 5分钟
 
@@ -113,7 +113,7 @@ export default function AnalyticsPanels() {
         case '当日排行': setRankingData(cached); break;
         case '消耗明细': setDetailData(cached); break;
         case '小组汇总': setGroupData(cached as any[]); break;
-        case '工作组消耗': setProjectData(cached); break;
+        case '项目组消耗': setProjectData(cached); break;
         case '失败分析': setFailureData(cached); break;
         case '用户活跃度': setActivityData(cached); break;
       }
@@ -136,7 +136,7 @@ export default function AnalyticsPanels() {
       case '小组汇总':
         fetchGroupSummary(groupDays).then(d => { setGroupData(d as any[]); cacheSet(key, d); }).catch(() => {}).finally(() => setLoadingPanel(''));
         break;
-      case '工作组消耗':
+      case '项目组消耗':
         fetchProjectConsumption(30).then(d => { setProjectData(d); cacheSet(key, d); }).catch(() => {}).finally(() => setLoadingPanel(''));
         break;
       case '失败分析':
@@ -414,10 +414,10 @@ export default function AnalyticsPanels() {
           </div>
         )}
 
-        {/* 工作组消耗 */}
-        {tab === '工作组消耗' && !loadingPanel && (
+        {/* 项目组消耗 */}
+        {tab === '项目组消耗' && !loadingPanel && (
           <div>
-            <h3 className="text-sm font-medium text-gray-300 mb-3">工作组资源消耗排行（近30天）</h3>
+            <h3 className="text-sm font-medium text-gray-300 mb-3">项目组资源消耗排行（近30天）</h3>
             {projectData.length === 0 ? (
               <p className="text-gray-500 text-sm">暂无数据</p>
             ) : (
@@ -426,7 +426,7 @@ export default function AnalyticsPanels() {
                   <thead className="bg-[#0f111a] sticky top-0">
                     <tr>
                       <th className="px-4 py-2 text-left text-xs text-gray-500">#</th>
-                      <th className="px-4 py-2 text-left text-xs text-gray-500">工作组</th>
+                      <th className="px-4 py-2 text-left text-xs text-gray-500">项目组</th>
                       <th className="px-4 py-2 text-right text-xs text-gray-500">用户数</th>
                       <th className="px-4 py-2 text-right text-xs text-gray-500">任务数</th>
                       <th className="px-4 py-2 text-right text-xs text-gray-500">消耗积分</th>

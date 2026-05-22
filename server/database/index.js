@@ -287,6 +287,25 @@ export function initDatabase() {
   // 即便业务行被删除，credit_locks 行的外键值也不会被未来新行撞 UNIQUE。
   // 因此这里不做任何 credit_locks 的清理/解绑，行内容完整保留。
 
+  // 增量迁移：model_pricing_happyhorse 添加 model 列（存储完整模型名，如 happyhorse-1.0-t2v）
+  // 必须在 HappyHorse 迁移块之前执行，否则 INSERT 会因 model 列不存在而失败
+  {
+    const mphColumns = db.prepare("PRAGMA table_info(model_pricing_happyhorse)").all().map(c => c.name);
+    if (!mphColumns.includes('model')) {
+      console.log('[database] 迁移：model_pricing_happyhorse 添加 model 列...');
+      db.exec(`ALTER TABLE model_pricing_happyhorse ADD COLUMN model TEXT NOT NULL DEFAULT ''`);
+      db.exec(`
+        UPDATE model_pricing_happyhorse SET model = CASE mode
+          WHEN 't2v' THEN 'happyhorse-1.0-t2v'
+          WHEN 'i2v' THEN 'happyhorse-1.0-i2v'
+          WHEN 'r2v' THEN 'happyhorse-1.0-r2v'
+          WHEN 'video-edit' THEN 'happyhorse-1.0-video-edit'
+        END
+      `);
+      console.log('[database] 迁移完成：model_pricing_happyhorse.model 已添加并回填');
+    }
+  }
+
   // 增量迁移：HappyHorse 视频生成模块（DashScope 异步轮询）
   // 1) credit_locks 加 task_happyhorse_id（UNIQUE 通过单独索引实现）
   // 2) 创建 tasks_happyhorse / model_pricing_happyhorse 表
@@ -346,21 +365,38 @@ export function initDatabase() {
 
       CREATE TABLE IF NOT EXISTS model_pricing_happyhorse (
         mode TEXT NOT NULL CHECK (mode IN ('t2v', 'i2v', 'r2v', 'video-edit')),
+        model TEXT NOT NULL DEFAULT '',
         resolution TEXT NOT NULL CHECK (resolution IN ('720P', '1080P')),
         credits_per_second INTEGER NOT NULL,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (mode, resolution)
       );
-      INSERT OR IGNORE INTO model_pricing_happyhorse (mode, resolution, credits_per_second) VALUES
-        ('t2v', '720P', 90), ('t2v', '1080P', 160),
-        ('i2v', '720P', 90), ('i2v', '1080P', 160),
-        ('r2v', '720P', 90), ('r2v', '1080P', 160),
-        ('video-edit', '720P', 90), ('video-edit', '1080P', 160);
+      INSERT OR IGNORE INTO model_pricing_happyhorse (mode, model, resolution, credits_per_second) VALUES
+        ('t2v',    'happyhorse-1.0-t2v',        '720P',  90), ('t2v',    'happyhorse-1.0-t2v',        '1080P', 160),
+        ('i2v',    'happyhorse-1.0-i2v',        '720P',  90), ('i2v',    'happyhorse-1.0-i2v',        '1080P', 160),
+        ('r2v',    'happyhorse-1.0-r2v',        '720P',  90), ('r2v',    'happyhorse-1.0-r2v',        '1080P', 160),
+        ('video-edit', 'happyhorse-1.0-video-edit', '720P',  90), ('video-edit', 'happyhorse-1.0-video-edit', '1080P', 160);
 
       INSERT OR IGNORE INTO system_config (key, value, description)
       VALUES ('happyhorse_api_key', '', 'HappyHorse (阿里云百炼 DashScope) API Key');
     `);
   }
+
+  // model_discounting 折扣表（schema.sql 已定义，这里兜底创建）
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS model_discounting (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      model TEXT NOT NULL,
+      sub_key TEXT NOT NULL DEFAULT '',
+      type TEXT NOT NULL CHECK (type IN ('percent', 'number')),
+      value REAL NOT NULL,
+      start_date DATETIME NOT NULL,
+      end_date DATETIME NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (model, sub_key)
+    );
+  `);
 
   // 增量迁移：用户姓名 / 部门补填 Gate
   // 1) departments 字典表（模糊查询下拉的数据源；首次填非已知部门时 INSERT OR IGNORE 自动写入）

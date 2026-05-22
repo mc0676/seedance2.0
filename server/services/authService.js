@@ -648,9 +648,9 @@ export async function getUserList(page = 1, pageSize = 20, filters = {}) {
   }
 
   const users = db.prepare(`
-    SELECT u.id, u.email, u.role, u.status, u.credits, u.unlimited_credits, u.name,
+    SELECT u.id, u.email, u.role, u.status, u.credits, u.unlimited_credits AS unlimitedCredits, u.name,
            u.department_id, d.name AS department,
-           u.created_at, u.last_check_in_at
+           u.created_at AS createdAt, u.last_check_in_at AS lastCheckInAt
     FROM users u
     LEFT JOIN departments d ON d.id = u.department_id
     WHERE ${whereClause}
@@ -680,9 +680,9 @@ export async function getUserDetail(userId) {
   const db = getDatabase();
 
   const user = db.prepare(`
-    SELECT u.id, u.email, u.role, u.status, u.credits, u.unlimited_credits, u.name,
+    SELECT u.id, u.email, u.role, u.status, u.credits, u.unlimited_credits AS unlimitedCredits, u.name,
            u.department_id, d.name AS department,
-           u.created_at, u.updated_at, u.last_check_in_at
+           u.created_at AS createdAt, u.updated_at AS updatedAt, u.last_check_in_at AS lastCheckInAt
     FROM users u
     LEFT JOIN departments d ON d.id = u.department_id
     WHERE u.id = ?
@@ -733,17 +733,13 @@ export async function updateUserCredits(userId, credits, operation = 'set', admi
 
   let newCredits;
   if (operation === 'set') {
-    newCredits = credits;
+    newCredits = Math.max(0, credits);
   } else if (operation === 'add') {
     newCredits = user.credits + credits;
   } else if (operation === 'subtract') {
-    newCredits = user.credits - credits;
+    newCredits = Math.max(0, user.credits - credits);
   } else {
     throw new Error('无效的操作类型');
-  }
-
-  if (newCredits < 0) {
-    throw new Error('积分不能为负数');
   }
 
   db.prepare(`
@@ -751,17 +747,17 @@ export async function updateUserCredits(userId, credits, operation = 'set', admi
     WHERE id = ?
   `).run(newCredits, userId);
 
-  // 记录积分发放日志（仅记录增加积分的情况）
-  const increase = newCredits - user.credits;
-  if (increase > 0) {
+  // 记录积分变更日志（增加和减少均记录）
+  const delta = newCredits - user.credits;
+  if (delta !== 0) {
     const method = operation === 'add' ? 'manual_add' : 'manual_set';
-    const note = operation === 'add'
-      ? `后台手动增加 ${increase} 积分`
-      : `后台设置为 ${newCredits} 积分（增加 ${increase}）`;
+    const note = delta > 0
+      ? `后台手动增加 ${delta} 积分（${user.credits} → ${newCredits}）`
+      : `后台手动减少 ${Math.abs(delta)} 积分（${user.credits} → ${newCredits}）`;
     db.prepare(`
       INSERT INTO credit_distribution_logs (admin_id, recipient_id, credits_amount, method, note)
       VALUES (?, ?, ?, ?, ?)
-    `).run(adminId, userId, increase, method, note);
+    `).run(adminId, userId, delta, method, note);
   }
 
   return { success: true, credits: newCredits };

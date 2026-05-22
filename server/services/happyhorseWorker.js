@@ -16,6 +16,7 @@ import {
   releaseForHappyhorse,
 } from './creditLockService.js';
 import { getCreditsPerSecond } from './happyhorsePricingService.js';
+import { getActiveDiscount } from './discountService.js';
 
 const POLL_INTERVAL_MS = 30_000;
 const MAX_RUNNING_HOURS = 24;
@@ -68,6 +69,11 @@ async function syncOne(row) {
     let actualCredits = 0;
     if (!user?.unlimited_credits) {
       actualCredits = Math.max(0, Math.ceil(billingSeconds * rate));
+      // 应用折扣
+      const discount = getActiveDiscount(row.mode, realResolution);
+      if (discount && discount.value > 0 && discount.type === 'percent') {
+        actualCredits = Math.ceil(actualCredits * (1 - discount.value / 100));
+      }
     }
 
     db.prepare(

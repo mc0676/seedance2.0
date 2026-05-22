@@ -72,6 +72,8 @@ export interface AudioGenEstimate {
   lockedCredits: number;
   tokens: number;
   yuan: number;
+  discountedCredits?: number;
+  discountedLockedCredits?: number;
 }
 
 export async function estimateAudioGenCredits(cfg: AudioGenPublicConfig): Promise<AudioGenEstimate> {

@@ -15,6 +15,7 @@
  */
 
 import { getDatabase } from '../database/index.js';
+import { getActiveDiscount } from './discountService.js';
 
 export const LOCK_BUFFER_RATIO = 1.2;
 // video-edit 提交时未上传视频或无法 probe 时长的极端兜底：按 15s + 15s 上限
@@ -24,6 +25,13 @@ const VIDEO_EDIT_EFFECTIVE_CAP = 15;
 
 const VALID_MODES = ['t2v', 'i2v', 'r2v', 'video-edit'];
 const VALID_RESOLUTIONS = ['720P', '1080P'];
+
+const MODE_TO_MODEL = {
+  't2v': 'happyhorse-1.0-t2v',
+  'i2v': 'happyhorse-1.0-i2v',
+  'r2v': 'happyhorse-1.0-r2v',
+  'video-edit': 'happyhorse-1.0-video-edit',
+};
 
 function normalizeMode(mode) {
   return String(mode || '').toLowerCase();
@@ -50,7 +58,7 @@ export function getCreditsPerSecond(mode, resolution) {
  * @param {string} params.resolution  - '720P' | '1080P'
  * @param {number} [params.durationSec] - t2v / i2v / r2v 模式的请求时长（输出秒数）
  * @param {number} [params.inputVideoDurationSec] - video-edit 模式的输入视频真实时长（秒）
- * @returns {{ credits: number, lockedCredits: number, creditsPerSecond: number, billingSeconds: number }}
+ * @returns {{ credits: number, lockedCredits: number, creditsPerSecond: number, billingSeconds: number, discountedCredits?: number }}
  */
 export function estimate({ mode, resolution, durationSec, inputVideoDurationSec }) {
   const m = normalizeMode(mode);
@@ -75,13 +83,33 @@ export function estimate({ mode, resolution, durationSec, inputVideoDurationSec 
   }
   const credits = Math.max(0, Math.ceil(billingSeconds * rate));
   const lockedCredits = Math.max(credits, Math.ceil(credits * LOCK_BUFFER_RATIO));
-  return { credits, lockedCredits, creditsPerSecond: rate, billingSeconds };
+
+  // 查询活跃折扣（HappyHorse 折扣按 mode + resolution 匹配）
+  let discountedCredits = credits;
+  let discountedLockedCredits = lockedCredits;
+  let hasDiscount = false;
+  const discount = getActiveDiscount(m, r);
+  if (discount && discount.value > 0) {
+    hasDiscount = true;
+    if (discount.type === 'percent') {
+      discountedCredits = Math.ceil(credits * (1 - discount.value / 100));
+      discountedLockedCredits = Math.ceil(discountedCredits * LOCK_BUFFER_RATIO);
+    }
+  }
+
+  return {
+    credits,
+    lockedCredits,
+    creditsPerSecond: rate,
+    billingSeconds,
+    ...(hasDiscount ? { discountedCredits, discountedLockedCredits } : {}),
+  };
 }
 
 /** 完整价目表，供前端和后台展示 */
 export function getPricingTable() {
   return getDatabase()
-    .prepare(`SELECT mode, resolution, credits_per_second FROM model_pricing_happyhorse ORDER BY mode, resolution`)
+    .prepare(`SELECT mode, model, resolution, credits_per_second FROM model_pricing_happyhorse ORDER BY mode, CASE resolution WHEN '720P' THEN 1 WHEN '1080P' THEN 2 END`)
     .all();
 }
 
@@ -93,14 +121,16 @@ export function setPricing({ mode, resolution, creditsPerSecond }) {
   if (!VALID_RESOLUTIONS.includes(r)) throw new Error('无效的 resolution');
   const v = Math.max(0, parseInt(creditsPerSecond, 10));
   if (!Number.isFinite(v)) throw new Error('credits_per_second 必须为非负整数');
+  const model = MODE_TO_MODEL[m] || '';
   getDatabase().prepare(
-    `INSERT INTO model_pricing_happyhorse (mode, resolution, credits_per_second, updated_at)
-     VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+    `INSERT INTO model_pricing_happyhorse (mode, model, resolution, credits_per_second, updated_at)
+     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
      ON CONFLICT(mode, resolution) DO UPDATE SET
+       model = excluded.model,
        credits_per_second = excluded.credits_per_second,
        updated_at = CURRENT_TIMESTAMP`
-  ).run(m, r, v);
-  return { mode: m, resolution: r, credits_per_second: v };
+  ).run(m, model, r, v);
+  return { mode: m, model, resolution: r, credits_per_second: v };
 }
 
 export default {

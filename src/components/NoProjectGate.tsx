@@ -32,10 +32,10 @@ export default function NoProjectGate() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
             </svg>
           </div>
-          <h2 className="text-xl font-semibold text-white mb-2">暂无可用工作组</h2>
+          <h2 className="text-xl font-semibold text-white mb-2">暂无可用项目组</h2>
           <p className="text-gray-400 text-sm">
-            您当前不在任何工作组中。<br />
-            请联系管理员将您添加至工作组，或自行创建一个。
+            您当前不在任何项目组中。<br />
+            请联系管理员将您添加至项目组，或自行创建一个。
           </p>
         </div>
 
@@ -45,16 +45,16 @@ export default function NoProjectGate() {
               onClick={() => setShowCreate(true)}
               className="w-full py-2.5 bg-purple-600 hover:bg-purple-500 rounded-lg text-white font-medium transition-colors"
             >
-              创建工作组
+              创建项目组
             </button>
             <p className="text-center text-xs text-gray-500">
-              如需加入他人工作组，请联系管理员
+              如需加入他人项目组，请联系管理员
             </p>
           </div>
         ) : (
           <form onSubmit={handleCreate} className="space-y-4">
             <div>
-              <label className="block text-sm text-gray-300 mb-1">工作组名称 <span className="text-red-400">*</span></label>
+              <label className="block text-sm text-gray-300 mb-1">项目组名称 <span className="text-red-400">*</span></label>
               <input
                 autoFocus
                 value={name}

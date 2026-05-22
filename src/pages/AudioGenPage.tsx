@@ -62,6 +62,7 @@ export default function AudioGenPage() {
     model: 'seedance-2.0-fast', ratio: '1:1', resolution: '480p', duration: 4,
   });
   const [estimate, setEstimate] = useState<AudioGenEstimate | null>(null);
+  const [discountExpired, setDiscountExpired] = useState(false);
 
   // 余额（用户实时积分），用于在提交按钮下方展示
   const [balance, setBalance] = useState<CreditBalance | null>(null);
@@ -104,7 +105,7 @@ export default function AudioGenPage() {
       } catch (e) { console.error('[audio-gen] 配置拉取失败,使用默认值', e); }
       try {
         const est = await estimateAudioGenCredits(cfg ?? genConfig);
-        if (!cancelled) setEstimate(est);
+        if (!cancelled) { setEstimate(est); setDiscountExpired(false); }
       } catch (e) { console.error('[audio-gen] 估算失败', e); }
     })();
     void refreshBalance();
@@ -273,11 +274,25 @@ export default function AudioGenPage() {
 
   async function handleSubmit() {
     setSubmitError(null);
-    if (!projectId) { setSubmitError('请先选择工作组'); return; }
+    if (!projectId) { setSubmitError('请先选择项目组'); return; }
     if (!refImageUrl) { setSubmitError('请上传参考图'); return; }
     if (!voicePrompt.trim()) { setSubmitError('请输入语气提示词'); return; }
+
+    // 折扣过期检查
+    if (estimate?.discountedCredits != null && !discountExpired) {
+      try {
+        const fresh = await estimateAudioGenCredits(genConfig);
+        if (fresh.discountedCredits == null || fresh.discountedCredits === fresh.credits) {
+          setEstimate(fresh);
+          setDiscountExpired(true);
+          return;
+        }
+        setEstimate(fresh);
+      } catch { /* 网络错误，继续用旧 estimate 提交 */ }
+    }
+
     // 积分预检
-    const lockedNeeded = estimate?.lockedCredits ?? 999;
+    const lockedNeeded = estimate?.discountedLockedCredits ?? estimate?.lockedCredits ?? 999;
     if (balance && !balance.unlimited && balance.available < lockedNeeded) {
       setSubmitError('可用积分不足，请联系管理员充值');
       return;
@@ -416,7 +431,7 @@ export default function AudioGenPage() {
           {/* 工作组素材组（有空素材才渲染） */}
           {projectAssets.length > 0 && (
             <div className="bg-[#1c1f2e] rounded-2xl p-4 border border-gray-800">
-              <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-3">工作组素材组</label>
+              <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-3">项目组素材组</label>
               <div className="flex flex-wrap gap-2">
                 {projectAssets.map((a) => {
                   const isSelected = refImageUrl === a.file_url;
@@ -479,7 +494,15 @@ export default function AudioGenPage() {
           </button>
 
           <p className="text-xs text-gray-600 text-center mt-2">
-            {estimate ? `每次消耗约 ${estimate.credits} 积分` : '正在估算消耗...'}
+            {discountExpired ? (
+              <span className="text-amber-400">折扣已过期！请确认积分消耗：每次消耗约 <span className="text-purple-300 font-semibold">{estimate?.credits ?? 0}</span> 积分
+              {estimate && <span className="ml-1 text-gray-500">（锁定 {estimate.lockedCredits}）</span>}
+              </span>
+            ) : estimate?.discountedCredits != null && estimate.discountedCredits !== estimate.credits ? (
+              <span>每次消耗约 <span className="text-emerald-300 font-semibold">{estimate.discountedCredits}</span><span className="ml-1 text-gray-500">（折扣前 {estimate.credits}）</span> 积分</span>
+            ) : (
+              <span>{estimate ? `每次消耗约 ${estimate.credits} 积分` : '正在估算消耗...'}</span>
+            )}
             {balance && (
               <span className="ml-2 text-gray-500">
                 · 余额 {balance.unlimited ? <span className="text-amber-400">无限</span> : <span className={balance.available <= (estimate?.lockedCredits ?? 0) ? 'text-red-400 font-semibold' : 'text-gray-300 font-semibold'}>{balance.available}</span>} 积分

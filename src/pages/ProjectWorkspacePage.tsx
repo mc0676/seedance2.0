@@ -262,7 +262,7 @@ export default function ProjectWorkspacePage() {
 
   // 创建素材组：CreateAssetGroup → CreateAsset（封面图）
   const handleCreateGroup = async () => {
-    if (!currentProject) { alert('请先选择工作组'); return; }
+    if (!currentProject) { alert('请先选择项目组'); return; }
     if (!newGroupName.trim()) { alert('请输入素材组名称'); return; }
     if (!newGroupFile) { alert('请选择一张封面图片'); return; }
     // 优先用建议名（撞名时附 (2)/(3)...），用户能看到、提交时使用
@@ -378,7 +378,7 @@ export default function ProjectWorkspacePage() {
     const isSelf = currentUser?.id === member.user_id;
     if (!currentProject) return;
     const msg = isSelf
-      ? `确定退出工作组「${currentProject.name}」？`
+      ? `确定退出项目组「${currentProject.name}」？`
       : `确定移除成员 ${member.email}？`;
     if (!confirm(msg)) return;
     try {
@@ -402,8 +402,8 @@ export default function ProjectWorkspacePage() {
   if (!currentProject) {
     return (
       <div className="flex flex-col items-center justify-center h-64 text-center">
-        <p className="text-gray-400 mb-2">请先在批量管理中选择一个工作组（项目）</p>
-        <p className="text-gray-600 text-sm">工作组包含成员管理和资产库</p>
+        <p className="text-gray-400 mb-2">请先在批量管理中选择一个项目组（项目）</p>
+        <p className="text-gray-600 text-sm">项目组包含成员管理和资产库</p>
       </div>
     );
   }
@@ -415,7 +415,7 @@ export default function ProjectWorkspacePage() {
     <div className="p-6 max-w-6xl mx-auto">
       {/* Header */}
       <div className="mb-6">
-        <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">工作组</p>
+        <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">项目组</p>
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-bold text-white">{currentProject.name}</h1>
           <button
@@ -522,7 +522,7 @@ export default function ProjectWorkspacePage() {
                     )}
                     {!groupNameChecking && groupNameSuggestion?.exists && (
                       <p className="mt-1 text-[11px] text-amber-400">
-                        当前工作组已有同名素材组，提交时将使用：
+                        当前项目组已有同名素材组，提交时将使用：
                         <span className="font-mono text-amber-300 ml-1">{groupNameSuggestion.suggestedName}</span>
                       </p>
                     )}
@@ -783,7 +783,7 @@ export default function ProjectWorkspacePage() {
       {tab === 'members' && (
         <div>
           <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-4 mb-6">
-            <p className="text-sm font-medium text-gray-300 mb-3">邀请成员加入工作组</p>
+            <p className="text-sm font-medium text-gray-300 mb-3">邀请成员加入项目组</p>
             <div className="flex gap-2">
               <input type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleInvite()} placeholder="输入用户邮箱"
@@ -800,7 +800,7 @@ export default function ProjectWorkspacePage() {
               <div className="animate-spin text-purple-500"><svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 12a9 9 0 1 1-6.219-8.56" strokeWidth={2} strokeLinecap="round" /></svg></div>
             </div>
           ) : members.length === 0 ? (
-            <div className="text-center py-12 text-gray-500">暂无成员，邀请其他用户加入工作组</div>
+            <div className="text-center py-12 text-gray-500">暂无成员，邀请其他用户加入项目组</div>
           ) : (
             <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl overflow-hidden">
               <table className="w-full">
@@ -862,7 +862,7 @@ export default function ProjectWorkspacePage() {
             placeholder="输入新名称"
             className="w-full bg-[#0f111a] border border-gray-700 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500"
           />
-          <p className="text-[10px] text-gray-500 mt-2">同工作组内重名时将自动加 (N) 后缀。</p>
+          <p className="text-[10px] text-gray-500 mt-2">同项目组内重名时将自动加 (N) 后缀。</p>
           <div className="mt-4 flex gap-2 justify-end">
             <button
               onClick={() => { setRenameGroupTarget(null); setRenameGroupName(''); }}
