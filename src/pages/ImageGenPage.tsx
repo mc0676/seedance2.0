@@ -67,6 +67,31 @@ export default function ImageGenPage() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // ── @ mention editor（参考图存在时启用 contenteditable + chip）────────────────
+  const editorRef = useRef<HTMLDivElement>(null);
+  const [mentionPanel, setMentionPanel] = useState<{ top: number; left: number; filter: string; focusIdx: number } | null>(null);
+  const mentionAnchorNodeRef = useRef<Node | null>(null);
+  const mentionAnchorOffsetRef = useRef<number>(0);
+  const useMentionEditor = refUrls.length > 0;
+  type MentionItem = { idx: number; tag: string; url: string; name: string; kind: 'image' };
+  const mentionItems = useMemo<MentionItem[]>(() => {
+    return refUrls.map((url, i) => ({
+      idx: i + 1,
+      tag: `@${i + 1}`,
+      url,
+      name: `参考图 ${i + 1}`,
+      kind: 'image' as const,
+    }));
+  }, [refUrls]);
+  const tagDisplayMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const mi of mentionItems) map.set(mi.tag, mi.name);
+    return map;
+  }, [mentionItems]);
+  function chipDisplayFor(tag: string): string {
+    return tagDisplayMap.get(tag) ?? tag;
+  }
+
   // 积分余额（与音频生成 / 视频生成页保持一致）
   const [balance, setBalance] = useState<CreditBalance | null>(null);
   const refreshBalance = useCallback(async () => {
@@ -151,6 +176,23 @@ export default function ImageGenPage() {
     return () => observer.disconnect();
   }, [historyHasMore, historyLoading, historyPage, loadHistory]);
 
+  // 删除参考图时同步 remap prompt 中的 @N chip 标签
+  function removeRefImage(index: number) {
+    const deletedTag = `@${index + 1}`;
+    let newPrompt = prompt;
+    // 移除被删除的 @N
+    const escapedDel = deletedTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    newPrompt = newPrompt.replace(new RegExp(escapedDel, 'g'), '');
+    // 递减所有大于被删索引的 @N
+    newPrompt = newPrompt.replace(/@(\d+)/g, (m, g1) => {
+      const n = parseInt(g1, 10);
+      if (n > index + 1) return `@${n - 1}`;
+      return m;
+    });
+    setPrompt(newPrompt);
+    setRefUrls((prev) => prev.filter((_, idx) => idx !== index));
+  }
+
   const handleRefUpload = useCallback(async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     setUploadingRef(true);
@@ -178,6 +220,392 @@ export default function ImageGenPage() {
     }
   }, []);
 
+  // ── contenteditable 编辑器：HTML 构造、文本抽取、光标 ────────────────────────
+
+  function escapeHtmlAttr(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function buildEditorHtml(text: string): string {
+    const escaped = text
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/\n/g, '<br>');
+    const re = /@\d+/g;
+    return escaped.replace(re, (m) => {
+      const display = chipDisplayFor(m);
+      return `​<span contenteditable="false" class="mention-chip" data-tag="${escapeHtmlAttr(m)}">${escapeHtmlAttr(display)}</span>​`;
+    });
+  }
+
+  function extractEditorText(el: Node): string {
+    let t = '';
+    for (const n of Array.from(el.childNodes)) {
+      if (n.nodeType === Node.TEXT_NODE) {
+        t += (n.textContent ?? '').replace(/​/g, '');
+      } else if ((n as Element).tagName === 'BR') {
+        const prev = n.previousSibling as Element | null;
+        if (prev?.classList?.contains('mention-chip')) continue;
+        t += '\n';
+      } else if ((n as Element).classList?.contains('mention-chip')) {
+        t += (n as Element).getAttribute('data-tag') ?? '';
+      } else {
+        t += extractEditorText(n);
+      }
+    }
+    return t;
+  }
+
+  function chipLogicalLen(el: Element): number {
+    return (el.getAttribute('data-tag') || '').length;
+  }
+
+  function getCursorOffset(root: HTMLDivElement): number {
+    const sel = window.getSelection();
+    if (!sel?.rangeCount) return 0;
+    const range = sel.getRangeAt(0);
+    try {
+      const pre = document.createRange();
+      pre.setStart(root, 0);
+      pre.setEnd(range.startContainer, range.startOffset);
+      const tmp = document.createElement('div');
+      tmp.appendChild(pre.cloneContents());
+      return extractEditorText(tmp).length;
+    } catch { return 0; }
+  }
+
+  function getSelectionRange(root: HTMLDivElement): { start: number; end: number } {
+    const sel = window.getSelection();
+    if (!sel?.rangeCount) return { start: 0, end: 0 };
+    const range = sel.getRangeAt(0);
+    const offsetAt = (container: Node, off: number): number => {
+      try {
+        const pre = document.createRange();
+        pre.setStart(root, 0);
+        pre.setEnd(container, off);
+        const tmp = document.createElement('div');
+        tmp.appendChild(pre.cloneContents());
+        return extractEditorText(tmp).length;
+      } catch { return 0; }
+    };
+    const a = offsetAt(range.startContainer, range.startOffset);
+    const b = offsetAt(range.endContainer, range.endOffset);
+    return a <= b ? { start: a, end: b } : { start: b, end: a };
+  }
+
+  function setEditorHtml(html: string) {
+    const el = editorRef.current;
+    if (!el) return;
+    el.innerHTML = html;
+    cleanChipBrs(el);
+    const last = el.lastChild;
+    if (last?.nodeType === Node.ELEMENT_NODE && (last as Element).classList.contains('mention-chip')) {
+      el.appendChild(document.createTextNode('​'));
+    }
+  }
+
+  function setCursorOffset(root: HTMLDivElement, offset: number) {
+    const sel = window.getSelection();
+    if (!sel) return;
+    let cur = 0;
+    const walk = (node: Node): boolean => {
+      if ((node as Element).classList?.contains('mention-chip')) {
+        const chipLen = chipLogicalLen(node as Element);
+        if (cur + chipLen >= offset) {
+          const r = document.createRange();
+          r.setStartAfter(node);
+          r.collapse(true);
+          sel.removeAllRanges();
+          sel.addRange(r);
+          return true;
+        }
+        cur += chipLen;
+        return false;
+      }
+      if (node.nodeType === Node.TEXT_NODE) {
+        const raw = node.textContent ?? '';
+        const logLen = raw.replace(/​/g, '').length;
+        if (cur + logLen >= offset) {
+          let remaining = offset - cur;
+          let rawIdx = 0;
+          while (rawIdx < raw.length) {
+            if (raw[rawIdx] !== '​') {
+              if (remaining === 0) break;
+              remaining--;
+            }
+            rawIdx++;
+          }
+          const r = document.createRange();
+          r.setStart(node, rawIdx);
+          r.collapse(true);
+          sel.removeAllRanges();
+          sel.addRange(r);
+          return true;
+        }
+        cur += logLen;
+      } else {
+        for (const c of Array.from(node.childNodes)) {
+          if (walk(c)) return true;
+        }
+      }
+      return false;
+    };
+    if (!walk(root)) {
+      const r = document.createRange();
+      r.selectNodeContents(root);
+      r.collapse(false);
+      sel.removeAllRanges();
+      sel.addRange(r);
+    }
+  }
+
+  function cleanChipBrs(el: HTMLElement) {
+    el.querySelectorAll('.mention-chip + br').forEach((br) => br.remove());
+  }
+
+  /** @ 面板过滤：空过滤=全部命中；否则去掉 @ 后前缀匹配，或文件名子串包含 */
+  function mentionMatchesFilter(mi: MentionItem, filter: string): boolean {
+    if (!filter) return true;
+    const tagBody = mi.tag.replace(/^@/, '');
+    if (tagBody.startsWith(filter)) return true;
+    return mi.name.toLowerCase().includes(filter.toLowerCase());
+  }
+
+  function closeMentionPanel() {
+    setMentionPanel(null);
+    mentionAnchorNodeRef.current = null;
+    mentionAnchorOffsetRef.current = 0;
+  }
+
+  function insertMentionChip(tag: string) {
+    const el = editorRef.current;
+    if (!el) return;
+    const anchorNode = mentionAnchorNodeRef.current;
+    const anchorOff = mentionAnchorOffsetRef.current;
+    if (anchorNode) {
+      const sel = window.getSelection();
+      if (sel?.rangeCount) {
+        const cur = sel.getRangeAt(0);
+        const r = document.createRange();
+        r.setStart(anchorNode, anchorOff);
+        r.setEnd(cur.endContainer, cur.endOffset);
+        r.deleteContents();
+      }
+    }
+    const chip = document.createElement('span');
+    chip.setAttribute('contenteditable', 'false');
+    chip.className = 'mention-chip';
+    chip.setAttribute('data-tag', tag);
+    chip.textContent = chipDisplayFor(tag);
+    const zwsBefore = document.createTextNode('​');
+    const zwsAfter = document.createTextNode('​');
+    const sel = window.getSelection();
+    if (sel?.rangeCount) {
+      const r = sel.getRangeAt(0);
+      r.insertNode(zwsAfter);
+      r.insertNode(chip);
+      r.insertNode(zwsBefore);
+      r.setStartAfter(zwsAfter);
+      r.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(r);
+    }
+    cleanChipBrs(el);
+    setPrompt(extractEditorText(el));
+    closeMentionPanel();
+  }
+
+  // ── 编辑器事件处理 ─────────────────────────────────────────────────
+
+  function handleEditorInput() {
+    const el = editorRef.current;
+    if (!el) return;
+    cleanChipBrs(el);
+    const text = extractEditorText(el);
+    setPrompt(text);
+
+    if (!useMentionEditor || mentionItems.length === 0) {
+      closeMentionPanel();
+      return;
+    }
+    const sel = window.getSelection();
+    if (!sel?.rangeCount) { closeMentionPanel(); return; }
+    const range = sel.getRangeAt(0);
+    const node = range.startContainer;
+    const off = range.startOffset;
+    if (node.nodeType === Node.TEXT_NODE) {
+      const rawText = (node.textContent ?? '');
+      const left = rawText.slice(0, off);
+      const m = left.match(/@([^\s@]*)$/);
+      if (m) {
+        const rect = range.getClientRects()[0];
+        const containerRect = el.getBoundingClientRect();
+        const filter = m[1];
+        const matches = (mi: MentionItem) => mentionMatchesFilter(mi, filter);
+        const focusIdx = mentionItems.findIndex(matches);
+        if (rect) {
+          setMentionPanel({
+            top: rect.bottom - containerRect.top + 4,
+            left: rect.left - containerRect.left - 4,
+            filter,
+            focusIdx: focusIdx === -1 ? 0 : focusIdx,
+          });
+        }
+        mentionAnchorNodeRef.current = node;
+        mentionAnchorOffsetRef.current = off - m[0].length;
+        return;
+      }
+    }
+    closeMentionPanel();
+  }
+
+  function handleEditorKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (mentionPanel) {
+      const filtered = mentionItems.filter((mi) => mentionMatchesFilter(mi, mentionPanel.filter));
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setMentionPanel((p) => p && ({ ...p, focusIdx: Math.min(filtered.length - 1, p.focusIdx + 1) }));
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setMentionPanel((p) => p && ({ ...p, focusIdx: Math.max(0, p.focusIdx - 1) }));
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        const target = filtered[mentionPanel.focusIdx];
+        if (target) {
+          e.preventDefault();
+          insertMentionChip(target.tag);
+          return;
+        }
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeMentionPanel();
+        return;
+      }
+    }
+    if (e.key === 'Backspace') {
+      const sel = window.getSelection();
+      if (sel?.rangeCount && sel.isCollapsed) {
+        const r = sel.getRangeAt(0);
+        const node = r.startContainer;
+        const off = r.startOffset;
+        let prev: ChildNode | null = null;
+        if (node.nodeType === Node.TEXT_NODE) {
+          const raw = (node.textContent ?? '');
+          if (off === 0 || raw.slice(0, off).replace(/​/g, '').length === 0) {
+            let cand = node.previousSibling;
+            while (cand && cand.nodeType === Node.TEXT_NODE && (cand.textContent ?? '').replace(/​/g, '').length === 0) {
+              cand = cand.previousSibling;
+            }
+            prev = cand as ChildNode | null;
+          }
+        } else if (node === editorRef.current) {
+          prev = (node.childNodes[off - 1] as ChildNode | null) ?? null;
+        }
+        if (prev && (prev as Element).classList?.contains('mention-chip')) {
+          e.preventDefault();
+          prev.remove();
+          if (editorRef.current) {
+            cleanChipBrs(editorRef.current);
+            setPrompt(extractEditorText(editorRef.current));
+          }
+          return;
+        }
+      }
+    }
+  }
+
+  function serializeSelectionAsRef(): string {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return '';
+    const range = sel.getRangeAt(0);
+    const fragment = range.cloneContents();
+    let out = '';
+    const walk = (node: Node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        out += (node.textContent ?? '').replace(/​/g, '');
+      } else if ((node as Element).tagName === 'BR') {
+        out += '\n';
+      } else if ((node as Element).classList?.contains('mention-chip')) {
+        out += `<ref>${(node as Element).getAttribute('data-tag') ?? ''}</ref>`;
+      } else {
+        node.childNodes.forEach(walk);
+      }
+    };
+    if (fragment.childNodes.length === 0) return range.toString();
+    fragment.childNodes.forEach(walk);
+    return out || range.toString();
+  }
+
+  function handleEditorCopy(e: React.ClipboardEvent<HTMLDivElement>) {
+    const text = serializeSelectionAsRef();
+    if (!text) return;
+    e.preventDefault();
+    e.clipboardData.setData('text/plain', text);
+  }
+
+  function handleEditorCut(e: React.ClipboardEvent<HTMLDivElement>) {
+    const text = serializeSelectionAsRef();
+    if (text) {
+      e.preventDefault();
+      e.clipboardData.setData('text/plain', text);
+      const sel = window.getSelection();
+      if (sel?.rangeCount) {
+        sel.getRangeAt(0).deleteContents();
+        const el = editorRef.current;
+        if (el) {
+          cleanChipBrs(el);
+          setPrompt(extractEditorText(el));
+        }
+      }
+    }
+  }
+
+  function handleEditorPaste(e: React.ClipboardEvent<HTMLDivElement>) {
+    e.preventDefault();
+    const el = editorRef.current;
+    if (!el) return;
+    const raw = e.clipboardData.getData('text/plain');
+    if (!raw) return;
+    const converted = raw.replace(/<ref>(@[^<\n]+)<\/ref>/g, '$1');
+    const { start, end } = getSelectionRange(el);
+    const currentText = extractEditorText(el);
+    const newText = currentText.slice(0, start) + converted + currentText.slice(end);
+    setEditorHtml(buildEditorHtml(newText));
+    setPrompt(newText);
+    const pos = start + converted.length;
+    setTimeout(() => { if (editorRef.current) setCursorOffset(editorRef.current, pos); }, 0);
+  }
+
+  // 参考图变更时同步 chip 显示名
+  useEffect(() => {
+    if (!useMentionEditor) return;
+    const el = editorRef.current;
+    if (!el) return;
+    el.querySelectorAll<HTMLElement>('.mention-chip[data-tag]').forEach((chip) => {
+      const tag = chip.getAttribute('data-tag') || '';
+      const display = chipDisplayFor(tag);
+      if (chip.textContent !== display) chip.textContent = display;
+    });
+  }, [refUrls, useMentionEditor]);
+
+  // prompt 外部变更时同步编辑器 HTML（例如 handleReuse 回填）
+  useEffect(() => {
+    if (!useMentionEditor) return;
+    const el = editorRef.current;
+    if (!el) return;
+    const currentLogical = extractEditorText(el);
+    if (currentLogical !== prompt) {
+      const sel = window.getSelection();
+      const offset = sel?.rangeCount ? getCursorOffset(el) : prompt.length;
+      setEditorHtml(buildEditorHtml(prompt));
+      setTimeout(() => { if (editorRef.current) setCursorOffset(editorRef.current, Math.min(offset, prompt.length)); }, 0);
+    }
+  }, [prompt, useMentionEditor]);
+
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) { setError('请输入提示词'); return; }
     // 积分预检
@@ -188,8 +616,32 @@ export default function ImageGenPage() {
     setLoading(true);
     setError('');
     try {
+      // 检查 prompt 中是否有 @N chip
+      const chipTags = mentionItems.map((m) => m.tag);
+      const hasAnyChip = chipTags.some((tag) => {
+        const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return new RegExp(escaped).test(prompt);
+      });
+      // @N → [Image N]（对齐 HappyHorse 多图生视频的 DB 存储格式）
+      let finalPrompt = prompt.trim();
+      if (hasAnyChip) {
+        const refTotal = refUrls.length;
+        finalPrompt = finalPrompt.replace(/@(\d+)/g, (m, g1) => {
+          const n = parseInt(g1, 10);
+          return n >= 1 && n <= refTotal ? `[Image ${n}]` : m;
+        });
+      }
+      // 有 chip 时只发送被引用的参考图；无 chip 时保持向后兼容（全部发送）
+      const effectiveRefUrls = hasAnyChip
+        ? refUrls.filter((_, i) => {
+            const tag = `@${i + 1}`;
+            const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            return new RegExp(escaped).test(prompt);
+          })
+        : refUrls;
+
       const body: Record<string, unknown> = {
-        prompt: prompt.trim(),
+        prompt: finalPrompt,
         model,
         sizeLabel,
         projectId: currentProjectId,
@@ -200,9 +652,9 @@ export default function ImageGenPage() {
         body.size = nanoSize;
         body.aspectRatio = nanoAspect;
       }
-      if (refUrls.length > 0) {
-        body.urls = refUrls;
-        body.refUrls = refUrls;
+      if (effectiveRefUrls.length > 0) {
+        body.urls = effectiveRefUrls;
+        body.refUrls = effectiveRefUrls;
       }
       const res = await fetch('/api/generate-image', {
         method: 'POST',
@@ -216,17 +668,20 @@ export default function ImageGenPage() {
       void refreshBalance();
     } catch (e) {
       setError(e instanceof Error ? e.message : '生成失败');
-      // 失败时也刷新历史 —— 后端已经把 status='error' + error_message 写入 image_records,
-      // 立即拉一遍，新的失败记录会即时出现在历史列表里，无需用户手动刷新页面。
       void loadHistory(1, false, currentProjectId);
       void refreshBalance();
     } finally {
       setLoading(false);
     }
-  }, [prompt, model, gptAspect, nanoSize, nanoAspect, sizeLabel, refUrls, currentProjectId, loadHistory, refreshBalance]);
+  }, [prompt, model, gptAspect, nanoSize, nanoAspect, sizeLabel, refUrls, mentionItems, currentProjectId, loadHistory, refreshBalance, balance]);
 
   const handleReuse = (item: ImageRecord) => {
-    setPrompt(item.prompt);
+    // [Image N] → @N 还原，由编辑器 useEffect 自动重建 chip
+    let restoredPrompt = item.prompt || '';
+    if (item.ref_urls.length > 0) {
+      restoredPrompt = restoredPrompt.replace(/\[Image (\d+)\]/g, '@$1');
+    }
+    setPrompt(restoredPrompt);
     setModel(item.model);
     setRefUrls(item.ref_urls);
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -291,7 +746,7 @@ export default function ImageGenPage() {
                   <div key={i} className="relative w-20 h-20 rounded-xl overflow-hidden border border-gray-700 bg-[#0d0f1a] group">
                     <img src={url} alt={`参考图${i + 1}`} className="w-full h-full object-cover" />
                     <button
-                      onClick={() => setRefUrls((prev) => prev.filter((_, idx) => idx !== i))}
+                      onClick={() => removeRefImage(i)}
                       className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-lg"
                     >×</button>
                   </div>
@@ -328,14 +783,58 @@ export default function ImageGenPage() {
 
           {/* Prompt */}
           <div className="bg-[#1c1f2e] rounded-2xl p-4 border border-gray-800">
-            <label className="block text-sm font-bold mb-3 text-gray-300">提示词</label>
-            <textarea
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              rows={5}
-              placeholder="描述你想生成的图片内容..."
-              className="w-full bg-[#0d0f1a] border-0 rounded-xl px-4 py-3 text-white text-sm resize-none focus:outline-none focus:ring-1 focus:ring-purple-500/50"
-            />
+            <label className="block text-sm font-bold mb-3 text-gray-300">
+              提示词
+              {useMentionEditor && <span className="text-gray-500 font-normal text-xs ml-1">（输入 @ 引用参考图）</span>}
+            </label>
+            {useMentionEditor ? (
+              <div className="relative">
+                <div
+                  ref={editorRef}
+                  contentEditable
+                  suppressContentEditableWarning
+                  data-placeholder="描述你想生成的图片内容... 输入 @ 引用参考图"
+                  onInput={handleEditorInput}
+                  onKeyDown={handleEditorKeyDown}
+                  onPaste={handleEditorPaste}
+                  onCopy={handleEditorCopy}
+                  onCut={handleEditorCut}
+                  className="prompt-editor w-full min-h-[120px] bg-[#0d0f1a] border border-gray-700 rounded-xl p-3 text-sm text-white focus:border-purple-500 outline-none whitespace-pre-wrap break-words"
+                />
+                {mentionPanel && mentionItems.length > 0 && (
+                  <div
+                    className="absolute z-30 bg-[#1c1f2e] border border-gray-700 rounded-xl shadow-xl p-1 max-h-60 overflow-y-auto custom-scrollbar w-[260px]"
+                    style={{ top: mentionPanel.top, left: mentionPanel.left }}
+                    onMouseDown={(e) => e.preventDefault()}
+                  >
+                    {mentionItems
+                      .filter((mi) => mentionMatchesFilter(mi, mentionPanel.filter))
+                      .map((mi, i) => (
+                        <button
+                          key={mi.tag}
+                          type="button"
+                          onClick={() => insertMentionChip(mi.tag)}
+                          className={`flex items-center gap-2 w-full px-2 py-1.5 rounded-lg text-left text-sm transition-colors ${
+                            i === mentionPanel.focusIdx ? 'bg-purple-500/20 text-purple-200' : 'text-gray-300 hover:bg-gray-800'
+                          }`}
+                        >
+                          <img src={mi.url} alt="" className="w-8 h-8 object-cover rounded border border-gray-700" />
+                          <span className="font-mono text-purple-300">{mi.tag}</span>
+                          <span className="truncate text-xs text-gray-400">{mi.name}</span>
+                        </button>
+                      ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <textarea
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                rows={5}
+                placeholder="描述你想生成的图片内容..."
+                className="w-full bg-[#0d0f1a] border-0 rounded-xl px-4 py-3 text-white text-sm resize-none focus:outline-none focus:ring-1 focus:ring-purple-500/50"
+              />
+            )}
             <div className="text-right text-xs text-gray-500 mt-2">{prompt.length}/5000</div>
           </div>
 

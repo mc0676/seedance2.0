@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { formatDateTime } from '../utils/datetime';
+import { formatDateTime, parseServerDate } from '../utils/datetime';
+import * as XLSX from 'xlsx';
 import {
   fetchDailyTrend,
   fetchTodayRanking,
@@ -9,6 +10,7 @@ import {
   fetchFailureAnalysis,
   fetchUserActivity,
   CreditDetailItem,
+  getAuthHeaders,
 } from '../services/authService';
 
 const ANALYTICS_TABS = ['趋势图', '当日排行', '消耗明细', '小组汇总', '项目组消耗', '失败分析', '用户活跃度'] as const;
@@ -104,6 +106,203 @@ export default function AnalyticsPanels() {
   const [loadingPanel, setLoadingPanel] = useState('');
   const loadedRef = useRef<Set<string>>(new Set());
 
+  // ── 导出状态 ─────────────────────────────────────────────────
+  const [showDateRange, setShowDateRange] = useState(false);
+  const [exportDateFrom, setExportDateFrom] = useState('');
+  const [exportDateTo, setExportDateTo] = useState('');
+  const [exporting, setExporting] = useState(false);
+
+  function todayStr(): string {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  function weekRange(): { from: string; to: string } {
+    const d = new Date();
+    const day = d.getDay();
+    const monday = new Date(d);
+    monday.setDate(d.getDate() - (day === 0 ? 6 : day - 1));
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+    const fmt = (dt: Date) => `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+    return { from: fmt(monday), to: fmt(sunday) };
+  }
+
+  function monthRange(): { from: string; to: string } {
+    const d = new Date();
+    const from = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+    const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+    const to = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+    return { from, to };
+  }
+
+  function fmtDateCell(val: unknown): string {
+    if (!val) return '';
+    const d = parseServerDate(val as string);
+    if (!d) return String(val);
+    const opts: Intl.DateTimeFormatOptions = {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: false, timeZone: 'Asia/Shanghai',
+    };
+    return new Intl.DateTimeFormat('zh-CN', opts).format(d);
+  }
+
+  function sheetFromData(headerMap: [string, string][], rows: Record<string, unknown>[]): unknown[][] {
+    const headerRow = headerMap.map(([, label]) => label);
+    const sheetRows = rows.map((r) =>
+      headerMap.map(([key]) => {
+        const val = r[key];
+        if (key === 'created_at' || key === 'settled_at' || key === 'last_active') return fmtDateCell(val);
+        if (key === 'status' && (val === 'success' || val === 'failed')) return val === 'success' ? '成功' : '失败';
+        if (val === null || val === undefined) return '';
+        return val;
+      })
+    );
+    return [headerRow, ...sheetRows];
+  }
+
+  async function doExport(dateFrom: string, dateTo: string, includeTodayRanking: boolean) {
+    setExporting(true);
+    try {
+      const sp = new URLSearchParams();
+      if (dateFrom) sp.set('dateFrom', dateFrom);
+      if (dateTo) sp.set('dateTo', dateTo);
+
+      // 并行请求所有数据
+      const fetches: Promise<[string, unknown[]]>[] = [];
+
+      // 消耗明细
+      fetches.push(
+        fetch(`/api/admin/credits/export?${sp}`, { headers: getAuthHeaders() })
+          .then(r => r.json())
+          .then(d => d.success ? ['消耗明细', d.data] as [string, unknown[]] : Promise.reject(d.error))
+      );
+
+      // 小组汇总
+      fetches.push(
+        fetch(`/api/admin/credits/export-group-summary?${sp}`, { headers: getAuthHeaders() })
+          .then(r => r.json())
+          .then(d => d.success ? ['小组汇总', d.data] as [string, unknown[]] : Promise.reject(d.error))
+      );
+
+      // 项目组消耗
+      fetches.push(
+        fetch(`/api/admin/credits/export-project-consumption?${sp}`, { headers: getAuthHeaders() })
+          .then(r => r.json())
+          .then(d => d.success ? ['项目组消耗', d.data] as [string, unknown[]] : Promise.reject(d.error))
+      );
+
+      // 当日排行（仅本日导出）
+      if (includeTodayRanking) {
+        fetches.push(
+          fetch('/api/admin/credits/today-ranking', { headers: getAuthHeaders() })
+            .then(r => r.json())
+            .then(d => d.success ? ['当日排行', d.data] as [string, unknown[]] : Promise.reject(d.error))
+        );
+      }
+
+      const results = await Promise.all(fetches);
+
+      const wb = XLSX.utils.book_new();
+
+      // 当日排行（第一个 sheet）
+      const rankingEntry = results.find(([name]) => name === '当日排行');
+      if (rankingEntry) {
+        const rankingData = rankingEntry[1] as Array<{ id: number; email: string; name: string | null; department: string; total_credits: number; call_count: number }>;
+        const rankingHeaders: [string, string][] = [
+          ['email', '邮箱'],
+          ['name', '用户名'],
+          ['department', '部门'],
+          ['total_credits', '消耗积分'],
+          ['call_count', '调用次数'],
+        ];
+        const rankingSheet = sheetFromData(rankingHeaders, rankingData as any[]);
+        const ws = XLSX.utils.aoa_to_sheet(rankingSheet);
+        XLSX.utils.book_append_sheet(wb, ws, '当日排行');
+      }
+
+      // 消耗明细
+      const detailEntry = results.find(([name]) => name === '消耗明细');
+      if (detailEntry) {
+        const detailHeaders: [string, string][] = [
+          ['id', 'ID'],
+          ['email', '邮箱'],
+          ['name', '用户名'],
+          ['department', '部门'],
+          ['model', '模型'],
+          ['action', '动作'],
+          ['credits_cost', '消耗积分'],
+          ['status', '状态'],
+          ['error_message', '错误信息'],
+          ['created_at', '时间'],
+        ];
+        const detailSheet = sheetFromData(detailHeaders, detailEntry[1] as any[]);
+        const ws = XLSX.utils.aoa_to_sheet(detailSheet);
+        XLSX.utils.book_append_sheet(wb, ws, '消耗明细');
+      }
+
+      // 小组汇总
+      const groupEntry = results.find(([name]) => name === '小组汇总');
+      if (groupEntry) {
+        const groupHeaders: [string, string][] = [
+          ['department', '小组'],
+          ['user_count', '用户数'],
+          ['total_credits', '消耗积分'],
+          ['call_count', '调用次数'],
+        ];
+        const groupSheet = sheetFromData(groupHeaders, groupEntry[1] as any[]);
+        const ws = XLSX.utils.aoa_to_sheet(groupSheet);
+        XLSX.utils.book_append_sheet(wb, ws, '小组汇总');
+      }
+
+      // 项目组消耗
+      const projEntry = results.find(([name]) => name === '项目组消耗');
+      if (projEntry) {
+        const projHeaders: [string, string][] = [
+          ['name', '项目组'],
+          ['user_count', '用户数'],
+          ['task_count', '任务数'],
+          ['total_credits', '消耗积分'],
+        ];
+        const projSheet = sheetFromData(projHeaders, projEntry[1] as any[]);
+        const ws = XLSX.utils.aoa_to_sheet(projSheet);
+        XLSX.utils.book_append_sheet(wb, ws, '项目组消耗');
+      }
+
+      const label = dateFrom === dateTo ? dateFrom : `${dateFrom}_${dateTo}`;
+      XLSX.writeFile(wb, `消耗分析_${label}.xlsx`);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '导出失败');
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  function handleExportToday() {
+    const today = todayStr();
+    doExport(today, today, true);
+  }
+
+  function handleExportWeek() {
+    const { from, to } = weekRange();
+    doExport(from, to, false);
+  }
+
+  function handleExportMonth() {
+    const { from, to } = monthRange();
+    doExport(from, to, false);
+  }
+
+  function handleExportRange() {
+    if (!exportDateFrom && !exportDateTo) {
+      setShowDateRange(!showDateRange);
+      return;
+    }
+    doExport(exportDateFrom || '', exportDateTo || '', false);
+    setShowDateRange(false);
+  }
+
   function fetchTab(key: string) {
     const cached = cacheGet(key);
     if (cached) {
@@ -171,8 +370,55 @@ export default function AnalyticsPanels() {
   return (
     <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl overflow-hidden mb-8">
       <div className="p-6 border-b border-gray-800">
-        <h2 className="text-xl font-semibold text-white">消耗分析</h2>
-        <p className="text-gray-400 text-sm mt-1">积分消耗统计、排行与明细查询</p>
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <h2 className="text-xl font-semibold text-white">消耗分析</h2>
+            <p className="text-gray-400 text-sm mt-1">积分消耗统计、排行与明细查询</p>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            {exporting && (
+              <span className="text-emerald-400 text-xs flex items-center gap-1">
+                <span className="animate-spin h-3 w-3 border-2 border-emerald-400 border-t-transparent rounded-full" />
+                导出中...
+              </span>
+            )}
+            <button onClick={handleExportToday} disabled={exporting}
+              className="px-3 py-1.5 bg-emerald-600/20 border border-emerald-500/30 hover:bg-emerald-600/40 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-emerald-300 text-xs font-medium transition-colors flex items-center gap-1"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+              导出本日
+            </button>
+            <button onClick={handleExportWeek} disabled={exporting}
+              className="px-3 py-1.5 bg-emerald-600/20 border border-emerald-500/30 hover:bg-emerald-600/40 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-emerald-300 text-xs font-medium transition-colors flex items-center gap-1"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+              导出本周
+            </button>
+            <button onClick={handleExportMonth} disabled={exporting}
+              className="px-3 py-1.5 bg-emerald-600/20 border border-emerald-500/30 hover:bg-emerald-600/40 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-emerald-300 text-xs font-medium transition-colors flex items-center gap-1"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+              导出本月
+            </button>
+            <div className="flex items-center gap-1">
+              {showDateRange && (
+                <>
+                  <input type="date" value={exportDateFrom} onChange={e => setExportDateFrom(e.target.value)} disabled={exporting}
+                    className="w-28 px-2 py-1.5 bg-[#0f111a] border border-gray-700 rounded-lg text-white text-xs focus:outline-none focus:border-emerald-500 disabled:opacity-50" />
+                  <span className="text-gray-500 text-xs">至</span>
+                  <input type="date" value={exportDateTo} onChange={e => setExportDateTo(e.target.value)} disabled={exporting}
+                    className="w-28 px-2 py-1.5 bg-[#0f111a] border border-gray-700 rounded-lg text-white text-xs focus:outline-none focus:border-emerald-500 disabled:opacity-50" />
+                </>
+              )}
+              <button onClick={handleExportRange} disabled={exporting}
+                className="px-3 py-1.5 bg-emerald-600/20 border border-emerald-500/30 hover:bg-emerald-600/40 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-emerald-300 text-xs font-medium transition-colors flex items-center gap-1"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                按时间导出
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
       {/* Tab 栏 */}
       <div className="flex flex-wrap items-center justify-between px-6 pt-4 border-b border-gray-800">

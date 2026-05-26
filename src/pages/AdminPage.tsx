@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, Fragment } from 'react';
 import { useApp } from '../context/AppContext';
-import { formatDateTime, formatDate, useUserTimezone } from '../utils/datetime';
+import { formatDateTime, formatDate, useUserTimezone, parseServerDate } from '../utils/datetime';
+import * as XLSX from 'xlsx';
 import {
   getSystemStats,
   getUserList,
@@ -345,6 +346,22 @@ export default function AdminPage() {
   const [happyhorseKeyDraft, setHappyhorseKeyDraft] = useState('');
   const [happyhorsePricing, setHappyhorsePricing] = useState<Array<{ mode: string; model: string; resolution: string; credits_per_second: number }>>([]);
   const [activeHappyhorseTab, setActiveHappyhorseTab] = useState<string>('t2v');
+
+  // BSS 阿里云账户余额
+  const [bssAkMasked, setBssAkMasked] = useState('');
+  const [bssAkConfigured, setBssAkConfigured] = useState(false);
+  const [bssSkConfigured, setBssSkConfigured] = useState(false);
+  const [bssAkEditing, setBssAkEditing] = useState(false);
+  const [bssAkDraft, setBssAkDraft] = useState('');
+  const [bssSkDraft, setBssSkDraft] = useState('');
+  const [bssBalance, setBssBalance] = useState<{ availableAmount: string; availableCashAmount: string; creditAmount: string; currency: string; mybankCreditAmount: string; quotaLimit: string } | null>(null);
+  const [bssBalanceLoading, setBssBalanceLoading] = useState(false);
+  const [bssBalanceError, setBssBalanceError] = useState('');
+
+  // 火山引擎账户余额（按Key组ID索引）
+  const [volcBalances, setVolcBalances] = useState<Record<number, { accountID: number; availableBalance: string; cashBalance: string; arrearsBalance: string; creditLimit: string; freezeAmount: string }>>({});
+  const [volcBalanceLoadingId, setVolcBalanceLoadingId] = useState<number | null>(null);
+  const [volcBalanceErrors, setVolcBalanceErrors] = useState<Record<number, string>>({});
 
   // 批量生成设置
   const [batchMaxConcurrent, setBatchMaxConcurrent] = useState<string>('5');
@@ -795,6 +812,11 @@ export default function AdminPage() {
         .then((r) => r.json())
         .then((j) => { if (j?.success) setBatchMaxConcurrent(j.data.max_concurrent || '5'); })
         .catch(() => {});
+      // BSS 配置
+      fetch('/api/admin/bss-config', { headers: getAuthHeaders() })
+        .then((r) => r.json())
+        .then((j) => { if (j?.success) { setBssAkMasked(j.data.maskedAk || ''); setBssAkConfigured(!!j.data.akConfigured); setBssSkConfigured(!!j.data.skConfigured); } })
+        .catch(() => {});
     }
   }, []);
 
@@ -803,6 +825,84 @@ export default function AdminPage() {
   }, [filterStatus, filterRole]);
 
   const handleSearchEmail = () => loadUsers(1);
+
+  const handleExportUsers = async () => {
+    try {
+      const res = await fetch('/api/admin/users/export', { headers: getAuthHeaders() });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || '导出失败');
+      const users: Record<string, unknown>[] = data.data;
+
+      const roleLabel: Record<string, string> = {
+        super_admin: '系统管理员',
+        admin: '普通管理员',
+        user: '普通用户',
+      };
+      const statusLabel: Record<string, string> = {
+        active: '正常',
+        disabled: '禁用',
+      };
+      const dateFields = new Set(['last_check_in_at', 'created_at', 'updated_at']);
+
+      function fmtDate(val: unknown): string {
+        const d = parseServerDate(val as string | number | Date | null | undefined);
+        if (!d) return '';
+        // UTC+8 格式化
+        const opts: Intl.DateTimeFormatOptions = {
+          year: 'numeric', month: '2-digit', day: '2-digit',
+          hour: '2-digit', minute: '2-digit', second: '2-digit',
+          hour12: false,
+          timeZone: 'Asia/Shanghai',
+        };
+        return new Intl.DateTimeFormat('zh-CN', opts).format(d);
+      }
+
+      // 列顺序：id, email, name(第3列), role, status, credits, unlimited_credits,
+      //          daily_check_in, last_check_in_at, department, created_at, updated_at,
+      //          password_hash(最后)
+      const headerMap: [string, string][] = [
+        ['id', '用户 ID'],
+        ['email', '邮箱'],
+        ['name', '名称'],
+        ['role', '角色'],
+        ['status', '状态'],
+        ['credits', '积分'],
+        ['unlimited_credits', '无限积分'],
+        ['daily_check_in', '每日签到'],
+        ['last_check_in_at', '最后签到时间'],
+        ['department', '部门'],
+        ['created_at', '创建时间'],
+        ['updated_at', '更新时间'],
+        ['password_hash', '密码哈希'],
+      ];
+
+      const rows = users.map((u) =>
+        headerMap.map(([key]) => {
+          if (key === 'role') return roleLabel[String(u.role)] ?? u.role;
+          if (key === 'status') return statusLabel[String(u.status)] ?? u.status;
+          if (key === 'unlimited_credits') return u.unlimited_credits === 1 ? '是' : '否';
+          if (key === 'department') {
+            const deptName = u.department_name ? String(u.department_name) : '';
+            const deptId = u.department_id != null ? String(u.department_id) : '';
+            return deptName ? `${deptName}[${deptId}]` : deptId;
+          }
+          if (dateFields.has(key)) return fmtDate(u[key]);
+          const val = u[key];
+          if (val === null || val === undefined) return '';
+          return val;
+        })
+      );
+
+      const headerRow = headerMap.map(([, label]) => label);
+      const sheetData = [headerRow, ...rows];
+      const ws = XLSX.utils.aoa_to_sheet(sheetData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, '用户列表');
+      XLSX.writeFile(wb, `用户列表_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '导出失败');
+    }
+  };
 
   const handleLoadUserPerms = async (userId: number) => {
     setPermsLoading(true);
@@ -922,6 +1022,63 @@ export default function AdminPage() {
       }
       setHappyhorseKeyEditing(false);
     } catch (e) { alert(e instanceof Error ? e.message : '保存失败'); }
+  };
+
+  const handleSaveBssConfig = async () => {
+    try {
+      const body: Record<string, string> = {};
+      if (bssAkDraft) body.accessKeyId = bssAkDraft;
+      if (bssSkDraft) body.accessKeySecret = bssSkDraft;
+      const res = await fetch('/api/admin/bss-config', {
+        method: 'PUT',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(body),
+      });
+      const j = await res.json();
+      if (!j?.success) throw new Error(j?.error || '保存失败');
+      const r2 = await fetch('/api/admin/bss-config', { headers: getAuthHeaders() });
+      const j2 = await r2.json();
+      if (j2?.success) {
+        setBssAkMasked(j2.data.maskedAk || '');
+        setBssAkConfigured(!!j2.data.akConfigured);
+        setBssSkConfigured(!!j2.data.skConfigured);
+      }
+      setBssAkEditing(false);
+      setBssAkDraft('');
+      setBssSkDraft('');
+    } catch (e) { alert(e instanceof Error ? e.message : '保存失败'); }
+  };
+
+  const handleQueryBssBalance = async () => {
+    setBssBalanceLoading(true);
+    setBssBalanceError('');
+    setBssBalance(null);
+    try {
+      const res = await fetch('/api/admin/bss-balance', { headers: getAuthHeaders() });
+      const j = await res.json();
+      if (!j?.success) throw new Error(j?.error || '查询失败');
+      setBssBalance(j.data);
+    } catch (e) {
+      setBssBalanceError(e instanceof Error ? e.message : '查询失败');
+    } finally {
+      setBssBalanceLoading(false);
+    }
+  };
+
+  const handleQueryVolcBalance = async (keyGroupId: number) => {
+    setVolcBalanceLoadingId(keyGroupId);
+    setVolcBalanceErrors((prev) => { const next = { ...prev }; delete next[keyGroupId]; return next; });
+    setVolcBalances((prev) => { const next = { ...prev }; delete next[keyGroupId]; return next; });
+    try {
+      const res = await fetch(`/api/admin/volc-balance?keyGroupId=${keyGroupId}`, { headers: getAuthHeaders() });
+      const j = await res.json();
+      if (!j?.success) throw new Error(j?.error || '查询失败');
+      setVolcBalances((prev) => ({ ...prev, [keyGroupId]: j.data }));
+    } catch (e) {
+      setVolcBalanceErrors((prev) => ({ ...prev, [keyGroupId]: e instanceof Error ? e.message : '查询失败' }));
+    } finally {
+      setVolcBalanceLoadingId(null);
+    }
   };
 
   const handleUpdateHappyhorsePrice = async (mode: string, resolution: string, creditsPerSecond: number) => {
@@ -1391,6 +1548,15 @@ export default function AdminPage() {
             <div className="flex items-center justify-between flex-wrap gap-4">
               <h2 className="text-xl font-semibold text-white">用户管理</h2>
               <div className="flex items-center gap-3">
+                {isSuperAdmin && (
+                  <button
+                    onClick={handleExportUsers}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-xl text-white text-sm font-medium transition-colors flex items-center gap-1.5"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                    导出Excel
+                  </button>
+                )}
                 <div className="flex items-center gap-2">
                   <input
                     type="text"
@@ -2046,6 +2212,7 @@ export default function AdminPage() {
                       </div>
                     </div>
                   ) : (
+                    <>
                     <div className="flex items-start justify-between gap-4 flex-wrap">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-1 flex-wrap">
@@ -2069,8 +2236,51 @@ export default function AdminPage() {
                         {!g.is_active && (
                           <button onClick={() => handleDeleteKeyGroup(g.id, g.name)} className="btn-danger">删除</button>
                         )}
+                        {g.volc_access_key && g.volc_secret_key && (
+                          <button
+                            onClick={() => handleQueryVolcBalance(g.id)}
+                            disabled={volcBalanceLoadingId === g.id}
+                            className="px-3 py-1.5 bg-purple-600/20 border border-purple-500/40 hover:bg-purple-600/30 disabled:opacity-50 rounded-md text-purple-400 text-xs font-medium transition-all"
+                          >
+                            {volcBalanceLoadingId === g.id ? '查询中...' : '查询余额'}
+                          </button>
+                        )}
                       </div>
                     </div>
+                    {/* 余额查询结果 */}
+                    {volcBalanceErrors[g.id] && (
+                      <div className="mt-3 bg-red-950/30 border border-red-500/30 rounded-lg p-2 text-xs text-red-400">{volcBalanceErrors[g.id]}</div>
+                    )}
+                    {volcBalances[g.id] && (
+                      <div className="mt-3 bg-[#1c1f2e] rounded-lg p-3 border border-gray-700">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="text-xs text-gray-400">账户 {volcBalances[g.id].accountID}</span>
+                        </div>
+                        <div className="grid grid-cols-3 md:grid-cols-5 gap-2">
+                          <div className="bg-[#0f111a] rounded p-2">
+                            <div className="text-[10px] text-gray-500">可用余额</div>
+                            <div className="text-sm font-bold text-purple-300">{parseFloat(volcBalances[g.id].availableBalance).toFixed(2)}</div>
+                          </div>
+                          <div className="bg-[#0f111a] rounded p-2">
+                            <div className="text-[10px] text-gray-500">现金余额</div>
+                            <div className="text-sm font-bold text-green-300">{parseFloat(volcBalances[g.id].cashBalance).toFixed(2)}</div>
+                          </div>
+                          <div className="bg-[#0f111a] rounded p-2">
+                            <div className="text-[10px] text-gray-500">欠费金额</div>
+                            <div className="text-sm font-bold text-red-300">{parseFloat(volcBalances[g.id].arrearsBalance).toFixed(2)}</div>
+                          </div>
+                          <div className="bg-[#0f111a] rounded p-2">
+                            <div className="text-[10px] text-gray-500">信控额度</div>
+                            <div className="text-sm font-bold text-blue-300">{parseFloat(volcBalances[g.id].creditLimit).toFixed(2)}</div>
+                          </div>
+                          <div className="bg-[#0f111a] rounded p-2">
+                            <div className="text-[10px] text-gray-500">冻结金额</div>
+                            <div className="text-sm font-bold text-amber-300">{parseFloat(volcBalances[g.id].freezeAmount).toFixed(2)}</div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    </>
                   )}
                 </div>
               ))}
@@ -2283,6 +2493,108 @@ export default function AdminPage() {
               </>
             )}
           </div>
+
+          {/* 阿里云账户余额（仅系统管理员） */}
+          {isSuperAdmin && (
+          <div className="mt-6 pt-6 border-t border-gray-800">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h3 className="text-sm font-semibold text-white">阿里云账户余额</h3>
+                <p className="text-xs text-gray-500 mt-0.5">通过 BSS OpenAPI 查询阿里云账户实时余额（DashScope 计费账户）</p>
+              </div>
+            </div>
+
+            {/* AK 配置 */}
+            {bssAkEditing ? (
+              <div className="bg-[#0f111a] rounded-xl p-4 border border-gray-700 space-y-3 mb-3">
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">AccessKey ID</label>
+                  <input
+                    className="w-full px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm font-mono focus:outline-none focus:border-purple-500"
+                    value={bssAkDraft}
+                    onChange={(e) => setBssAkDraft(e.target.value)}
+                    placeholder="LTAI5t..."
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">AccessKey Secret</label>
+                  <input
+                    className="w-full px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm font-mono focus:outline-none focus:border-purple-500"
+                    value={bssSkDraft}
+                    onChange={(e) => setBssSkDraft(e.target.value)}
+                    placeholder="..."
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={handleSaveBssConfig} className="px-4 py-2 bg-purple-600 hover:bg-purple-500 rounded-lg text-white text-sm font-medium transition-colors">保存</button>
+                  <button onClick={() => { setBssAkEditing(false); setBssAkDraft(''); setBssSkDraft(''); }} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-white text-sm">取消</button>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-[#0f111a] rounded-xl p-4 border border-gray-700 mb-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-xs text-gray-400 mb-1">AccessKey 状态</div>
+                    <div className="flex items-center gap-3">
+                      <span className={`text-sm ${bssAkConfigured ? 'text-green-400' : 'text-red-400'}`}>
+                        AK ID: {bssAkConfigured ? bssAkMasked : '未配置'}
+                      </span>
+                      <span className={`text-sm ${bssSkConfigured ? 'text-green-400' : 'text-red-400'}`}>
+                        AK Secret: {bssSkConfigured ? '已配置' : '未配置'}
+                      </span>
+                    </div>
+                  </div>
+                  <button onClick={() => { setBssAkDraft(''); setBssSkDraft(''); setBssAkEditing(true); }} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-white text-sm transition-colors">修改</button>
+                </div>
+              </div>
+            )}
+
+            {/* 查询余额 */}
+            <div className="flex items-center gap-3 mb-3">
+              <button
+                onClick={handleQueryBssBalance}
+                disabled={bssBalanceLoading || !bssAkConfigured || !bssSkConfigured}
+                className="px-4 py-2 bg-purple-600 hover:bg-purple-500 disabled:bg-gray-700 disabled:text-gray-500 rounded-lg text-white text-sm font-medium transition-colors"
+              >
+                {bssBalanceLoading ? '查询中...' : '查询余额'}
+              </button>
+              {(!bssAkConfigured || !bssSkConfigured) && (
+                <span className="text-xs text-amber-400">请先配置 AccessKey</span>
+              )}
+            </div>
+
+            {/* 余额展示 */}
+            {bssBalanceError && (
+              <div className="bg-red-950/30 border border-red-500/30 rounded-xl p-3 text-xs text-red-400">{bssBalanceError}</div>
+            )}
+            {bssBalance && (
+              <div className="bg-[#0f111a] rounded-xl p-4 border border-gray-700">
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                  <div className="bg-[#1c1f2e] rounded-lg p-3">
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wider">可用余额</div>
+                    <div className="text-lg font-bold text-purple-300 mt-1">{parseFloat(bssBalance.availableAmount).toFixed(2)} <span className="text-xs text-gray-400">{bssBalance.currency}</span></div>
+                  </div>
+                  <div className="bg-[#1c1f2e] rounded-lg p-3">
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wider">可用现金余额</div>
+                    <div className="text-lg font-bold text-green-300 mt-1">{parseFloat(bssBalance.availableCashAmount).toFixed(2)} <span className="text-xs text-gray-400">{bssBalance.currency}</span></div>
+                  </div>
+                  <div className="bg-[#1c1f2e] rounded-lg p-3">
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wider">信用额度</div>
+                    <div className="text-lg font-bold text-blue-300 mt-1">{parseFloat(bssBalance.creditAmount).toFixed(2)} <span className="text-xs text-gray-400">{bssBalance.currency}</span></div>
+                  </div>
+                  <div className="bg-[#1c1f2e] rounded-lg p-3">
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wider">网商银行额度</div>
+                    <div className="text-lg font-bold text-amber-300 mt-1">{parseFloat(bssBalance.mybankCreditAmount).toFixed(2)} <span className="text-xs text-gray-400">{bssBalance.currency}</span></div>
+                  </div>
+                  <div className="bg-[#1c1f2e] rounded-lg p-3">
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wider">配额上限</div>
+                    <div className="text-lg font-bold text-gray-300 mt-1">{parseFloat(bssBalance.quotaLimit).toFixed(2)} <span className="text-xs text-gray-400">{bssBalance.currency}</span></div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+          )}
         </div>
 
         {/* 速创API Key 管理（仅系统管理员） */}

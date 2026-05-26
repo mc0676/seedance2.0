@@ -3,6 +3,10 @@
   "version": "1.0.0",
   "type": "module",
   "dependencies": {
+    "@alicloud/bssopenapi20171214": "^4.1.1",
+    "@alicloud/openapi-client": "^0.4.15",
+    "@alicloud/tea-typescript": "^1.8.0",
+    "@alicloud/tea-util": "^1.4.11",
     "ali-oss": "^6.23.0",
     "better-sqlite3": "^12.9.0",
     "cors": "^2.8.5",

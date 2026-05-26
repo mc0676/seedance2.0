@@ -502,6 +502,10 @@ INSERT OR IGNORE INTO model_pricing_happyhorse (mode, model, resolution, credits
 INSERT OR IGNORE INTO system_config (key, value, description) VALUES
   ('happyhorse_api_key', '', 'HappyHorse (阿里云百炼 DashScope) API Key');
 
+INSERT OR IGNORE INTO system_config (key, value, description) VALUES
+  ('bss_access_key_id', '', '阿里云 BSS AccessKey ID（查询账户余额）'),
+  ('bss_access_key_secret', '', '阿里云 BSS AccessKey Secret（查询账户余额）');
+
 -- 模型折扣管理（支持模型计费 + HappyHorse 计费）
 -- model: model_key（模型计费）或 mode（HappyHorse），始终为具体值，不使用通配符
 -- sub_key: 定价字段名如 price_no_video_low（模型计费）或分辨率如 720P（HappyHorse）

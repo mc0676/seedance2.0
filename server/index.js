@@ -30,6 +30,8 @@ import * as audioGenerationService from './services/audioGenerationService.js';
 import { submitTask as happyhorseSubmitTask, getTask as happyhorseGetTask } from './services/happyhorseService.js';
 import * as happyhorsePricingService from './services/happyhorsePricingService.js';
 import * as happyhorseWorker from './services/happyhorseWorker.js';
+import * as bssService from './services/bssService.js';
+import * as volcBillingService from './services/volcBillingService.js';
 import { readFileSync } from 'fs';
 
 // 初始化数据库
@@ -63,6 +65,24 @@ try {
   }
 } catch (e) {
   console.warn('[启动] 写入火山引擎 AK/SK 失败:', e.message);
+}
+
+// 启动时：若环境变量中有阿里云 BSS AK/SK，写入 system_config
+try {
+  const _db3 = getDatabase();
+  const bssAk = process.env.BSS_ACCESS_KEY_ID;
+  const bssSk = process.env.BSS_ACCESS_KEY_SECRET;
+  if (bssAk) {
+    _db3.prepare("INSERT OR REPLACE INTO system_config (key, value, description) VALUES ('bss_access_key_id', ?, '阿里云 BSS AccessKey ID（来自环境变量）')").run(bssAk);
+  }
+  if (bssSk) {
+    _db3.prepare("INSERT OR REPLACE INTO system_config (key, value, description) VALUES ('bss_access_key_secret', ?, '阿里云 BSS AccessKey Secret（来自环境变量）')").run(bssSk);
+  }
+  if (bssAk || bssSk) {
+    console.log('[启动] 已从环境变量写入 BSS AK/SK 到 system_config');
+  }
+} catch (e) {
+  console.warn('[启动] 写入 BSS AK/SK 失败:', e.message);
 }
 
 // 启动时清理僵尸任务（status=generating 但超过 30 分钟无更新）
@@ -3328,6 +3348,34 @@ app.get('/api/admin/credits/details', authenticate, requireAdmin, (req, res) => 
   }
 });
 
+// GET /api/admin/credits/export - 导出消耗明细（全量，按日期范围筛选）
+app.get('/api/admin/credits/export', authenticate, requireAdmin, (req, res) => {
+  try {
+    const db = getDatabase();
+    const { dateFrom, dateTo } = req.query;
+
+    let where = 'WHERE 1=1';
+    const params = [];
+    if (dateFrom) { where += ' AND date(ul.created_at) >= ?'; params.push(dateFrom); }
+    if (dateTo) { where += ' AND date(ul.created_at) <= ?'; params.push(dateTo); }
+
+    const rows = db.prepare(`
+      SELECT ul.id, ul.user_id, ul.task_id, ul.model, ul.action, ul.credits_cost, ul.status,
+             ul.error_message, ul.created_at,
+             u.email, u.name,
+             COALESCE((SELECT d.name FROM departments d WHERE d.id = u.department_id), '') AS department
+      FROM usage_logs ul
+      JOIN users u ON u.id = ul.user_id
+      ${where}
+      ORDER BY ul.created_at DESC
+    `).all(...params);
+
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // GET /api/admin/credits/group-summary - 按小组汇总消耗（支持下钻用户明细）
 app.get('/api/admin/credits/group-summary', authenticate, requireAdmin, (req, res) => {
   try {
@@ -3394,6 +3442,68 @@ app.get('/api/admin/credits/project-consumption', authenticate, requireAdmin, (r
       ORDER BY total_credits DESC
       LIMIT 30
     `).all(`-${days}`);
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/admin/credits/export-group-summary - 导出用小组汇总（按日期范围）
+app.get('/api/admin/credits/export-group-summary', authenticate, requireAdmin, (req, res) => {
+  try {
+    const db = getDatabase();
+    const { dateFrom, dateTo } = req.query;
+
+    let where = "ul.status = 'success'";
+    const params = [];
+    if (dateFrom) { where += ' AND date(ul.created_at) >= ?'; params.push(dateFrom); }
+    if (dateTo) { where += ' AND date(ul.created_at) <= ?'; params.push(dateTo); }
+
+    const rows = db.prepare(`
+      SELECT COALESCE(d.name, '未设置') AS department,
+             COUNT(DISTINCT u.id) AS user_count,
+             SUM(ul.credits_cost) AS total_credits,
+             COUNT(*) AS call_count
+      FROM usage_logs ul
+      JOIN users u ON u.id = ul.user_id
+      LEFT JOIN departments d ON d.id = u.department_id
+      WHERE ${where}
+      GROUP BY d.name
+      ORDER BY total_credits DESC
+    `).all(...params);
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/admin/credits/export-project-consumption - 导出用项目组消耗（按日期范围）
+app.get('/api/admin/credits/export-project-consumption', authenticate, requireAdmin, (req, res) => {
+  try {
+    const db = getDatabase();
+    const { dateFrom, dateTo } = req.query;
+
+    let where = "cl.status = 'settled'";
+    const params = [];
+    if (dateFrom) { where += ' AND date(cl.settled_at) >= ?'; params.push(dateFrom); }
+    if (dateTo) { where += ' AND date(cl.settled_at) <= ?'; params.push(dateTo); }
+
+    const rows = db.prepare(`
+      SELECT COALESCE(p.id, 0) AS id,
+             COALESCE(p.name, '无项目') AS name,
+             COUNT(DISTINCT cl.user_id) AS user_count,
+             SUM(cl.actual_credits) AS total_credits,
+             COUNT(*) AS task_count
+      FROM credit_locks cl
+      LEFT JOIN tasks t ON t.id = cl.task_id
+      LEFT JOIN tasks_happyhorse th ON th.id = cl.task_happyhorse_id
+      LEFT JOIN image_records ir ON ir.id = cl.image_record_id
+      LEFT JOIN video_enhancements ve ON ve.id = cl.enhancement_id
+      LEFT JOIN projects p ON p.id = COALESCE(t.project_id, th.project_id, ir.project_id, ve.project_id)
+      WHERE ${where}
+      GROUP BY p.id
+      ORDER BY total_credits DESC
+    `).all(...params);
     res.json({ success: true, data: rows });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -3756,6 +3866,24 @@ app.get('/api/admin/users', authenticate, requireAdmin, async (req, res) => {
       { role, status, email }
     );
     res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/admin/users/export - 导出全量用户（所有字段，无分页，仅系统管理员）
+app.get('/api/admin/users/export', authenticate, requireSuperAdmin, (req, res) => {
+  try {
+    const db = getDatabase();
+    const users = db.prepare(`
+      SELECT u.id, u.email, u.name, u.role, u.status, u.credits, u.unlimited_credits,
+             u.daily_check_in, u.last_check_in_at, u.department_id, u.created_at, u.updated_at,
+             u.password_hash, d.name AS department_name
+      FROM users u
+      LEFT JOIN departments d ON d.id = u.department_id
+      ORDER BY u.created_at DESC
+    `).all();
+    res.json({ success: true, data: users });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -5187,6 +5315,76 @@ app.put('/api/admin/happyhorse-key', authenticate, requireAdmin, (req, res) => {
     ).run(apiKey);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 系统管理员：阿里云 BSS AK 读/写
+app.get('/api/admin/bss-config', authenticate, requireSuperAdmin, (req, res) => {
+  try {
+    const db = getDatabase();
+    const akRow = db.prepare("SELECT value FROM system_config WHERE key = 'bss_access_key_id'").get();
+    const skRow = db.prepare("SELECT value FROM system_config WHERE key = 'bss_access_key_secret'").get();
+    const ak = akRow?.value || '';
+    const maskedAk = ak ? `${ak.slice(0, 4)}****${ak.slice(-4)}` : '';
+    const maskedSk = skRow?.value ? '****' : '';
+    res.json({ success: true, data: { akConfigured: !!ak, maskedAk, skConfigured: !!(skRow?.value) } });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.put('/api/admin/bss-config', authenticate, requireSuperAdmin, (req, res) => {
+  try {
+    const { accessKeyId, accessKeySecret } = req.body || {};
+    const db = getDatabase();
+    if (accessKeyId !== undefined) {
+      const val = String(accessKeyId || '').trim();
+      db.prepare(
+        `INSERT INTO system_config (key, value, description)
+         VALUES ('bss_access_key_id', ?, '阿里云 BSS AccessKey ID')
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`
+      ).run(val);
+    }
+    if (accessKeySecret !== undefined) {
+      const val = String(accessKeySecret || '').trim();
+      db.prepare(
+        `INSERT INTO system_config (key, value, description)
+         VALUES ('bss_access_key_secret', ?, '阿里云 BSS AccessKey Secret')
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`
+      ).run(val);
+    }
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 系统管理员：查询阿里云账户余额
+app.get('/api/admin/bss-balance', authenticate, requireSuperAdmin, async (req, res) => {
+  try {
+    const balance = await bssService.queryAccountBalance();
+    res.json({ success: true, data: balance });
+  } catch (e) {
+    res.status(502).json({ error: e.message || '查询余额失败' });
+  }
+});
+
+// 系统管理员：查询火山引擎账户余额（指定Key组或激活组）
+app.get('/api/admin/volc-balance', authenticate, requireSuperAdmin, async (req, res) => {
+  try {
+    const keyGroupId = parseInt(req.query.keyGroupId, 10);
+    let balance;
+    if (Number.isFinite(keyGroupId) && keyGroupId > 0) {
+      const db = getDatabase();
+      const group = db.prepare('SELECT volc_access_key, volc_secret_key FROM volc_key_groups WHERE id = ?').get(keyGroupId);
+      if (!group || !group.volc_access_key || !group.volc_secret_key) {
+        return res.status(400).json({ error: '该Key组不存在或未配置 AK/SK' });
+      }
+      balance = await volcBillingService.queryBalanceAcct({
+        accessKeyId: group.volc_access_key,
+        secretAccessKey: group.volc_secret_key,
+      });
+    } else {
+      balance = await volcBillingService.queryBalanceAcct();
+    }
+    res.json({ success: true, data: balance });
+  } catch (e) {
+    res.status(502).json({ error: e.message || '查询余额失败' });
+  }
 });
 
 // 管理员：HappyHorse 计费读/写
