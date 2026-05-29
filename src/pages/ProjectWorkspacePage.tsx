@@ -21,7 +21,7 @@ interface VolcAssetGroup {
 interface VolcAsset {
   Id: string; Name?: string; AssetType?: string;
   Status?: string; CreateTime?: string; UpdateTime?: string;
-  ProjectName?: string; GroupId?: string; URL?: string;
+  ProjectName?: string; GroupId?: string; URL?: string; ThumbnailURL?: string;
 }
 
 function StatusBadge({ status }: { status?: string }) {
