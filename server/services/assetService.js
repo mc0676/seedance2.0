@@ -319,6 +319,7 @@ export function listProjectAssets(projectId, { page = 1, pageSize = 20, status, 
   const conditions = ['pa.project_id = ?'];
   const params = [projectId];
   if (status) { conditions.push('pa.status = ?'); params.push(status); }
+  else { conditions.push("pa.status != 'deleted'"); }
   if (autoInject !== undefined) { conditions.push('pa.auto_inject = ?'); params.push(autoInject ? 1 : 0); }
   if (filter.sql) {
     conditions.push(`(ag.${filter.sql} OR pa.asset_group_id IS NULL)`);

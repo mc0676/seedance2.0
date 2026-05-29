@@ -4,6 +4,7 @@ import { listMyEnhancements } from '../services/enhancementService';
 import { uploadToOss } from '../services/ossService';
 import type { VideoEnhancement, EnhancementPricing, EnhancementResolutionPreset } from '../types';
 import { SparkleIcon, SpinnerIcon, DownloadIcon, CloseIcon, GearIcon } from '../components/Icons';
+import Layout from '../components/Layout';
 import { formatDateTime, useUserTimezone } from '../utils/datetime';
 import {
   getEnhancementPricing,
@@ -196,39 +197,29 @@ export default function EnhancementPage() {
   }, [hasProcessing, recordsPage, projectId]);
 
   return (
-    <div className="h-screen flex flex-col md:flex-row overflow-hidden bg-[#0f111a] text-white">
-      {/* Mobile Header */}
-      <div className="md:hidden sticky top-0 z-40 bg-[#0f111a]/95 backdrop-blur-sm px-4 py-3 flex items-center justify-between border-b border-gray-800">
-        <h1 className="text-lg font-bold">画质增强</h1>
-      </div>
-
-      {/* Left Panel */}
-      <div className="flex-1 md:w-[520px] md:flex-none md:border-r border-gray-800 overflow-y-auto custom-scrollbar p-4 md:p-6 bg-[#0f111a]">
-        <div className="hidden md:flex flex-col gap-1 mb-4">
-          <div className="flex items-center justify-between gap-2">
-            <h2 className="text-xl font-bold truncate">画质增强</h2>
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <button
-                onClick={() => void loadRecords(recordsPage)}
-                disabled={recordsLoading}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 rounded-xl text-xs font-medium text-white transition-all disabled:opacity-50"
-              >
-                <svg className={`w-4 h-4 ${recordsLoading ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round" /></svg>
-              {recordsLoading ? '刷新中...' : '刷新'}
-            </button>
-            <button onClick={() => window.location.href='/settings'} className="btn-ghost" title="设置">
-              <GearIcon className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-        {state.currentProject && (
-          <div className="flex items-center gap-2">
-            <span className="text-xs px-2.5 py-1 rounded-xl bg-purple-500/20 border border-purple-500/30 text-purple-300 font-medium truncate max-w-[300px]">
-              {state.currentProject.name}
-            </span>
-          </div>
-        )}
-      </div>
+    <Layout
+      title="画质增强"
+      historyTitle="增强记录"
+      projectName={state.currentProject?.name}
+      rightHeaderExtra={
+        <span className="text-xs text-gray-500">{recordsTotal > 0 ? `共 ${recordsTotal} 条` : ''}</span>
+      }
+      headerActions={
+        <>
+          <button
+            onClick={() => void loadRecords(recordsPage)}
+            disabled={recordsLoading}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 rounded-xl text-xs font-medium text-white transition-all disabled:opacity-50"
+          >
+            <svg className={`w-4 h-4 ${recordsLoading ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          {recordsLoading ? '刷新中...' : '刷新'}
+          </button>
+          <button onClick={() => window.location.href='/settings'} className="btn-ghost" title="设置">
+            <GearIcon className="w-4 h-4" />
+          </button>
+        </>
+      }
+      left={
 
         <div className="space-y-4">
           {/* 视频上传 */}
@@ -414,14 +405,10 @@ export default function EnhancementPage() {
             </div>
           </div>
         </div>
-      </div>
+      }
 
-      {/* Right Panel - Records */}
-      <div className="flex-1 bg-[#090a0f] overflow-y-auto flex flex-col">
-        <div className="px-4 pt-4 pb-2 flex items-center justify-between">
-          <h2 className="text-sm font-bold text-gray-400 uppercase tracking-wider">增强记录</h2>
-          <span className="text-xs text-gray-500">{recordsTotal > 0 ? `共 ${recordsTotal} 条` : ''}</span>
-        </div>
+      right={
+        <>
 
         {recordsLoading ? (
           <div className="flex-1 flex items-center justify-center text-gray-500">
@@ -439,8 +426,10 @@ export default function EnhancementPage() {
             )}
           </div>
         )}
-      </div>
-    </div>
+        </>
+      }
+
+    />
   );
 }
 

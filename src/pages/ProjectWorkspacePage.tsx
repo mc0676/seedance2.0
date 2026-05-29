@@ -47,6 +47,29 @@ async function uploadToOss(file: File): Promise<string> {
   return data.url as string;
 }
 
+// ARK 图片限制：宽度 300~6000px
+const ARK_IMAGE_MIN_WIDTH = 300;
+const ARK_IMAGE_MAX_WIDTH = 6000;
+
+async function validateImageDimensions(file: File): Promise<string | null> {
+  if (!file.type.startsWith('image/')) return null;
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(img.src);
+      if (img.naturalWidth < ARK_IMAGE_MIN_WIDTH) {
+        resolve(`图片宽度为 ${img.naturalWidth}px，火山引擎要求不低于 ${ARK_IMAGE_MIN_WIDTH}px，请更换图片`);
+      } else if (img.naturalWidth > ARK_IMAGE_MAX_WIDTH) {
+        resolve(`图片宽度为 ${img.naturalWidth}px，火山引擎要求不超过 ${ARK_IMAGE_MAX_WIDTH}px，请更换图片`);
+      } else {
+        resolve(null);
+      }
+    };
+    img.onerror = () => { URL.revokeObjectURL(img.src); resolve(null); };
+    img.src = URL.createObjectURL(file);
+  });
+}
+
 // 删除确认弹窗
 function DeleteConfirmModal({ name, onConfirm, onCancel }: { name: string; onConfirm: () => void; onCancel: () => void }) {
   return (
@@ -565,9 +588,11 @@ export default function ProjectWorkspacePage() {
                 {/* 右列：文件选择区 */}
                 <div>
                   <input ref={newGroupFileRef} type="file" accept="image/*" className="hidden"
-                    onChange={(e) => {
+                    onChange={async (e) => {
                       const f = e.target.files?.[0];
                       if (!f) return;
+                      const err = await validateImageDimensions(f);
+                      if (err) { alert(err); return; }
                       setNewGroupFile(f);
                       setNewGroupPreview(URL.createObjectURL(f));
                     }} />
@@ -621,7 +646,7 @@ export default function ProjectWorkspacePage() {
                 {/* 右列：文件选择区 */}
                 <div>
                   <input ref={addAssetFileRef} type="file" accept="image/*,video/*,audio/*" className="hidden"
-                    onChange={(e) => { const f = e.target.files?.[0]; if (f) { setAddAssetFile(f); setAddAssetName(f.name.replace(/\.[^.]+$/, '')); } }} />
+                    onChange={async (e) => { const f = e.target.files?.[0]; if (f) { const err = await validateImageDimensions(f); if (err) { alert(err); return; } setAddAssetFile(f); setAddAssetName(f.name.replace(/\.[^.]+$/, '')); } }} />
                   {addAssetFile ? (
                     <div className="aspect-square bg-[#0f111a] border border-gray-700 rounded-xl overflow-hidden cursor-pointer group relative flex items-center justify-center"
                       onClick={() => addAssetFileRef.current?.click()}>

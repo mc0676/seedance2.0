@@ -576,6 +576,33 @@ export function initDatabase() {
     }
   }
 
+  // 增量迁移：uploads 表（OSS 上传追踪）
+  {
+    const hasUploads = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='uploads'")
+      .get();
+    if (!hasUploads) {
+      console.log('[database] 迁移：创建 uploads 表...');
+      db.exec(`
+        CREATE TABLE uploads (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          original_name TEXT NOT NULL,
+          oss_key TEXT NOT NULL UNIQUE,
+          oss_url TEXT NOT NULL UNIQUE,
+          media_type TEXT NOT NULL CHECK (media_type IN ('image', 'video', 'audio')),
+          file_size INTEGER,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_uploads_user ON uploads(user_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_uploads_oss_key ON uploads(oss_key);
+        CREATE INDEX IF NOT EXISTS idx_uploads_oss_url ON uploads(oss_url);
+      `);
+      console.log('[database] 迁移完成：uploads 表已创建');
+    }
+  }
+
   // 增量迁移：tasks / tasks_happyhorse 加 concurrent_id 列（批量生成批次 ID）
   for (const table of ['tasks', 'tasks_happyhorse']) {
     const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);

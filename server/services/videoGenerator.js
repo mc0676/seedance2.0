@@ -212,7 +212,7 @@ async function generateSeedanceVideo(options) {
 
   if (onProgress) await onProgress('等待视频生成...');
 
-  const maxWaitMs = 600000;
+  const maxWaitMs = 1800000;
   const pollInterval = 10000;
   const startTime = Date.now();
   let attempt = 0;
@@ -258,7 +258,7 @@ async function generateSeedanceVideo(options) {
     await new Promise(r => setTimeout(r, pollInterval));
   }
 
-  throw new Error('视频生成超时（10分钟）');
+  throw new Error('视频生成超时（30分钟）');
 }
 
 function updateTaskStatus(taskId, status, videoUrl = null, historyId = null) {

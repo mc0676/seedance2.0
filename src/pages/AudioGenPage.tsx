@@ -10,6 +10,7 @@ import { videoUrlToMp3Blob, downloadBlob, ExpiredVideoUrlError, isSignedUrlExpir
 import { formatDateTime, useUserTimezone } from '../utils/datetime';
 import type { AudioGeneration, ProjectAsset } from '../types';
 import { MicIcon, SpinnerIcon, DownloadIcon, SparkleIcon, GearIcon } from '../components/Icons';
+import Layout from '../components/Layout';
 
 function SafeImg({ src, alt, className, fallback }: { src?: string | null; alt: string; className: string; fallback: React.ReactNode }) {
   const [failed, setFailed] = useState(false);
@@ -94,7 +95,8 @@ export default function AudioGenPage() {
 
   // 工作组素材组：可选取的图片素材（file_url 有效 + active + approved），自动加载
   const [projectAssets, setProjectAssets] = useState<ProjectAsset[]>([]);
-  const [, setAssetSyncing] = useState(false);
+  
+
   // 审核同步
   const [syncingReviewIds, setSyncingReviewIds] = useState<Set<string>>(new Set());
   const [dotTick, setDotTick] = useState(0);
@@ -369,50 +371,38 @@ export default function AudioGenPage() {
     }
   }
 
-  return (
-    <div className="h-screen flex flex-col md:flex-row overflow-hidden bg-[#0f111a] text-white">
-      {/* Mobile Header */}
-      <div className="md:hidden sticky top-0 z-40 bg-[#0f111a]/95 backdrop-blur-sm px-4 py-3 flex items-center justify-between border-b border-gray-800">
-        <h1 className="text-lg font-bold">音频生成</h1>
+  if (isVolcKeyDisabled) {
+    return (
+      <div className="flex-1 flex items-center justify-center p-8">
+        <div className="text-center max-w-md">
+          <div className="text-6xl mb-4">⚠️</div>
+          <h2 className="text-xl font-bold text-amber-400 mb-2">火山账号未启用</h2>
+          <p className="text-gray-400 text-sm">当前项目所关联的火山账号未启用，请联系管理员启用。</p>
+        </div>
       </div>
+    );
+  }
 
-      {isVolcKeyDisabled ? (
-        <div className="flex-1 flex items-center justify-center p-8">
-          <div className="text-center max-w-md">
-            <div className="text-6xl mb-4">⚠️</div>
-            <h2 className="text-xl font-bold text-amber-400 mb-2">火山账号未启用</h2>
-            <p className="text-gray-400 text-sm">当前项目所关联的火山账号未启用，请联系管理员启用。</p>
-          </div>
-        </div>
-      ) : (
-      <>
-      {/* Left Panel */}
-      <div className="flex-1 md:w-[520px] md:flex-none md:border-r border-gray-800 overflow-y-auto custom-scrollbar p-4 md:p-6 bg-[#0f111a]">
-        <div className="hidden md:flex flex-col gap-1 mb-4">
-          <div className="flex items-center justify-between gap-2">
-            <h2 className="text-xl font-bold truncate">音频生成</h2>
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <button
-                onClick={() => void loadList(page)}
-                disabled={loading}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 rounded-xl text-xs font-medium text-white transition-all disabled:opacity-50"
-              >
-                <svg className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round" /></svg>
-              {loading ? '刷新中...' : '刷新'}
-            </button>
-            <button onClick={() => window.location.href='/settings'} className="btn-ghost" title="设置">
-              <GearIcon className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-        {state.currentProject && (
-          <div className="flex items-center gap-2">
-            <span className="text-xs px-2.5 py-1 rounded-xl bg-purple-500/20 border border-purple-500/30 text-purple-300 font-medium truncate max-w-[300px]">
-              {state.currentProject.name}
-            </span>
-          </div>
-        )}
-      </div>
+  return (
+    <Layout
+      title="音频生成"
+      projectName={state.currentProject?.name}
+      headerActions={
+        <>
+          <button
+            onClick={() => void loadList(page)}
+            disabled={loading}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 rounded-xl text-xs font-medium text-white transition-all disabled:opacity-50"
+          >
+            <svg className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          {loading ? '刷新中...' : '刷新'}
+          </button>
+          <button onClick={() => window.location.href='/settings'} className="btn-ghost" title="设置">
+            <GearIcon className="w-4 h-4" />
+          </button>
+        </>
+      }
+      left={
         <div className="space-y-4">
           <div className="bg-[#1c1f2e] rounded-2xl p-4 border border-gray-800">
             <label className="text-sm font-bold text-gray-300 mb-2 block">
@@ -607,13 +597,10 @@ export default function AudioGenPage() {
             • MP3 编码:单声道 44.1kHz 128kbps
           </div>
         </div>
-      </div>
+      }
 
-      {/* Right Panel */}
-      <div className="flex-1 bg-[#090a0f] overflow-y-auto flex flex-col">
-        <div className="px-4 pt-4 pb-2 flex items-center justify-between">
-          <h2 className="text-sm font-bold text-gray-400 uppercase tracking-wider">历史记录</h2>
-        </div>
+      right={
+        <>
 
         {loading && items.length === 0 ? (
           <div className="flex-1 flex items-center justify-center text-gray-600 text-sm">
@@ -714,10 +701,9 @@ export default function AudioGenPage() {
             )}
           </div>
         )}
-      </div>
-      </>
-      )}
+        </>
+      }
 
-    </div>
+    />
   );
 }

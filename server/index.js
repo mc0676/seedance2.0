@@ -173,11 +173,10 @@ function createOssClient() {
 function buildOssKey(filename, mediaType) {
   const now = new Date();
   const dateStr = now.toISOString().slice(0, 10);
-  const ts = Date.now();
   const ext = path.extname(filename).toLowerCase() || '';
-  const basename = path.basename(filename, ext).replace(/[^a-zA-Z0-9_\u4e00-\u9fa5]/g, '_').slice(0, 40);
   const typeFolder = mediaType === 'video' ? 'videos' : mediaType === 'audio' ? 'audio' : 'images';
-  return `seedance/${dateStr}/${typeFolder}/${ts}_${basename}${ext}`;
+  const uuid = crypto.randomUUID();
+  return `seedance/${dateStr}/${typeFolder}/${uuid}${ext}`;
 }
 
 // ============================================================
@@ -1004,6 +1003,17 @@ app.post('/api/upload/oss', authenticate, ossUpload.single('file'), async (req, 
     const url = `${OSS_URL_PREFIX}${key}`;
     console.log(`[OSS] 上传成功: ${key} (${(size / 1024).toFixed(1)}KB)`);
 
+    // 记录上传信息到 uploads 表（UUID key → 原始文件名映射）
+    try {
+      const db = getDatabase();
+      db.prepare(`INSERT INTO uploads (user_id, original_name, oss_key, oss_url, media_type, file_size)
+                  VALUES (?, ?, ?, ?, ?, ?)`).run(
+        req.user.id, originalname, key, url, mediaType, size
+      );
+    } catch (e) {
+      console.warn('[OSS] uploads 记录失败:', e.message);
+    }
+
     // 视频文件：服务端探测真实时长 / 分辨率（不下载，调用 OSS video/info 处理）
     // 失败不阻断上传成功的返回，前端用 fallback 流程提示用户
     let videoInfo = null;
@@ -1027,7 +1037,7 @@ app.post('/api/upload/oss', authenticate, ossUpload.single('file'), async (req, 
       }
     }
 
-    res.json({ success: true, url, key, videoInfo });
+    res.json({ success: true, url, key, videoInfo, originalName: originalname });
   } catch (error) {
     console.error('[OSS] 上传失败:', error.message);
     res.status(500).json({ error: `OSS 上传失败: ${error.message}` });
@@ -1563,7 +1573,12 @@ app.post('/api/generate-video', authenticate, upload.array('files', 5), async (r
         {
           const db = getDatabase();
           let sortOrder = 0;
-          const getOriginalName = (url) => url.startsWith('asset://') ? url : (url.split('/').pop()?.split('?')[0] || 'file');
+          const getOriginalName = (url) => {
+            if (url.startsWith('asset://')) return url;
+            const row = db.prepare('SELECT original_name FROM uploads WHERE oss_url = ?').get(url);
+            if (row) return row.original_name;
+            return url.split('/').pop()?.split('?')[0] || 'file';
+          };
           for (const url of imageUrls) {
             db.prepare(`INSERT INTO task_assets (task_id, asset_type, file_path, image_uri, original_name, sort_order) VALUES (?, 'image', '', ?, ?, ?)`)
               .run(thisDbTaskId, url, getOriginalName(url), sortOrder++);
@@ -6912,6 +6927,16 @@ app.post('/api/projects/:id/assets', authenticate, assetUpload.single('file'), a
         fileUrl = `${OSS_URL_PREFIX}${ossKey}`;
         thumbnailUrl = fileType === 'image' ? fileUrl : null;
         console.log(`[assets] 已上传 OSS: ${fileUrl}`);
+        // 记录上传映射到 uploads 表
+        try {
+          const db = getDatabase();
+          db.prepare(`INSERT INTO uploads (user_id, original_name, oss_key, oss_url, media_type, file_size)
+                      VALUES (?, ?, ?, ?, ?, ?)`).run(
+            req.user.id, decodedRawName, ossKey, fileUrl, fileType, req.file.size
+          );
+        } catch (e) {
+          console.warn('[assets] uploads 记录失败:', e.message);
+        }
         try {
           const assetTypeMap = { image: 'Image', video: 'Video', audio: 'Audio' };
           const uploadResult = await assetService.uploadAssetByUrl({

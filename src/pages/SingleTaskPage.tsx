@@ -14,6 +14,7 @@ import { estimatePricing, getCreditBalance, listEnabledModels, type RuntimeModel
 import { getDownloadTasks, downloadTaskVideoDirect, makeDownloadFilename } from '../services/downloadService';
 import { getVolcKeyStatus } from '../services/settingsService';
 import { GearIcon, PlusIcon, CloseIcon, SparkleIcon } from '../components/Icons';
+import Layout from '../components/Layout';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { getProjectAssets } from '../services/projectService';
@@ -326,8 +327,8 @@ export default function SingleTaskPage() {
   // 素材组面板里"当前选中的组"过滤器：null = 显示全部，否则只显示该 volc_group_id 下的素材。
   // 这样当资产较多时，用户可以先点一个组 → 之后 @ 只在该组的素材里选，避免混杂。
   const [activeAssetGroupKey, setActiveAssetGroupKey] = useState<string | null>(null);
-  const [panelGroupIdx, setPanelGroupIdx] = useState(0);
-  const [panelSubIdxMap, setPanelSubIdxMap] = useState<Record<string, number>>({});
+  const [, setPanelGroupIdx] = useState(0);
+  const [, setPanelSubIdxMap] = useState<Record<string, number>>({});
   // DOM-position tracking for @ anchor (node + offset pointing to just before '@')
   const mentionAnchorNodeRef = useRef<Node | null>(null);
   const mentionAnchorOffsetRef = useRef<number>(0);
@@ -1667,64 +1668,49 @@ export default function SingleTaskPage() {
     || MODEL_OPTIONS.find((m) => m.value === model)?.label
     || 'Seedance 2.0';
 
-  return (
-    <div
-      className="h-screen flex flex-col md:flex-row overflow-hidden bg-[#0f111a] text-white"
-      onDragOver={(e) => e.preventDefault()}
-      onDrop={handlePageDrop}
-    >
-      {/* Mobile Header */}
-      <div className="md:hidden sticky top-0 z-40 bg-[#0f111a]/95 backdrop-blur-sm px-4 py-3 flex items-center justify-between border-b border-gray-800">
-        <h1 className="text-lg font-bold">{currentModelLabel}</h1>
-        <button onClick={() => navigate('/settings')} className="btn-ghost">
-          <GearIcon className="w-4 h-4" />
-        </button>
+  if (isVolcKeyDisabled) {
+    return (
+      <div className="flex-1 flex items-center justify-center p-8">
+        <div className="text-center max-w-md">
+          <div className="text-6xl mb-4">⚠️</div>
+          <h2 className="text-xl font-bold text-amber-400 mb-2">火山账号未启用</h2>
+          <p className="text-gray-400 text-sm">当前项目所关联的火山账号未启用，请联系管理员启用。</p>
+        </div>
       </div>
+    );
+  }
 
-      {isVolcKeyDisabled ? (
-        <div className="flex-1 flex items-center justify-center p-8">
-          <div className="text-center max-w-md">
-            <div className="text-6xl mb-4">⚠️</div>
-            <h2 className="text-xl font-bold text-amber-400 mb-2">火山账号未启用</h2>
-            <p className="text-gray-400 text-sm">当前项目所关联的火山账号未启用，请联系管理员启用。</p>
-          </div>
-        </div>
-      ) : (
-      <>
-      {/* Left Panel */}
-      <div className="flex-1 md:w-[520px] md:flex-none md:border-r border-gray-800 overflow-y-auto custom-scrollbar p-4 md:p-6 bg-[#0f111a]">
-        <div className="hidden md:flex flex-col gap-1 mb-4">
-          {/* 第一行：模型名称 + 操作按钮 */}
-          <div className="flex items-center justify-between gap-2">
-            <h2 className="text-xl font-bold truncate">{currentModelLabel} 视频配置</h2>
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <button
-                onClick={() => void refreshWorkgroup()}
-                disabled={assetSyncing}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 rounded-xl text-xs font-medium text-white transition-all disabled:opacity-50"
-              >
-                <svg
-                  className={`w-4 h-4 ${assetSyncing ? 'animate-spin' : ''}`}
-                  viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}
-                >
-                  <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-                {assetSyncing ? '同步中...' : '刷新'}
-              </button>
-              <button onClick={() => navigate('/settings')} className="btn-ghost" title="设置">
-                <GearIcon className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-          {/* 第二行：项目/组名称 */}
-          {state.currentProject && (
-            <div className="flex items-center gap-2">
-              <span className="text-xs px-2.5 py-1 rounded-xl bg-purple-500/20 border border-purple-500/30 text-purple-300 font-medium truncate max-w-[300px]">
-                {state.currentProject.name}
-              </span>
-            </div>
-          )}
-        </div>
+  return (
+    <>
+    <Layout
+      containerProps={{
+        onDragOver: (e) => e.preventDefault(),
+        onDrop: handlePageDrop,
+      }}
+      title={`${currentModelLabel} 视频配置`}
+      projectName={state.currentProject?.name}
+      headerActions={
+
+        <>
+          <button
+            onClick={() => void refreshWorkgroup()}
+            disabled={assetSyncing}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 rounded-xl text-xs font-medium text-white transition-all disabled:opacity-50"
+          >
+            <svg
+              className={`w-4 h-4 ${assetSyncing ? 'animate-spin' : ''}`}
+              viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}
+            >
+              <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            {assetSyncing ? '同步中...' : '刷新'}
+          </button>
+          <button onClick={() => navigate('/settings')} className="btn-ghost" title="设置">
+            <GearIcon className="w-4 h-4" />
+          </button>
+        </>
+      }
+      left={
 
         <div className="space-y-4">
           {/* 模型选择 */}
@@ -2242,10 +2228,10 @@ export default function SingleTaskPage() {
             )}
           </div>
         </div>
-      </div>
+      }
 
-      {/* Right Panel - History */}
-      <div className="flex-1 bg-[#090a0f] overflow-y-auto flex flex-col">
+      right={
+        <>
         {/* Current generation banner */}
         {(isGenerating || generation.status === 'error') && (
           <div className={`mx-4 mt-4 p-4 rounded-2xl border ${generation.status === 'error' ? 'border-red-500/30 bg-red-500/5' : 'border-purple-500/30 bg-purple-500/5'}`}>
@@ -2262,10 +2248,6 @@ export default function SingleTaskPage() {
             )}
           </div>
         )}
-
-        <div className="px-4 pt-4 pb-2">
-          <h2 className="text-sm font-bold text-gray-400 uppercase tracking-wider">历史记录</h2>
-        </div>
 
         {historyItems.length === 0 && !historyLoading && (
           <div className="flex-1 flex items-center justify-center text-gray-600 text-sm">
@@ -2613,10 +2595,11 @@ export default function SingleTaskPage() {
             <div className="text-center text-xs text-gray-600 py-2">已显示全部记录</div>
           )}
         </div>
-      </div>
+        </>
+      }
 
-
-      {/* Video preview modal */}
+    />
+    {/* Video preview modal */}
       {previewVideo && (
         <div
           className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4"
@@ -2654,10 +2637,6 @@ export default function SingleTaskPage() {
           </div>
         </div>
       )}
-
-
-      </>
-      )}
-    </div>
+    </>
   );
 }

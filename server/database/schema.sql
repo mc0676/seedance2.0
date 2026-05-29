@@ -631,6 +631,22 @@ CREATE TABLE IF NOT EXISTS admin_quotas (
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- OSS 上传记录表（UUID key → 原始文件名映射）
+CREATE TABLE IF NOT EXISTS uploads (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  original_name TEXT NOT NULL,
+  oss_key TEXT NOT NULL UNIQUE,
+  oss_url TEXT NOT NULL UNIQUE,
+  media_type TEXT NOT NULL CHECK (media_type IN ('image', 'video', 'audio')),
+  file_size INTEGER,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_uploads_user ON uploads(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_uploads_oss_key ON uploads(oss_key);
+CREATE INDEX IF NOT EXISTS idx_uploads_oss_url ON uploads(oss_url);
+
 -- 火山Key组表
 CREATE TABLE IF NOT EXISTS volc_key_groups (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
