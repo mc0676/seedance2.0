@@ -17,9 +17,26 @@ import { GearIcon, PlusIcon, CloseIcon, SparkleIcon } from '../components/Icons'
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { getProjectAssets } from '../services/projectService';
-import { listProjectAssetGroups } from '../services/assetService';
+import { listProjectAssetGroups, syncAssetReview } from '../services/assetService';
 import type { ProjectAsset, AssetGroupInfo } from '../types/index';
 import { formatShortDateTime, useUserTimezone } from '../utils/datetime';
+
+function ImageWithFallback({ src }: { src: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return <div className="w-8 h-8 rounded-lg bg-red-500/10 border border-red-500/30 flex items-center justify-center text-xs flex-shrink-0" title="图片已失效">⚠️</div>;
+  }
+  return <img src={src} className="w-8 h-8 rounded-lg object-cover border border-gray-700 flex-shrink-0" onError={() => setFailed(true)} />;
+}
+
+function GroupCoverImage({ group, coverMap }: { group: AssetGroupInfo & { enabled: boolean }; coverMap: Map<number, string> }) {
+  const src = group.preview_url || coverMap.get(group.id) || null;
+  const [failed, setFailed] = useState(false);
+  if (!src || failed) {
+    return <div className="w-full h-full flex items-center justify-center text-3xl">📁</div>;
+  }
+  return <img src={src} alt={group.name} className="w-full h-full object-cover" onError={() => setFailed(true)} />;
+}
 
 interface AssetSelection {
   id: string;
@@ -291,6 +308,18 @@ export default function SingleTaskPage() {
   const [projectAssetGroups, setProjectAssetGroups] = useState<AssetGroupInfo[]>([]);
   // 禁用的素材组 ID 集合
   const [disabledGroupIds, setDisabledGroupIds] = useState<Set<number>>(new Set());
+  // 审核同步中的素材 ID 集合
+  const [syncingReviewIds, setSyncingReviewIds] = useState<Set<string>>(new Set());
+  // "检测中" 动画点计数
+  const [dotTick, setDotTick] = useState(0);
+  // 审核同步中时，动画点循环
+  useEffect(() => {
+    if (syncingReviewIds.size === 0) { setDotTick(0); return; }
+    const t = setInterval(() => setDotTick(p => p + 1), 400);
+    return () => clearInterval(t);
+  }, [syncingReviewIds.size]);
+  const dotStr = '.'.repeat((dotTick % 3) + 1);
+
   // @ 小窗口键盘焦点索引（-1 = 无焦点）
   const [mentionFocusIdx, setMentionFocusIdx] = useState(-1);
   // 素材组面板键盘状态：当前聚焦的组索引 + 每组展开到第几个子素材
@@ -392,36 +421,36 @@ export default function SingleTaskPage() {
   }, []);
 
    // 选中某组后，@ 面板可选项只来自该组；activeAssetGroupKey=null 表示「全部」
-  // 禁用的素材组不参与 @ 联想
+  // 禁用的素材组不参与 @ 联想（基于本地 asset_groups.id ↔ project_assets.asset_group_id）
   const mentionableAssets = useMemo(() => {
-    const enabledVolcGroupIds = new Set(
+    const enabledGroupIds = new Set(
       projectAssetGroups
-        .filter((g) => !disabledGroupIds.has(g.id) && g.volc_group_id)
-        .map((g) => g.volc_group_id!)
+        .filter((g) => !disabledGroupIds.has(g.id))
+        .map((g) => g.id)
     );
     let filtered = availableAssets.filter((a) =>
-      a.volc_group_id ? enabledVolcGroupIds.has(a.volc_group_id) : true
+      a.asset_group_id != null ? enabledGroupIds.has(a.asset_group_id) : true
     );
     if (activeAssetGroupKey) {
-      filtered = filtered.filter((a) => (a.volc_group_id || `_single_${a.id}`) === activeAssetGroupKey);
+      filtered = filtered.filter((a) => (a.asset_group_id != null ? String(a.asset_group_id) : `_single_${a.id}`) === activeAssetGroupKey);
     }
     return filtered;
   }, [availableAssets, activeAssetGroupKey, projectAssetGroups, disabledGroupIds]);
 
   // 将 mentionableAssets 按素材组名称分组，用于 @ 面板分组显示
+  // 基于本地 asset_groups.id ↔ project_assets.asset_group_id
   const groupedMentionableAssets = useMemo(() => {
-    // volc_group_id → 素材组名称
-    const groupNameMap = new Map<string, string>();
+    const groupNameMap = new Map<number, string>();
     for (const g of projectAssetGroups) {
-      if (g.volc_group_id && !disabledGroupIds.has(g.id)) {
-        groupNameMap.set(g.volc_group_id, g.name);
+      if (!disabledGroupIds.has(g.id)) {
+        groupNameMap.set(g.id, g.name);
       }
     }
     const groups: { name: string; assets: ProjectAsset[] }[] = [];
     const seen = new Map<string, { name: string; assets: ProjectAsset[] }>();
     for (const a of mentionableAssets) {
-      const key = a.volc_group_id && groupNameMap.has(a.volc_group_id)
-        ? groupNameMap.get(a.volc_group_id)!
+      const key = a.asset_group_id != null && groupNameMap.has(a.asset_group_id)
+        ? groupNameMap.get(a.asset_group_id)!
         : '未分组';
       if (!seen.has(key)) {
         const entry = { name: key, assets: [] };
@@ -433,14 +462,14 @@ export default function SingleTaskPage() {
     return groups;
   }, [mentionableAssets, projectAssetGroups, disabledGroupIds]);
 
-  // 从 availableAssets 提取每个素材组的封面图 URL（第一个有效素材），用于渲染素材组卡片预览
+  // 从 availableAssets 提取每个素材组的封面图 URL（基于本地 asset_group_id）
   const groupCoverMap = useMemo(() => {
-    const map = new Map<string, string>();
+    const map = new Map<number, string>();
     for (const a of availableAssets) {
-      if (!a.volc_group_id) continue;
-      if (map.has(a.volc_group_id)) continue;
+      if (a.asset_group_id == null) continue;
+      if (map.has(a.asset_group_id)) continue;
       const url = a.thumbnail_url || a.file_url;
-      if (url) map.set(a.volc_group_id, url);
+      if (url) map.set(a.asset_group_id, url);
     }
     return map;
   }, [availableAssets]);
@@ -449,7 +478,7 @@ export default function SingleTaskPage() {
   useEffect(() => {
     if (!activeAssetGroupKey) return;
     const exists = assetGroupCards.some((g) =>
-      (g.volc_group_id || `_single_${g.id}`) === activeAssetGroupKey
+      String(g.id) === activeAssetGroupKey || `_single_${g.id}` === activeAssetGroupKey
     );
     if (!exists) setActiveAssetGroupKey(null);
   }, [assetGroupCards, activeAssetGroupKey]);
@@ -743,83 +772,31 @@ export default function SingleTaskPage() {
   }, []);
 
   // 加载工作组素材组（有 file_url 的素材均可引用）
-  // 先用本地 DB 快速渲染，再异步用 ARK 实时数据覆盖
+  // 先加载 asset_groups（可能触发自动同步），再加载 project_assets
   useEffect(() => {
     const pid = state.currentProject?.id;
-    setProjectAssets([]); // 立即清空
+    setProjectAssets([]);
     if (!pid) return;
     let cancelled = false;
 
-    // 第一阶段：先请求本地 DB 数据（快，无 ARK 调用）
-    getProjectAssets(pid, { pageSize: 100, skipLive: true } as Parameters<typeof getProjectAssets>[1])
-      .then((r) => {
-        if (cancelled) return;
-        const tagged = r.assets
-          .filter((a) => a.review_status !== 'rejected' && (a.volc_asset_id || a.file_url))
-          .map((a) => ({ ...a, project_id: pid }));
-        if (tagged.length > 0) setProjectAssets(tagged); // 有本地数据先展示
-      })
-      .catch(() => {});
-
-    // 第二阶段：再请求 ARK 实时数据覆盖
-    setAssetSyncing(true);
-    getProjectAssets(pid, { pageSize: 100 })
-      .then((r) => {
-        if (cancelled) return;
-        const tagged = r.assets
-          .filter((a) => a.review_status !== 'rejected' && (a.volc_asset_id || a.file_url))
-          .map((a) => ({ ...a, project_id: pid }));
-        // ARK 偶发抖动保护：若实时数据比本地 DB 少，保留本地 DB 更多的结果
-        setProjectAssets((prev) => tagged.length >= prev.length ? tagged : prev);
-        // 修复A：ARK数据到达后，已插入chip若当时无volc_asset_id（用了file_url），现在补全为 asset:// URI
-        setAssetSelections((prev) => prev.map((sel) => {
-          if (sel.volcAssetId) {
-            // 已有volcAssetId，确认URI格式正确
-            return sel.assetUri.startsWith('asset://') ? sel : { ...sel, assetUri: `asset://${sel.volcAssetId}` };
-          }
-          // 无volcAssetId，尝试通过file_url找到对应的live资产
-          const match = tagged.find((a) => a.file_url === sel.assetUri && a.volc_asset_id);
-          if (!match) return sel;
-          return {
-            ...sel,
-            volcAssetId: match.volc_asset_id!,
-            assetUri: `asset://${match.volc_asset_id}`,
-            chipTag: `@${match.volc_asset_id}`,
-          };
-        }));
-      })
-      .catch(() => {
-        // ARK 实时数据失败，1.5s 后自动重试一次
-        if (!cancelled) {
-          setTimeout(() => {
-            if (cancelled) return;
-            getProjectAssets(pid, { pageSize: 100 })
-              .then((r2) => {
-                if (cancelled) return;
-                const tagged2 = r2.assets
-                  .filter((a) => a.review_status !== 'rejected' && (a.volc_asset_id || a.file_url))
-                  .map((a) => ({ ...a, project_id: pid }));
-                setProjectAssets((prev) => tagged2.length >= prev.length ? tagged2 : prev);
-              })
-              .catch(() => {});
-          }, 1500);
-        }
-      })
-      .finally(() => { if (!cancelled) setAssetSyncing(false); });
+    (async () => {
+      // 先等 asset_groups 加载（可能含自动同步）
+      const groups = await listProjectAssetGroups(pid).catch(() => []);
+      if (cancelled) return;
+      setProjectAssetGroups(groups);
+      // 再加载 project_assets
+      const r = await getProjectAssets(pid, { pageSize: 100, skipLive: true } as Parameters<typeof getProjectAssets>[1]).catch(() => null);
+      if (cancelled || !r) return;
+      const tagged = r.assets
+        .filter((a) => a.review_status !== 'rejected' && (a.volc_asset_id || a.file_url))
+        .map((a) => ({ ...a, project_id: pid }));
+      setProjectAssets(tagged);
+    })();
 
     return () => { cancelled = true; };
   }, [state.currentProject?.id]);
 
-  // 加载项目素材组（asset_groups 表）
-  useEffect(() => {
-    const pid = state.currentProject?.id;
-    if (!pid) { setProjectAssetGroups([]); return; }
-    let cancelled = false;
-    listProjectAssetGroups(pid)
-      .then((groups) => { if (!cancelled) setProjectAssetGroups(groups); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [state.currentProject?.id]);
+
 
   // 工作组切换时清空表单（assetSelections、prompt、上传素材都属于上个工作组的上下文，不应跨组保留）
   const formResetProjectIdRef = useRef<number | undefined>(undefined);
@@ -850,7 +827,7 @@ export default function SingleTaskPage() {
     if (!pid) return;
     setAssetSyncing(true);
     try {
-      const r = await getProjectAssets(pid, { pageSize: 100 });
+      const r = await getProjectAssets(pid, { pageSize: 100, skipLive: true });
       const tagged = r.assets
         .filter((a) => a.review_status !== 'rejected' && (a.volc_asset_id || a.file_url))
         .map((a) => ({ ...a, project_id: pid }));
@@ -1683,7 +1660,7 @@ export default function SingleTaskPage() {
   };
 
   const activeImages = referenceMode === 'first_last_frame' ? [...firstFrameImages, ...lastFrameImages] : images;
-  const canGenerate = (prompt.trim() || activeImages.length > 0 || videos.length > 0 || audios.length > 0 || assetSelections.length > 0) && !isGenerating && !uploading;
+  const canGenerate = (prompt.trim() || activeImages.length > 0 || videos.length > 0 || audios.length > 0 || assetSelections.length > 0) && !uploading;
   const effectiveLocked = estimate?.discountedLockedCredits != null ? estimate.discountedLockedCredits : (estimate?.lockedCredits ?? 0);
   const creditInsufficient = !!(balance && !balance.unlimited && effectiveLocked > 0 && balance.available < effectiveLocked * batchSize);
   const currentModelLabel = runtimeModels.find((m) => m.model_key === model)?.label
@@ -1856,13 +1833,7 @@ export default function SingleTaskPage() {
                           : `${group.name}（${group.asset_count} 个素材）· 点击启用`}
                       >
                         <div className="w-24 h-24 rounded-t-xl overflow-hidden bg-[#0d0f1a] relative">
-                          {(group.preview_url || (group.volc_group_id && groupCoverMap.get(group.volc_group_id))) ? (
-                            <img src={group.preview_url || (group.volc_group_id ? groupCoverMap.get(group.volc_group_id) : '')} alt={group.name} className="w-full h-full object-cover" />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center text-3xl">
-                              📁
-                            </div>
-                          )}
+                          <GroupCoverImage group={group} coverMap={groupCoverMap} />
                           {group.asset_count > 0 && (
                             <span className="absolute top-1 right-1 bg-black/70 text-white text-[9px] px-1 py-0.5 rounded-full">
                               {group.asset_count}
@@ -1874,7 +1845,6 @@ export default function SingleTaskPage() {
                         </div>
                         <div className={`px-1.5 py-1.5 rounded-b-xl ${group.enabled ? 'bg-amber-500/10' : 'bg-[#0d0f1a]'}`}>
                           <div className="text-[10px] text-gray-300 font-medium truncate">{group.name}</div>
-                          <div className="text-[9px] text-gray-500 truncate">{group.asset_count} 个素材</div>
                         </div>
                       </div>
                     );
@@ -1887,7 +1857,14 @@ export default function SingleTaskPage() {
           {/* Prompt */}
           <div className="bg-[#1c1f2e] rounded-2xl p-4 border border-gray-800">
             <div className="flex items-center justify-between mb-3">
-              <label className="text-sm font-bold text-gray-300">提示词</label>
+               <label className="text-sm font-bold text-gray-300">提示词</label>
+              {toasts.length > 0 && (
+                <div className="flex items-center gap-2">
+                  {toasts.map((t) => (
+                    <span key={t.id} className="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded-lg animate-fade-in">{t.text}</span>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="relative">
@@ -1959,21 +1936,68 @@ export default function SingleTaskPage() {
                                   const flatIdx = mentionItems.length + assetOffset + ai;
                                   const isFocused = mentionFocusIdx === flatIdx;
                                   const chipTag = getAssetChipTag(asset, availableAssets);
+                                  const volcId = asset.volc_asset_id || '';
+                                  const isSyncing = syncingReviewIds.has(volcId);
+                                  const isRejected = asset.review_status === 'rejected';
+                                  const isPending = asset.review_status === 'pending';
+                                  const disabled = isRejected;
                                   return (
                                     <button
                                       key={`${asset.id}-${ai}`}
                                       data-mention-idx={flatIdx}
-                                      onMouseDown={(e) => { e.preventDefault(); insertAssetMention(asset); setMentionFocusIdx(-1); }}
-                                      className={`flex items-center gap-2 px-3 py-2 border rounded-xl transition-all text-sm ${isFocused ? 'bg-amber-500/20 border-amber-400' : 'bg-[#1c1f2e] hover:bg-amber-500/10 border-gray-700 hover:border-amber-500/40'}`}
+                                      disabled={disabled}
+                                      onMouseDown={async (e) => {
+                                        e.preventDefault();
+                                        if (isPending && volcId && state.currentProject?.id) {
+                                          setSyncingReviewIds(p => new Set(p).add(volcId));
+                                          try {
+                                            const updated = await syncAssetReview(state.currentProject.id, asset.id);
+                                            // 更新 projectAssets 中该资产的 review_status
+                                            setProjectAssets(prev => prev.map(a =>
+                                              (a.volc_asset_id === volcId || a.id === asset.id)
+                                                ? { ...a, review_status: updated.review_status, status: updated.status }
+                                                : a
+                                            ));
+                                          } catch {
+                                            alert('审核查询失败，请稍后重试');
+                                          } finally {
+                                            setSyncingReviewIds(p => { const n = new Set(p); n.delete(volcId); return n; });
+                                          }
+                                        } else if (!isRejected) {
+                                          insertAssetMention(asset);
+                                          setMentionFocusIdx(-1);
+                                        }
+                                      }}
+                                      className={`flex items-center gap-2 px-3 py-2 border rounded-xl transition-all text-sm ${
+                                        isRejected ? 'bg-red-500/10 border-red-500/40 opacity-60 cursor-not-allowed' :
+                                        isSyncing ? 'bg-amber-500/10 border-amber-500/40 animate-pulse' :
+                                        isPending ? 'bg-amber-500/10 border-amber-500/40 hover:bg-amber-500/20' :
+                                        isFocused ? 'bg-amber-500/20 border-amber-400' : 'bg-[#1c1f2e] hover:bg-amber-500/10 border-gray-700 hover:border-amber-500/40'
+                                      }`}
                                     >
                                       {asset.thumbnail_url || asset.file_url ? (
-                                        <img src={asset.thumbnail_url || asset.file_url!} className="w-8 h-8 rounded-lg object-cover flex-shrink-0" />
+                                        <div className="relative flex-shrink-0">
+                                          <img src={asset.thumbnail_url || asset.file_url!} className="w-8 h-8 rounded-lg object-cover" />
+                                          {isPending && !isSyncing && (
+                                            <div className="absolute inset-0 bg-black/40 rounded-lg flex items-center justify-center">
+                                              <span className="text-[7px] text-amber-300 font-bold">审核中</span>
+                                            </div>
+                                          )}
+                                        </div>
                                       ) : (
                                         <span className="text-xl">{asset.file_type === 'video' ? '🎬' : asset.file_type === 'audio' ? '🎵' : '🖼️'}</span>
                                       )}
                                       <div className="text-left">
-                                        <div className={`text-xs font-medium ${isFocused ? 'text-white' : 'text-gray-300'}`}>{asset.name}</div>
-                                        <div className="text-[9px] text-amber-400/70 truncate max-w-[80px] font-mono">{chipTag}</div>
+                                        <div className={`text-xs font-medium ${isFocused ? 'text-white' : isRejected ? 'text-red-400' : 'text-gray-300'}`}>
+                                          {isSyncing ? `检测中${dotStr}` : isPending ? '审核中' : asset.name}
+                                        </div>
+                                        <div className={`text-[9px] truncate max-w-[80px] font-mono ${
+                                          isRejected ? 'text-red-500/50' :
+                                          isPending ? 'text-amber-400' :
+                                          'text-amber-400/70'
+                                        }`}>
+                                          {isRejected ? '未过审' : isPending ? '审核中' : chipTag}
+                                        </div>
                                       </div>
                                     </button>
                                   );
@@ -2309,7 +2333,7 @@ export default function SingleTaskPage() {
                         a.uri.startsWith('asset://') ? (
                           <div key={i} className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-[10px] text-amber-400 flex-shrink-0">资</div>
                         ) : (
-                          <img key={i} src={a.uri} className="w-8 h-8 rounded-lg object-cover border border-gray-700 flex-shrink-0" onError={(e) => (e.currentTarget.style.display = 'none')} />
+                          <ImageWithFallback key={i} src={a.uri} />
                         )
                       ))}
                       {item.assets.some((a) => a.assetType === 'video') && (
@@ -2440,10 +2464,25 @@ export default function SingleTaskPage() {
                           const ossAudios = assets.filter((a) => a.assetType === 'audio' && !a.uri.startsWith('asset://'));
                           const assetRefs = assets.filter((a) => a.uri.startsWith('asset://'));
 
+                          let ossFailedCount = 0;
+                          // 检查 OSS URL 是否可访问，失效的不恢复
+                          const checkOss = async (url: string) => {
+                            try {
+                              const r = await fetch(url, { method: 'HEAD' });
+                              return r.ok;
+                            } catch { return false; }
+                          };
+                          const allOss = [...ossImages, ...ossVideos, ...ossAudios];
+                          const ossResults = await Promise.all(allOss.map(async (a) => ({ ...a, valid: await checkOss(a.uri) })));
+                          const validOssImages = ossResults.filter(a => a.assetType === 'image' && a.valid);
+                          const validOssVideos = ossResults.filter(a => a.assetType === 'video' && a.valid);
+                          const validOssAudios = ossResults.filter(a => a.assetType === 'audio' && a.valid);
+                          ossFailedCount = ossResults.filter(a => !a.valid).length;
+
                           const makeName = (a: typeof assets[0], ext: string) =>
                             a.originalName || a.uri.split('/').pop()?.split('?')[0] || `file.${ext}`;
 
-                          const restoredImages = ossImages.map((a) => ({
+                          const restoredImages = validOssImages.map((a) => ({
                             id: `restored-${++nextId}`,
                             file: new File([], makeName(a, 'jpg'), { type: 'image/jpeg' }),
                             previewUrl: a.uri,
@@ -2453,7 +2492,7 @@ export default function SingleTaskPage() {
                             ossUrl: a.uri,
                             uploadProgress: 100,
                           }));
-                          const restoredVideos = ossVideos.map((a) => ({
+                          const restoredVideos = validOssVideos.map((a) => ({
                             id: `restored-${++nextId}`,
                             file: new File([], makeName(a, 'mp4'), { type: 'video/mp4' }),
                             previewUrl: '',
@@ -2463,7 +2502,7 @@ export default function SingleTaskPage() {
                             ossUrl: a.uri,
                             uploadProgress: 100,
                           }));
-                          const restoredAudios = ossAudios.map((a) => ({
+                          const restoredAudios = validOssAudios.map((a) => ({
                             id: `restored-${++nextId}`,
                             file: new File([], makeName(a, 'mp3'), { type: 'audio/mpeg' }),
                             previewUrl: '',
@@ -2483,7 +2522,7 @@ export default function SingleTaskPage() {
                           if (assetRefs.length > 0 && sameProject && currentPid) {
                             try {
                               setAssetSyncing(true);
-                              const r = await getProjectAssets(currentPid, { pageSize: 100 });
+                              const r = await getProjectAssets(currentPid, { pageSize: 100, skipLive: true });
                               currentProjectAssets = r.assets
                                 .filter((a: ProjectAsset) => a.review_status !== 'rejected' && (a.volc_asset_id || a.file_url))
                                 .map((a: ProjectAsset) => ({ ...a, project_id: currentPid }));
@@ -2541,9 +2580,11 @@ export default function SingleTaskPage() {
                           const finalHtml = buildHtmlExplicit(newPrompt, newSelections, restoredImages, restoredVideos, restoredAudios, [], [], assetDisplayMap);
                           pendingEditorHtmlRef.current = finalHtml;
 
-                          // 7. 提示已删除素材
-                          if (deletedNames.length > 0) {
-                            showToast(`${deletedNames.length} 个素材已被删除，相关引用已自动移除`);
+                          // 7. 提示已删除/失效素材（先清历史 toast，重新计时）
+                          setToasts([]);
+                          const totalFailed = deletedNames.length + ossFailedCount;
+                          if (totalFailed > 0) {
+                            showToast(`${totalFailed} 个素材已失效${deletedNames.length > 0 ? `（${deletedNames.length} 个已删除${ossFailedCount > 0 ? `，${ossFailedCount} 个不可访问` : ''}）` : ossFailedCount > 0 ? `（${ossFailedCount} 个不可访问）` : ''}，相关引用已移除`);
                           }
 
                           window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -2614,16 +2655,7 @@ export default function SingleTaskPage() {
         </div>
       )}
 
-      {/* Toast 通知（自动消失）*/}
-      {toasts.length > 0 && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-2 items-center pointer-events-none">
-          {toasts.map((t) => (
-            <div key={t.id} className="bg-gray-900/95 border border-amber-500/40 text-amber-300 text-sm px-4 py-2.5 rounded-xl shadow-xl backdrop-blur-sm animate-fade-in">
-              {t.text}
-            </div>
-          ))}
-        </div>
-      )}
+
       </>
       )}
     </div>

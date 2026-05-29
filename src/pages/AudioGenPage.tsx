@@ -3,13 +3,19 @@ import { useApp } from '../context/AppContext';
 import { uploadToOss } from '../services/ossService';
 import { submitAudioGeneration, listAudioGenerations, getAudioGeneration, getAudioGenPublicConfig, estimateAudioGenCredits, type AudioGenPublicConfig, type AudioGenEstimate } from '../services/audioService';
 import { getProjectAssets } from '../services/projectService';
-import { listProjectAssetGroups } from '../services/assetService';
+import { listProjectAssetGroups, syncAssetReview } from '../services/assetService';
 import { getCreditBalance, type CreditBalance } from '../services/pricingService';
 import { getVolcKeyStatus } from '../services/settingsService';
 import { videoUrlToMp3Blob, downloadBlob, ExpiredVideoUrlError, isSignedUrlExpired } from '../utils/audioExtractor';
 import { formatDateTime, useUserTimezone } from '../utils/datetime';
 import type { AudioGeneration, ProjectAsset } from '../types';
 import { MicIcon, SpinnerIcon, DownloadIcon, SparkleIcon, GearIcon } from '../components/Icons';
+
+function SafeImg({ src, alt, className, fallback }: { src?: string | null; alt: string; className: string; fallback: React.ReactNode }) {
+  const [failed, setFailed] = useState(false);
+  if (!src || failed) return <>{fallback}</>;
+  return <img src={src} alt={alt} className={className} onError={() => setFailed(true)} />;
+}
 
 const STATUS_BADGE: Record<AudioGeneration['status'], { text: string; cls: string }> = {
   pending: { text: '排队中', cls: 'bg-gray-700/40 text-gray-300 border-gray-600' },
@@ -89,6 +95,15 @@ export default function AudioGenPage() {
   // 工作组素材组：可选取的图片素材（file_url 有效 + active + approved），自动加载
   const [projectAssets, setProjectAssets] = useState<ProjectAsset[]>([]);
   const [, setAssetSyncing] = useState(false);
+  // 审核同步
+  const [syncingReviewIds, setSyncingReviewIds] = useState<Set<string>>(new Set());
+  const [dotTick, setDotTick] = useState(0);
+  useEffect(() => {
+    if (syncingReviewIds.size === 0) { setDotTick(0); return; }
+    const t = setInterval(() => setDotTick(p => p + 1), 400);
+    return () => clearInterval(t);
+  }, [syncingReviewIds.size]);
+  const dotStr = '.'.repeat((dotTick % 3) + 1);
   // 素材组列表（asset_groups 表）
   const [projectAssetGroups, setProjectAssetGroups] = useState<import('../types').AssetGroupInfo[]>([]);
   function pickAsset(a: ProjectAsset) {
@@ -131,45 +146,35 @@ export default function AudioGenPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 加载项目素材组（asset_groups 表）
+  // 加载素材组和素材（先 asset_groups 可能触发自动同步，再 project_assets）
   useEffect(() => {
-    if (!projectId) { setProjectAssetGroups([]); return; }
+    if (!projectId) { setProjectAssetGroups([]); setProjectAssets([]); return; }
     let cancelled = false;
-    listProjectAssetGroups(projectId)
-      .then((groups) => { if (!cancelled) setProjectAssetGroups(groups); })
-      .catch(() => {});
+    (async () => {
+      const groups = await listProjectAssetGroups(projectId).catch(() => []);
+      if (cancelled) return;
+      setProjectAssetGroups(groups);
+      const data = await getProjectAssets(projectId, { pageSize: 200, skipLive: true } as any).catch(() => null);
+      if (cancelled || !data) return;
+      const assets = data.assets
+        .filter((a) => a.review_status !== 'rejected' && (a.volc_asset_id || a.file_url))
+        .filter((a) => a.file_type === 'image');
+      setProjectAssets(assets);
+    })();
     return () => { cancelled = true; };
   }, [projectId]);
 
-  // 加载项目素材（用于按组展示所有素材）
-  useEffect(() => {
-    if (!projectId) { setProjectAssets([]); return; }
-    let cancelled = false;
-    getProjectAssets(projectId, { pageSize: 200 })
-      .then((data) => {
-        if (cancelled) return;
-        const assets = data.assets
-          .filter((a) => a.status === 'active' && a.review_status !== 'rejected' && a.file_url)
-          .filter((a) => a.file_type === 'image');
-        setProjectAssets(assets);
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [projectId]);
-
-  // 将素材按素材组名称分组
+  // 将素材按素材组名称分组（基于本地 asset_groups.id ↔ project_assets.asset_group_id）
   const groupedAssets = useMemo(() => {
-    const groupNameMap = new Map<string, string>();
+    const groupNameMap = new Map<number, string>();
     for (const g of projectAssetGroups) {
-      if (g.volc_group_id) {
-        groupNameMap.set(g.volc_group_id, g.name);
-      }
+      groupNameMap.set(g.id, g.name);
     }
     const groups: { name: string; assets: ProjectAsset[] }[] = [];
     const seen = new Map<string, { name: string; assets: ProjectAsset[] }>();
     for (const a of projectAssets) {
-      const key = a.volc_group_id && groupNameMap.has(a.volc_group_id)
-        ? groupNameMap.get(a.volc_group_id)!
+      const key = a.asset_group_id != null && groupNameMap.has(a.asset_group_id)
+        ? groupNameMap.get(a.asset_group_id)!
         : '未分组';
       if (!seen.has(key)) {
         const entry = { name: key, assets: [] };
@@ -323,16 +328,19 @@ export default function AudioGenPage() {
       return;
     }
     setSubmitting(true);
+    // 3 秒冷却防连点；出错时立即恢复
+    const coolTimer = setTimeout(() => setSubmitting(false), 3000);
+    const clearCool = () => { clearTimeout(coolTimer); setSubmitting(false); };
     try {
       await submitAudioGeneration({ projectId, referenceImageUrl: refImageUrl, referenceAssetUri: refAssetUri, voicePrompt: voicePrompt.trim() });
       setVoicePrompt('');
       clearImage();
-      await loadList(1);
-      void refreshBalance();
     } catch (e) {
+      clearCool();
       setSubmitError((e as Error)?.message || '提交失败');
     } finally {
-      setSubmitting(false);
+      void loadList(1);
+      void refreshBalance();
     }
   }
 
@@ -481,25 +489,65 @@ export default function AudioGenPage() {
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {group.assets.map((asset) => {
-                        const isSelected = refImageUrl === asset.file_url;
+                        const isSelected = refImageUrl && asset.file_url && refImageUrl === asset.file_url;
+                        const volcId = asset.volc_asset_id || '';
+                        const isSyncing = syncingReviewIds.has(volcId);
+                        const isRejected = asset.review_status === 'rejected';
+                        const isPending = asset.review_status === 'pending';
+                        const disabled = isRejected;
                         return (
                           <button
                             key={asset.id}
-                            onClick={() => pickAsset(asset)}
-                            className={`relative w-20 h-20 rounded-xl overflow-hidden border-2 transition-all hover:scale-105 ${
+                            disabled={disabled}
+                            onClick={async () => {
+                              if (isPending && volcId && projectId) {
+                                setSyncingReviewIds(p => new Set(p).add(volcId));
+                                try {
+                                  const updated = await syncAssetReview(projectId, asset.id);
+                                  setProjectAssets(prev => prev.map(a =>
+                                    (a.volc_asset_id === volcId || a.id === asset.id)
+                                      ? { ...a, review_status: updated.review_status, status: updated.status }
+                                      : a
+                                  ));
+                                } catch {
+                                  alert('审核查询失败，请稍后重试');
+                                } finally {
+                                  setSyncingReviewIds(p => { const n = new Set(p); n.delete(volcId); return n; });
+                                }
+                              } else if (!isRejected) {
+                                pickAsset(asset);
+                              }
+                            }}
+                            title={isRejected ? '未过审' : isPending ? '审核中，点击刷新' : asset.name}
+                            className={`relative w-20 h-20 rounded-xl overflow-hidden border-2 transition-all ${
+                              disabled ? 'cursor-not-allowed' : 'hover:scale-105'
+                            } ${
+                              isRejected ? 'bg-red-500/10 border-red-500/40 opacity-60' :
+                              isSyncing ? 'bg-amber-500/10 border-amber-500/40 animate-pulse' :
+                              isPending ? 'bg-amber-500/10 border-amber-500/40' :
                               isSelected ? 'border-purple-400 shadow-lg shadow-purple-500/20' : 'border-gray-700 hover:border-gray-500'
                             }`}
-                            title={asset.name}
                           >
-                            {asset.thumbnail_url || asset.file_url ? (
-                              <img src={asset.thumbnail_url || asset.file_url!} alt={asset.name} className="w-full h-full object-cover" />
-                            ) : (
-                              <div className="w-full h-full flex items-center justify-center text-gray-600 text-xl">🖼</div>
+                            <SafeImg src={asset.thumbnail_url || asset.file_url} alt={asset.name} className="w-full h-full object-cover" fallback={<div className="w-full h-full flex items-center justify-center text-gray-600 text-xl">🖼</div>} />
+                            {isRejected && (
+                              <span className="absolute top-0 right-0 text-[7px] font-bold px-0.5 py-px leading-none border-b border-l rounded-bl-lg bg-red-500 text-white border-red-500/40">✕</span>
                             )}
-                            {isSelected && (
+                            {isSyncing && (
+                              <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                                <span className="text-[9px] text-amber-300">{`检测中${dotStr}`}</span>
+                              </div>
+                            )}
+                            {isPending && !isSyncing && (
+                              <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                                <span className="text-xs text-amber-300 font-bold">审核中</span>
+                              </div>
+                            )}
+                            {isSelected && !isRejected && !isSyncing && !isPending && (
                               <span className="absolute top-0 right-0 text-[7px] font-bold px-0.5 py-px leading-none border-b border-l rounded-bl-lg bg-purple-500 text-white border-purple-500/40">✓</span>
                             )}
-                            <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-[7px] text-white text-center py-0.5 font-medium truncate">{asset.name}</div>
+                            <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-[7px] text-white text-center py-0.5 font-medium truncate">
+                              {isSyncing ? `检测中${dotStr}` : isRejected ? '未过审' : asset.name}
+                            </div>
                           </button>
                         );
                       })}

@@ -615,13 +615,13 @@ export default function ImageGenPage() {
     }
     setLoading(true);
     setError('');
-    try {
+    // 3 秒冷却防连点；出错时立即恢复
+    const coolTimer = setTimeout(() => setLoading(false), 3000);
+    const clearCool = () => { clearTimeout(coolTimer); setLoading(false); };
+    void (async () => {
+      try {
       // 检查 prompt 中是否有 @N chip
-      const chipTags = mentionItems.map((m) => m.tag);
-      const hasAnyChip = chipTags.some((tag) => {
-        const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        return new RegExp(escaped).test(prompt);
-      });
+      const hasAnyChip = mentionItems.some((m) => new RegExp(m.tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(prompt));
       // @N → [Image N]（对齐 HappyHorse 多图生视频的 DB 存储格式）
       let finalPrompt = prompt.trim();
       if (hasAnyChip) {
@@ -656,24 +656,18 @@ export default function ImageGenPage() {
         body.urls = effectiveRefUrls;
         body.refUrls = effectiveRefUrls;
       }
-      const res = await fetch('/api/generate-image', {
-        method: 'POST',
-        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify(body),
-      });
+      const res = await fetch('/api/generate-image', { method: 'POST', headers: getAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
       const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.error || '生成失败');
-      // 刷新历史
-      void loadHistory(1, false, currentProjectId);
-      void refreshBalance();
+      if (!res.ok || !data.success) { setError(data.error || '生成失败'); }
     } catch (e) {
+      clearCool();
       setError(e instanceof Error ? e.message : '生成失败');
+    } finally {
       void loadHistory(1, false, currentProjectId);
       void refreshBalance();
-    } finally {
-      setLoading(false);
     }
-  }, [prompt, model, gptAspect, nanoSize, nanoAspect, sizeLabel, refUrls, mentionItems, currentProjectId, loadHistory, refreshBalance, balance]);
+  })();
+}, [prompt, model, gptAspect, nanoSize, nanoAspect, sizeLabel, refUrls, mentionItems, currentProjectId, loadHistory, refreshBalance, balance]);
 
   const handleReuse = (item: ImageRecord) => {
     // [Image N] → @N 还原，由编辑器 useEffect 自动重建 chip
@@ -968,7 +962,7 @@ export default function ImageGenPage() {
 
                 {/* 信息区域 */}
                 <div className="flex-1 min-w-0 flex flex-col gap-1.5">
-                  <p className="text-xs text-gray-300 line-clamp-2 leading-relaxed">{item.prompt || '（无提示词）'}</p>
+                  <p className="text-xs text-gray-300 line-clamp-2 leading-relaxed">{(item.prompt || '（无提示词）').replace(/\[Image (\d+)\]/g, '@图片$1')}</p>
 
                   {/* 失败原因（来自 image_records.error_message，由后端写入上游 API 原始 msg） */}
                   {item.status === 'error' && item.error_message && (

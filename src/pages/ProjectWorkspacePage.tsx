@@ -25,9 +25,9 @@ interface VolcAsset {
 }
 
 function StatusBadge({ status }: { status?: string }) {
-  if (status === 'Active') return <span className="px-2 py-0.5 rounded-full text-xs font-medium text-green-400 bg-green-400/10">已过审</span>;
-  if (status === 'Failed') return <span className="px-2 py-0.5 rounded-full text-xs font-medium text-red-400 bg-red-400/10">未通过</span>;
-  return <span className="px-2 py-0.5 rounded-full text-xs font-medium text-amber-400 bg-amber-400/10">{status || '审核中'}</span>;
+  if (status === 'Active' || status === 'approved') return <span className="px-2 py-0.5 rounded-full text-xs font-medium text-green-400 bg-green-400/10">已过审</span>;
+  if (status === 'Failed' || status === 'rejected') return <span className="px-2 py-0.5 rounded-full text-xs font-medium text-red-400 bg-red-400/10">未过审</span>;
+  return <span className="px-2 py-0.5 rounded-full text-xs font-medium text-amber-400 bg-amber-400/10">审核中</span>;
 }
 
 function MemberRoleTag({ role }: { role: string }) {
@@ -125,12 +125,18 @@ export default function ProjectWorkspacePage() {
   const [addAssetStep, setAddAssetStep] = useState('');
   const addAssetFileRef = useRef<HTMLInputElement>(null);
 
-  // 删除确认弹窗
+  // 编辑单个素材
+  const [editAssetTarget, setEditAssetTarget] = useState<VolcAsset | null>(null);
+  const [editAssetName, setEditAssetName] = useState('');
+  const [editAssetLoading, setEditAssetLoading] = useState(false);
+
+  // 删除素材
   const [deleteGroupTarget, setDeleteGroupTarget] = useState<VolcAssetGroup | null>(null);
   const [deleteGroupLoading, setDeleteGroupLoading] = useState(false);
   // 重命名素材组
   const [renameGroupTarget, setRenameGroupTarget] = useState<VolcAssetGroup | null>(null);
   const [renameGroupName, setRenameGroupName] = useState('');
+  const [renameGroupDesc, setRenameGroupDesc] = useState('');
   const [renameGroupLoading, setRenameGroupLoading] = useState(false);
 
   // 轮询
@@ -148,12 +154,13 @@ export default function ProjectWorkspacePage() {
 
   // 加载组列表，并为每个组加载第一个 Asset 封面
   // 严格按当前工作组过滤：只显示当前工作组绑定的素材组
-  const loadVolcGroups = useCallback(async (page = 1, search = volcGroupSearch) => {
+  const loadVolcGroups = useCallback(async (page = 1, search = volcGroupSearch, sync = false) => {
     if (!currentProject) { setVolcGroups([]); setVolcGroupTotal(0); return; }
     setVolcGroupsLoading(true);
     try {
       const params = new URLSearchParams({ pageNumber: String(page), pageSize: '20', projectId: String(currentProject.id) });
       if (search.trim()) params.set('name', search.trim());
+      if (sync) params.set('sync', '1');
       const res = await fetch(`/api/volc-native/asset-groups?${params}`, { headers: getAuthHeaders() });
       const data = await res.json();
       if (!data.success) throw new Error(data.error);
@@ -161,22 +168,18 @@ export default function ProjectWorkspacePage() {
       setVolcGroups(items);
       setVolcGroupTotal(data.data?.TotalCount || 0);
       setVolcGroupPage(page);
-      // 异步加载每个组的第一个 Asset 封面
-      items.forEach(async (g) => {
-        try {
-          const r = await fetch(`/api/volc-native/assets?groupId=${encodeURIComponent(g.Id)}&pageNumber=1&pageSize=1`, { headers: getAuthHeaders() });
-          const d = await r.json();
-          const firstAsset: VolcAsset | undefined = d.data?.Items?.[0];
-          if (!firstAsset) return;
-          // GetAsset 拿 URL
-          const r2 = await fetch(`/api/volc-native/asset?id=${encodeURIComponent(firstAsset.Id)}`, { headers: getAuthHeaders() });
-          const d2 = await r2.json();
-          const url: string | undefined = d2.data?.URL;
-          if (url) {
-            setVolcGroups(prev => prev.map(item => item.Id === g.Id ? { ...item, coverUrl: url } : item));
-          }
-        } catch {}
-      });
+       // 异步加载每个组的第一个 Asset 封面（从本地 project_assets.thumbnail_url）
+       items.forEach(async (g) => {
+         try {
+           const r = await fetch(`/api/volc-native/assets?groupId=${encodeURIComponent(g.Id)}&pageNumber=1&pageSize=1`, { headers: getAuthHeaders() });
+           const d = await r.json();
+           const firstAsset = d.data?.Items?.[0];
+           const url = firstAsset?.ThumbnailURL || firstAsset?.URL;
+           if (url) {
+             setVolcGroups(prev => prev.map(item => item.Id === g.Id ? { ...item, coverUrl: url } : item));
+           }
+         } catch {}
+       });
     } catch (e) { console.error(e); }
     finally { setVolcGroupsLoading(false); }
   }, [currentProject?.id]);
@@ -195,15 +198,11 @@ export default function ProjectWorkspacePage() {
       setVolcAssets(items);
       setVolcAssetTotal(data.data?.TotalCount || 0);
       setVolcAssetPage(page);
-      // 异步加载每个素材的图片 URL
-      items.forEach(async (a) => {
-        try {
-          const r = await fetch(`/api/volc-native/asset?id=${encodeURIComponent(a.Id)}`, { headers: getAuthHeaders() });
-          const d = await r.json();
-          const url: string | undefined = d.data?.URL;
-          if (url) setAssetUrlMap(prev => ({ ...prev, [a.Id]: url }));
-        } catch {}
-      });
+      // 直接用本地 ThumbnailURL，不再调 ARK GetAsset
+      for (const a of items) {
+        const url = a.ThumbnailURL || a.URL;
+        if (url) setAssetUrlMap(prev => ({ ...prev, [a.Id]: url }));
+      }
       return items;
     } catch (e) { console.error(e); }
     finally { setVolcAssetsLoading(false); }
@@ -297,6 +296,9 @@ export default function ProjectWorkspacePage() {
       const groupId: string = d1.data?.Id;
       // 后端可能再次微调（极端并发情况），用 finalName 兜底
       const persistedName: string = d1.data?.finalName || finalName;
+      if (d1.data?.finalName && d1.data.finalName !== finalName) {
+        alert(`存在同名素材组，已自动改为：${persistedName}`);
+      }
 
       setCreateGroupStep('写入封面素材...');
       const r2 = await fetch('/api/volc-native/assets', {
@@ -516,7 +518,7 @@ export default function ProjectWorkspacePage() {
               )}
               {volcLevel === 'groups' && (
                 <>
-                  <button onClick={() => loadVolcGroups(1)} disabled={volcGroupsLoading}
+                  <button onClick={() => loadVolcGroups(1, volcGroupSearch, true)} disabled={volcGroupsLoading}
                     className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 rounded-xl text-sm font-medium text-white transition-all disabled:opacity-50">
                     <svg className={`w-4 h-4 ${volcGroupsLoading ? 'animate-spin' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
                       <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round" />
@@ -710,8 +712,8 @@ export default function ProjectWorkspacePage() {
                         <div className="mt-auto pt-1 flex items-center justify-between gap-2">
                           <span className="text-xs text-purple-400 group-hover:text-purple-300">查看素材 →</span>
                           <div className="flex items-center gap-1.5">
-                            <button onClick={(e) => { e.stopPropagation(); setRenameGroupTarget(g); setRenameGroupName(g.Name || ''); }}
-                              className="px-2 py-1 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 rounded-md text-xs transition-colors">改名</button>
+                            <button onClick={(e) => { e.stopPropagation(); setRenameGroupTarget(g); setRenameGroupName(g.Name || ''); setRenameGroupDesc(g.Description || ''); }}
+                              className="px-2 py-1 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 rounded-md text-xs transition-colors">编辑</button>
                             <button onClick={(e) => { e.stopPropagation(); setDeleteGroupTarget(g); }}
                               className="px-2 py-1 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded-md text-xs transition-colors">删除</button>
                           </div>
@@ -781,9 +783,13 @@ export default function ProjectWorkspacePage() {
                           {a.CreateTime && (
                             <p className="text-gray-600 text-xs">{formatDateTime(a.CreateTime)}</p>
                           )}
-                          <div className="mt-auto pt-1">
+                          <div className="mt-auto pt-1 flex gap-1.5">
+                            <button onClick={(e) => { e.stopPropagation(); setEditAssetTarget(a); setEditAssetName(a.Name || ''); }}
+                              className="flex-1 py-1.5 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 rounded-md text-xs transition-colors">
+                              编辑
+                            </button>
                             <button onClick={() => handleDeleteAsset(a)}
-                              className="w-full py-1.5 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded-md text-xs transition-colors">
+                              className="flex-1 py-1.5 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded-md text-xs transition-colors">
                               删除
                             </button>
                           </div>
@@ -877,50 +883,110 @@ export default function ProjectWorkspacePage() {
       </div>
     )}
 
-    {/* 重命名素材组弹窗 */}
+    {/* 编辑素材弹窗 */}
+    {editAssetTarget && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+        <div className="bg-[#1c1f2e] border border-gray-700 rounded-2xl shadow-2xl p-6 w-full max-w-md">
+          <h3 className="text-lg font-semibold text-white mb-4">编辑素材</h3>
+          <label className="text-xs text-gray-400 block mb-1">名称</label>
+          <input
+            autoFocus
+            value={editAssetName}
+            maxLength={60}
+            onChange={(e) => setEditAssetName(e.target.value)}
+            placeholder="素材名称"
+            className="w-full bg-[#0f111a] border border-gray-700 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500"
+          />
+          <div className="mt-4 flex gap-2 justify-end">
+            <button
+              onClick={() => { setEditAssetTarget(null); setEditAssetName(''); }}
+              className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-white text-sm"
+            >取消</button>
+            <button
+              disabled={editAssetLoading || !editAssetName.trim() || editAssetName.trim() === (editAssetTarget.Name || '')}
+              onClick={async () => {
+                if (!editAssetTarget) return;
+                setEditAssetLoading(true);
+                try {
+                  const r = await fetch(
+                    `/api/volc-native/assets/${encodeURIComponent(editAssetTarget.Id)}`,
+                    {
+                      method: 'PUT',
+                      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+                      body: JSON.stringify({ name: editAssetName.trim() }),
+                    },
+                  );
+                  const d = await r.json();
+                  if (!r.ok || !d.success) throw new Error(d.error || '保存失败');
+                  setEditAssetTarget(null);
+                  setEditAssetName('');
+                  await loadVolcAssets(volcAssetPage);
+                } catch (e) {
+                  alert(e instanceof Error ? e.message : '保存失败');
+                } finally {
+                  setEditAssetLoading(false);
+                }
+              }}
+              className="px-4 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 rounded-lg text-white text-sm font-medium"
+            >{editAssetLoading ? '保存中…' : '保存'}</button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* 编辑素材组弹窗 */}
     {renameGroupTarget && (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
         <div className="bg-[#1c1f2e] border border-gray-700 rounded-2xl shadow-2xl p-6 w-full max-w-md">
-          <h3 className="text-lg font-semibold text-white mb-4">重命名素材组</h3>
-          <p className="text-xs text-gray-500 mb-3">原名：<span className="text-gray-300">{renameGroupTarget.Name}</span></p>
+          <h3 className="text-lg font-semibold text-white mb-4">编辑素材组</h3>
+          <label className="text-xs text-gray-400 block mb-1">名称</label>
           <input
             autoFocus
             value={renameGroupName}
             maxLength={60}
             onChange={(e) => setRenameGroupName(e.target.value)}
-            placeholder="输入新名称"
-            className="w-full bg-[#0f111a] border border-gray-700 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500"
+            placeholder="素材组名称"
+            className="w-full bg-[#0f111a] border border-gray-700 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500 mb-3"
           />
-          <p className="text-[10px] text-gray-500 mt-2">同项目组内重名时将自动加 (N) 后缀。</p>
+          <label className="text-xs text-gray-400 block mb-1">描述</label>
+          <textarea
+            value={renameGroupDesc}
+            maxLength={200}
+            onChange={(e) => setRenameGroupDesc(e.target.value)}
+            placeholder="素材组描述（可选）"
+            rows={3}
+            className="w-full bg-[#0f111a] border border-gray-700 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500 resize-none"
+          />
           <div className="mt-4 flex gap-2 justify-end">
             <button
-              onClick={() => { setRenameGroupTarget(null); setRenameGroupName(''); }}
+              onClick={() => { setRenameGroupTarget(null); setRenameGroupName(''); setRenameGroupDesc(''); }}
               className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-white text-sm"
             >取消</button>
             <button
-              disabled={renameGroupLoading || !renameGroupName.trim() || renameGroupName.trim() === renameGroupTarget.Name}
+              disabled={renameGroupLoading || !renameGroupName.trim() || (renameGroupName.trim() === renameGroupTarget.Name && renameGroupDesc === (renameGroupTarget.Description || ''))}
               onClick={async () => {
-                if (!currentProject || !renameGroupTarget) return;
+                if (!renameGroupTarget) return;
                 setRenameGroupLoading(true);
                 try {
                   const r = await fetch(
-                    `/api/volc-native/asset-groups/${encodeURIComponent(renameGroupTarget.Id)}/rename`,
+                    `/api/volc-native/asset-groups/${encodeURIComponent(renameGroupTarget.Id)}`,
                     {
-                      method: 'PATCH',
+                      method: 'PUT',
                       headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-                      body: JSON.stringify({ name: renameGroupName.trim(), projectId: currentProject.id }),
+                      body: JSON.stringify({ name: renameGroupName.trim(), description: renameGroupDesc.trim(), projectId: currentProject?.id }),
                     },
                   );
                   const d = await r.json();
-                  if (!r.ok || !d.success) throw new Error(d.error || '重命名失败');
+                  if (!r.ok || !d.success) throw new Error(d.error || '保存失败');
                   if (d.data?.suggested) {
-                    alert(`存在同名素材组，已自动改为：${d.data.name}`);
+                    alert(`存在同名素材组，已自动改为：${d.data.finalName}`);
                   }
                   setRenameGroupTarget(null);
                   setRenameGroupName('');
+                  setRenameGroupDesc('');
                   await loadVolcGroups(volcGroupPage);
                 } catch (e) {
-                  alert(e instanceof Error ? e.message : '重命名失败');
+                  alert(e instanceof Error ? e.message : '保存失败');
                 } finally {
                   setRenameGroupLoading(false);
                 }

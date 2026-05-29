@@ -115,12 +115,13 @@ export async function getProjectTasks(
 
 export async function getProjectAssets(
   projectId: number,
-  options: { page?: number; pageSize?: number; status?: string } = {}
+  options: { page?: number; pageSize?: number; status?: string; skipLive?: boolean } = {}
 ): Promise<ProjectAssetList> {
   const params = new URLSearchParams();
   if (options.page) params.set('page', String(options.page));
   if (options.pageSize) params.set('pageSize', String(options.pageSize));
   if (options.status) params.set('status', options.status);
+  if (options.skipLive) params.set('skipLive', 'true');
   const qs = params.toString() ? `?${params.toString()}` : '';
   const response = await fetch(`${API_BASE}/projects/${projectId}/assets${qs}`, {
     headers: getAuthHeaders(),

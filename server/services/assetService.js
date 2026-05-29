@@ -244,23 +244,21 @@ export function resolveUniqueAssetGroupName(projectId, desiredName, excludeId = 
 
   const baseExists = db.prepare(
     excludeId == null
-      ? `SELECT 1 FROM asset_groups WHERE project_id = ? AND name = ?`
-      : `SELECT 1 FROM asset_groups WHERE project_id = ? AND name = ? AND id != ?`
-  ).get(...(excludeId == null ? [projectId, base] : [projectId, base, excludeId]));
+      ? `SELECT 1 FROM asset_groups WHERE name = ?`
+      : `SELECT 1 FROM asset_groups WHERE name = ? AND id != ?`
+  ).get(...(excludeId == null ? [base] : [base, excludeId]));
 
   if (!baseExists) return base;
 
-  // 拉一次同前缀的所有名字，避免循环里 N 次 SQL
   const likeRows = db.prepare(
-    `SELECT name FROM asset_groups WHERE project_id = ? AND name LIKE ? ${excludeId == null ? '' : 'AND id != ?'}`
-  ).all(...(excludeId == null ? [projectId, `${base} (%)`] : [projectId, `${base} (%)`, excludeId]));
+    `SELECT name FROM asset_groups WHERE name LIKE ? ${excludeId == null ? '' : 'AND id != ?'}`
+  ).all(...(excludeId == null ? [`${base} (%)`] : [`${base} (%)`, excludeId]));
   const taken = new Set(likeRows.map((r) => r.name));
 
   for (let i = 2; i < 9999; i++) {
     const candidate = `${base} (${i})`;
     if (!taken.has(candidate)) return candidate;
   }
-  // 极端兜底：用时间戳
   return `${base} (${Date.now()})`;
 }
 
@@ -270,20 +268,20 @@ export function resolveUniqueAssetGroupName(projectId, desiredName, excludeId = 
  */
 export function migrateDeduplicateAssetGroupNames() {
   const db = getDatabase();
-  // 找出所有同项目同名的组（按 created_at 升序，保留最早那条原名）
+  // 找出所有同名的组（按 created_at 升序，保留最早那条原名）
   const dups = db.prepare(
-    `SELECT project_id, name FROM asset_groups
-     GROUP BY project_id, name HAVING COUNT(*) > 1`
+    `SELECT name FROM asset_groups
+     GROUP BY name HAVING COUNT(*) > 1`
   ).all();
   if (dups.length === 0) return 0;
   let changed = 0;
-  for (const { project_id: projectId, name } of dups) {
+  for (const { name } of dups) {
     const rows = db.prepare(
-      `SELECT id FROM asset_groups WHERE project_id = ? AND name = ? ORDER BY created_at ASC, id ASC`
-    ).all(projectId, name);
+      `SELECT id FROM asset_groups WHERE name = ? ORDER BY created_at ASC, id ASC`
+    ).all(name);
     // 跳过第一个（保留原名）；其余依次改成 name (2)、name (3)...
     for (let i = 1; i < rows.length; i++) {
-      const unique = resolveUniqueAssetGroupName(projectId, name, rows[i].id);
+      const unique = resolveUniqueAssetGroupName(null, name, rows[i].id);
       if (unique !== name) {
         db.prepare(`UPDATE asset_groups SET name = ? WHERE id = ?`).run(unique, rows[i].id);
         changed++;
@@ -449,6 +447,11 @@ export async function listProjectAssetsLive(projectId, options = {}) {
     .filter((it) => it.Status !== 'Deleted')
     .sort((a, b) => (a.CreateTime || '').localeCompare(b.CreateTime || ''));
 
+  // volc_group_id → asset_groups.id 映射，用于写入 project_assets.asset_group_id
+  const assetGroupIdByVolcGroupId = new Map(
+    groupRows.map((r) => [r.volc_group_id, r.id]).filter(([gid]) => gid)
+  );
+
   // 从本地 DB 拉取元数据（name、file_url、auto_inject、review_status 等）供合并
   const localRows = db.prepare(
     'SELECT * FROM project_assets WHERE project_id = ? AND status != \'deleted\''
@@ -460,11 +463,11 @@ export async function listProjectAssetsLive(projectId, options = {}) {
   const assets = arkItems.map((it, idx) => {
     const local = localByVolcId.get(it.Id);
     return {
-      id: local?.id ?? -(idx + 1),            // 本地 DB 有则用真实 id，否则用负数占位
+      id: local?.id ?? -(idx + 1),
       project_id: Number(projectId),
       volc_asset_id: it.Id,
       volc_group_id: it.GroupId || null,
-      // 组名取我们本地 asset_groups 表的权威值（已去重），找不到时退回火山返回的 GroupName 或空
+      asset_group_id: (it.GroupId && assetGroupIdByVolcGroupId.get(it.GroupId)) || null,
       group_name: (it.GroupId && groupNameByVolcId.get(it.GroupId)) || it.GroupName || null,
       name: local?.name || it.Name || it.Id,
       file_type: fileTypeMap[it.AssetType] || local?.file_type || 'image',
@@ -490,14 +493,14 @@ export async function listProjectAssetsLive(projectId, options = {}) {
           ).get(a.project_id, a.volc_asset_id);
           if (existing) {
             db.prepare(`
-              UPDATE project_assets SET name=?, file_url=?, thumbnail_url=?, status='active', review_status=?, updated_at=CURRENT_TIMESTAMP
+              UPDATE project_assets SET name=?, file_url=?, thumbnail_url=?, asset_group_id=?, status='active', review_status=?, updated_at=CURRENT_TIMESTAMP
               WHERE id=?
-            `).run(a.name, a.file_url, a.thumbnail_url, a.review_status, existing.id);
+            `).run(a.name, a.file_url, a.thumbnail_url, a.asset_group_id, a.review_status, existing.id);
           } else {
             db.prepare(`
-              INSERT INTO project_assets (project_id, volc_asset_id, name, file_type, file_url, thumbnail_url, status, review_status, auto_inject)
-              VALUES (?, ?, ?, ?, ?, ?, 'active', ?, 0)
-            `).run(a.project_id, a.volc_asset_id, a.name, a.file_type, a.file_url, a.thumbnail_url, a.review_status);
+              INSERT INTO project_assets (project_id, volc_asset_id, asset_group_id, name, file_type, file_url, thumbnail_url, status, review_status, auto_inject)
+              VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, 0)
+            `).run(a.project_id, a.volc_asset_id, a.asset_group_id, a.name, a.file_type, a.file_url, a.thumbnail_url, a.review_status);
           }
         }
       });
@@ -530,10 +533,10 @@ export async function syncAssetReviewFromVolc(localAssetId, projectId) {
   const volcStatus = volcAsset.Status || volcAsset.status;
   let reviewStatus = 'pending';
   let assetStatus = 'active';
-  if (volcStatus === 'enabled' || volcStatus === 1 || volcStatus === 'enable') {
+  if (volcStatus === 'Active' || volcStatus === 'enabled' || volcStatus === 1) {
     reviewStatus = 'approved';
     assetStatus = 'active';
-  } else if (volcStatus === 'disabled' || volcStatus === 2 || volcStatus === 'disable') {
+  } else if (volcStatus === 'Failed' || volcStatus === 'disabled' || volcStatus === 2) {
     reviewStatus = 'rejected';
     assetStatus = 'rejected';
   }
@@ -553,6 +556,54 @@ export async function syncAssetReviewFromVolc(localAssetId, projectId) {
 /**
  * 批量同步项目内所有待审核素材
  */
+/**
+ * 拉取 ARK ListAssets 同步 project_assets（首次无关联数据时自动调用）
+ * @param {number} projectId
+ * @param {number|null} keyGroupId
+ * @param {{volc_group_id:string, id:number}[]} groups — asset_groups 行
+ * @param {object} db
+ */
+export async function syncProjectAssetsFromVolc(projectId, keyGroupId, groups, db, arkRequestFn) {
+  const volcGroupIds = groups.map(g => g.volc_group_id).filter(Boolean);
+  if (volcGroupIds.length === 0) return;
+  const agIdMap = new Map(groups.map(g => [g.volc_group_id, g.id]));
+  let arkItems = [];
+  let pageNum = 1;
+  while (pageNum <= 20) {
+    try {
+      const resp = await arkRequestFn('ListAssets', {
+        Filter: { GroupIds: volcGroupIds, GroupType: 'AIGC' },
+        PageNumber: pageNum, PageSize: 100,
+      }, db, keyGroupId);
+      const batch = resp?.Items || [];
+      arkItems.push(...batch);
+      if (!batch.length || batch.length < 100) break;
+      pageNum++;
+    } catch (e) { break; }
+  }
+  arkItems = arkItems.filter(it => it.Status !== 'Deleted');
+  if (arkItems.length === 0) return;
+  const phs = arkItems.map(() => '?').join(',');
+  const existingSet = new Set(
+    db.prepare(`SELECT volc_asset_id FROM project_assets WHERE project_id=? AND volc_asset_id IN (${phs})`)
+      .all(projectId, ...arkItems.map(it => it.Id)).map(r => r.volc_asset_id)
+  );
+  const fileTypeMap = { Image: 'image', Video: 'video', Audio: 'audio' };
+  db.transaction(() => {
+    for (const it of arkItems) {
+      const agId = agIdMap.get(it.GroupId) || null;
+      const ft = fileTypeMap[it.AssetType] || 'image';
+      if (existingSet.has(it.Id)) {
+        db.prepare(`UPDATE project_assets SET name=?,file_url=?,thumbnail_url=?,asset_group_id=?,status='active',review_status=?,updated_at=CURRENT_TIMESTAMP WHERE project_id=? AND volc_asset_id=?`)
+          .run(it.Name||it.Id, it.URL||null, it.URL||null, agId, it.Status==='Active'?'approved':'pending', projectId, it.Id);
+      } else {
+        db.prepare(`INSERT INTO project_assets (project_id,volc_asset_id,asset_group_id,name,file_type,file_url,thumbnail_url,status,review_status,auto_inject) VALUES (?,?,?,?,?,?,?,'active',?,0)`)
+          .run(projectId, it.Id, agId, it.Name||it.Id, ft, it.URL||null, it.URL||null, it.Status==='Active'?'approved':'pending');
+      }
+    }
+  })();
+}
+
 export async function syncAllPendingReviews(projectId) {
   const db = getDatabase();
   const pending = db.prepare(`

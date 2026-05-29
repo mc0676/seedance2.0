@@ -929,6 +929,9 @@ export default function HappyHorsePage() {
     }
 
     setSubmitting(true); setSubmitError(null);
+    // 3 秒冷却防连点；出错时立即恢复
+    const coolTimer = setTimeout(() => setSubmitting(false), 3000);
+    const clearCool = () => { clearTimeout(coolTimer); setSubmitting(false); };
     try {
       const seedNum = seed.trim() ? parseInt(seed.trim(), 10) : undefined;
       // r2v / video-edit：把 @N → [Image N]、@Video → [Video]（仅匹配合法序号 / 有视频上传时）
@@ -961,11 +964,11 @@ export default function HappyHorsePage() {
         batchSize: batchSize > 1 ? batchSize : undefined,
       });
       setPrompt(''); setMedia([]); setSeed(''); setEditVideoDuration(null);
-      await loadTasks();
     } catch (e: any) {
+      clearCool();
       setSubmitError(translateDashScopeError(e.message) || '提交失败');
     } finally {
-      setSubmitting(false);
+      void loadTasks();
     }
   }
 
