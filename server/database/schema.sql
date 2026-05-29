@@ -103,7 +103,8 @@ CREATE TABLE IF NOT EXISTS projects (
   video_save_path TEXT,
   default_concurrent INTEGER DEFAULT 5,
   default_min_interval INTEGER DEFAULT 30000,
-  default_max_interval INTEGER DEFAULT 50000
+  default_max_interval INTEGER DEFAULT 50000,
+  volc_id INTEGER REFERENCES volc_key_groups(id) ON DELETE SET NULL
 );
 
 -- 任务表
@@ -379,6 +380,7 @@ CREATE TABLE IF NOT EXISTS asset_groups (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id INTEGER NOT NULL,
   volc_group_id TEXT,
+  volc_id INTEGER,
   name TEXT NOT NULL,
   description TEXT DEFAULT '',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -392,6 +394,7 @@ CREATE TABLE IF NOT EXISTS project_assets (
   project_id INTEGER NOT NULL,
   asset_group_id INTEGER,
   volc_asset_id TEXT,
+  volc_id INTEGER,
   name TEXT NOT NULL,
   original_name TEXT,
   description TEXT DEFAULT '',
@@ -637,6 +640,7 @@ CREATE TABLE IF NOT EXISTS volc_key_groups (
   volc_access_key TEXT NOT NULL DEFAULT '',
   volc_secret_key TEXT NOT NULL DEFAULT '',
   is_active INTEGER DEFAULT 0,
+  grouping_weight INTEGER DEFAULT 0,
   note TEXT DEFAULT '',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP

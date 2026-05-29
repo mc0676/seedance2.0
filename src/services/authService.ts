@@ -707,15 +707,18 @@ export interface VolcKeyGroup {
   volc_access_key: string;
   volc_secret_key: string;
   is_active: number;
+  grouping_weight: number;
   note: string;
   created_at: string;
   updated_at: string;
+  bound_count?: number;
+  default_count?: number;
 }
 
 export const listVolcKeyGroups = () =>
   adminFetch<VolcKeyGroup[]>('/admin/volc-key-groups');
 
-export const createVolcKeyGroup = (payload: { name: string; ark_model_key: string; volc_access_key?: string; volc_secret_key?: string; note?: string }) =>
+export const createVolcKeyGroup = (payload: { name: string; ark_model_key: string; volc_access_key?: string; volc_secret_key?: string; grouping_weight?: number; note?: string }) =>
   adminFetch<VolcKeyGroup>('/admin/volc-key-groups', { method: 'POST', body: JSON.stringify(payload) });
 
 export const updateVolcKeyGroup = (id: number, payload: Partial<VolcKeyGroup>) =>
@@ -723,6 +726,9 @@ export const updateVolcKeyGroup = (id: number, payload: Partial<VolcKeyGroup>) =
 
 export const activateVolcKeyGroup = (id: number) =>
   adminFetch<unknown>(`/admin/volc-key-groups/${id}/activate`, { method: 'PUT' });
+
+export const deactivateVolcKeyGroup = (id: number) =>
+  adminFetch<unknown>(`/admin/volc-key-groups/${id}/deactivate`, { method: 'PUT' });
 
 export const deleteVolcKeyGroup = (id: number) =>
   adminFetch<unknown>(`/admin/volc-key-groups/${id}`, { method: 'DELETE' });

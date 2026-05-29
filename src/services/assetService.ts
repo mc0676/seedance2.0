@@ -1,5 +1,5 @@
 import { getAuthHeaders } from './authService';
-import type { ProjectAsset, ProjectAssetList } from '../types';
+import type { ProjectAsset, ProjectAssetList, AssetGroupInfo } from '../types';
 
 const BASE = '/api/projects';
 
@@ -128,4 +128,14 @@ export async function updateProjectAsset(
   const result = await res.json();
   if (!result.success) throw new Error(result.error || '更新失败');
   return result.data;
+}
+
+/** 获取项目素材组列表 */
+export async function listProjectAssetGroups(projectId: number): Promise<AssetGroupInfo[]> {
+  const res = await fetch(`${BASE}/${projectId}/asset-groups`, {
+    headers: getAuthHeaders(),
+  });
+  const resp = await res.json();
+  if (!resp.success) throw new Error(resp.error || '获取素材组失败');
+  return resp.data;
 }

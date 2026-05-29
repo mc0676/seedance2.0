@@ -41,6 +41,17 @@ export async function redeemActivationCode(code: string): Promise<void> {
   }
 }
 
+export async function getVolcKeyStatus(): Promise<{ multiAccountEnabled: boolean }> {
+  const response = await fetch(`${API_BASE}/volc-key-status`, {
+    headers: getAuthHeaders(),
+  });
+  const result = await response.json();
+  if (!result.success) {
+    throw new Error(result.error || '获取火山Key状态失败');
+  }
+  return result.data;
+}
+
 export default {
   getSettings,
   updateSettings,

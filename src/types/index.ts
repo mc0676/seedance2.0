@@ -210,6 +210,9 @@ export interface Project {
   completed_count?: number;
   member_count?: number;
   my_role?: 'owner' | 'admin' | 'member';
+  volc_id?: number | null;
+  volc_name?: string;
+  volc_is_active?: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -539,6 +542,20 @@ export interface ProjectAssetList {
   pageSize: number;
 }
 
+/** 项目素材组（asset_groups 表） */
+export interface AssetGroupInfo {
+  id: number;
+  project_id: number;
+  volc_group_id: string | null;
+  volc_id: number | null;
+  name: string;
+  description: string;
+  asset_count: number;
+  preview_url: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 /**
  * 使用量日志
  */
@@ -575,4 +592,3 @@ export interface ProjectMember {
   user_role?: string;
   created_at: string;
 }
-

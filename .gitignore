@@ -9,3 +9,4 @@ server/data/*.db-wal
 .ssh/
 /output.log
 backups/
+/.deepseek/

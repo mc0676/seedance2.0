@@ -11,8 +11,63 @@ const ARK_REGION = 'cn-beijing';
 const ARK_SERVICE = 'ark';
 const ARK_VERSION = '2024-01-01';
 
-function getCredentials() {
+function isMultiAccountEnabled(db) {
+  const row = db.prepare("SELECT value FROM system_config WHERE key = 'multi_volc_is_enable'").get();
+  return (row?.value === '1' || row?.value === 'true');
+}
+
+/** 查询时应使用的目标 volc_id：单账户时用激活的 Key 组 id，多账户时用 project.volc_id */
+function resolveFilterVolcId(db, projectId) {
+  if (!isMultiAccountEnabled(db)) {
+    const active = db.prepare('SELECT id FROM volc_key_groups WHERE is_active = 1 LIMIT 1').get();
+    return active?.id ?? null;
+  }
+  const project = db.prepare('SELECT volc_id FROM projects WHERE id = ?').get(projectId);
+  const pv = project?.volc_id ?? null;
+  return pv; // null 表示不过滤
+}
+
+/** 根据目标 volc_id 生成过滤 SQL：null 永远等价于 1 */
+/** 翻译 ARK API 常见错误信息 */
+function translateArkError(msg) {
+  const map = {
+    'Width must be between 300px and 6000px.': '图片宽度必须在 300px 到 6000px 之间',
+    'Height must be between 300px and 6000px.': '图片高度必须在 300px 到 6000px 之间',
+    'Width and Height must be between 300px and 6000px.': '图片宽高必须在 300px 到 6000px 之间',
+    'The asset is invalid.': '素材无效（可能是不支持的格式或损坏的文件）',
+    'The asset is too small.': '素材尺寸过小',
+    'The asset is too large.': '素材文件过大',
+    'The asset format is not supported.': '不支持的素材格式',
+    'The file format is not supported.': '不支持的文件格式',
+    'Quota exceeded': 'API 配额已用尽',
+    'Invalid parameter': '请求参数无效',
+    'Unauthorized': '认证失败，请检查 AK/SK',
+    'Forbidden': '无权限访问该资源',
+    'Not Found': '资源不存在',
+    'Internal Server Error': '火山引擎内部错误，请稍后重试',
+    'Service Unavailable': '火山引擎服务暂时不可用',
+  };
+  if (map[msg]) return map[msg];
+  for (const [en, zh] of Object.entries(map)) {
+    if (msg.includes(en)) return zh;
+  }
+  return msg;
+}
+
+function buildVolcFilter(targetVolcId) {
+  if (targetVolcId == null) return { sql: '', params: [] };
+  if (targetVolcId === 1) return { sql: '(volc_id IS NULL OR volc_id = 1)', params: [] };
+  return { sql: '(volc_id = ?)', params: [targetVolcId] };
+}
+
+function getCredentials(keyGroupId = null) {
   const db = getDatabase();
+  if (keyGroupId) {
+    const kg = db.prepare('SELECT volc_access_key, volc_secret_key FROM volc_key_groups WHERE id = ?').get(keyGroupId);
+    if (kg?.volc_access_key && kg?.volc_secret_key) {
+      return { ak: kg.volc_access_key, sk: kg.volc_secret_key };
+    }
+  }
   const akRow = db.prepare("SELECT value FROM system_config WHERE key = 'volc_access_key_id'").get();
   const skRow = db.prepare("SELECT value FROM system_config WHERE key = 'volc_secret_access_key'").get();
   const ak = akRow?.value || process.env.VOLC_ACCESS_KEY_ID;
@@ -21,8 +76,8 @@ function getCredentials() {
   return { ak, sk };
 }
 
-function arkSign(method, body, query) {
-  const { ak, sk } = getCredentials();
+function arkSign(method, body, query, keyGroupId = null) {
+  const { ak, sk } = getCredentials(keyGroupId);
   const now = new Date();
   const datestamp = now.toISOString().slice(0, 10).replace(/-/g, '');
   const timestamp = now.toISOString().replace(/[-:]/g, '').slice(0, 15) + 'Z';
@@ -49,9 +104,9 @@ function arkSign(method, body, query) {
   return { authorization, 'x-date': timestamp, bodyStr, sortedQuery };
 }
 
-async function arkRequest(action, body = {}) {
+async function arkRequest(action, body = {}, keyGroupId = null) {
   const query = { Action: action, Version: ARK_VERSION };
-  const { authorization, 'x-date': xDate, bodyStr, sortedQuery } = arkSign('POST', body, query);
+  const { authorization, 'x-date': xDate, bodyStr, sortedQuery } = arkSign('POST', body, query, keyGroupId);
 
   console.log(`[ark-assets] ${action}`);
   const resp = await fetch(`https://${ARK_HOST}/?${sortedQuery}`, {
@@ -72,7 +127,7 @@ async function arkRequest(action, body = {}) {
   }
   if (!resp.ok || json.ResponseMetadata?.Error) {
     const err = json.ResponseMetadata?.Error;
-    throw new Error(err?.Message || JSON.stringify(json));
+    throw new Error(translateArkError(err?.Message || JSON.stringify(json)));
   }
   return json.Result !== undefined ? json.Result : json;
 }
@@ -81,8 +136,8 @@ async function arkRequest(action, body = {}) {
 // 资产组管理
 // ============================================================
 
-export async function createAssetGroup({ name, description = '', projectName = 'default' }) {
-  return arkRequest('CreateAssetGroup', { Name: name, Description: description, ProjectName: projectName, GroupType: 'AIGC' });
+export async function createAssetGroup({ name, description = '', projectName = 'default' }, keyGroupId = null) {
+  return arkRequest('CreateAssetGroup', { Name: name, Description: description, ProjectName: projectName, GroupType: 'AIGC' }, keyGroupId);
 }
 
 export async function listAssetGroups({ pageNumber = 1, pageSize = 20, name } = {}) {
@@ -113,10 +168,10 @@ export async function deleteAssetGroup(id, projectName = 'default') {
 /**
  * 通过 URL 创建素材（ARK API）
  */
-export async function uploadAssetByUrl({ url, assetType = 'Image', groupId, name = 'asset', projectName = 'default' }) {
+export async function uploadAssetByUrl({ url, assetType = 'Image', groupId, name = 'asset', projectName = 'default' }, keyGroupId = null) {
   const body = { URL: url, AssetType: assetType, Name: name, ProjectName: projectName };
   if (groupId) body.GroupId = groupId;
-  return arkRequest('CreateAsset', body);
+  return arkRequest('CreateAsset', body, keyGroupId);
 }
 
 /**
@@ -131,12 +186,12 @@ export async function uploadImageBase64({ base64Data, mimeType = 'image/jpeg', g
 /**
  * 查询素材列表
  */
-export async function listAssets({ groupId, pageSize = 20, pageNum = 1, statuses, name } = {}) {
+export async function listAssets({ groupId, pageSize = 20, pageNum = 1, statuses, name, keyGroupId = null } = {}) {
   const filter = { GroupType: 'AIGC' };
   if (groupId) filter.GroupIds = [groupId];
   if (statuses) filter.Statuses = Array.isArray(statuses) ? statuses : [statuses];
   if (name) filter.Name = name;
-  return arkRequest('ListAssets', { Filter: filter, PageNumber: pageNum, PageSize: pageSize });
+  return arkRequest('ListAssets', { Filter: filter, PageNumber: pageNum, PageSize: pageSize }, keyGroupId);
 }
 
 /**
@@ -249,24 +304,31 @@ export function getOrCreateProjectAssetGroup(projectId) {
   return null;
 }
 
-export function saveAssetGroup(projectId, volcGroupId, name) {
+export function saveAssetGroup(projectId, volcGroupId, name, volcId = null) {
   const db = getDatabase();
   db.prepare(`
-    INSERT OR REPLACE INTO asset_groups (project_id, volc_group_id, name, updated_at)
-    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-  `).run(projectId, volcGroupId, name);
+    INSERT OR REPLACE INTO asset_groups (project_id, volc_group_id, name, volc_id, updated_at)
+    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+  `).run(projectId, volcGroupId, name, volcId);
   return db.prepare('SELECT * FROM asset_groups WHERE project_id = ?').get(projectId);
 }
 
 export function listProjectAssets(projectId, { page = 1, pageSize = 20, status, autoInject } = {}) {
   const db = getDatabase();
-  const conditions = ['project_id = ?'];
+  const targetVolcId = resolveFilterVolcId(db, projectId);
+  const filter = buildVolcFilter(targetVolcId);
+  const volcJoin = filter.sql ? ` LEFT JOIN asset_groups ag ON ag.id = pa.asset_group_id` : '';
+  const conditions = ['pa.project_id = ?'];
   const params = [projectId];
-  if (status) { conditions.push('status = ?'); params.push(status); }
-  if (autoInject !== undefined) { conditions.push('auto_inject = ?'); params.push(autoInject ? 1 : 0); }
+  if (status) { conditions.push('pa.status = ?'); params.push(status); }
+  if (autoInject !== undefined) { conditions.push('pa.auto_inject = ?'); params.push(autoInject ? 1 : 0); }
+  if (filter.sql) {
+    conditions.push(`(ag.${filter.sql} OR pa.asset_group_id IS NULL)`);
+    params.push(...filter.params);
+  }
   const offset = (page - 1) * pageSize;
-  const total = db.prepare(`SELECT COUNT(*) as n FROM project_assets WHERE ${conditions.join(' AND ')}`).get(...params).n;
-  const assets = db.prepare(`SELECT * FROM project_assets WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC LIMIT ? OFFSET ?`).all(...params, pageSize, offset);
+  const total = db.prepare(`SELECT COUNT(*) as n FROM project_assets pa${volcJoin} WHERE ${conditions.join(' AND ')}`).get(...params).n;
+  const assets = db.prepare(`SELECT pa.* FROM project_assets pa${volcJoin} WHERE ${conditions.join(' AND ')} ORDER BY pa.created_at DESC LIMIT ? OFFSET ?`).all(...params, pageSize, offset);
   return { assets, total, page, pageSize };
 }
 
@@ -338,13 +400,24 @@ export function generateOriginalName(originalFileName = 'asset') {
 export async function listProjectAssetsLive(projectId, options = {}) {
   const db = getDatabase();
 
-  // 获取当前项目所有 ARK 资产组
-  const groupRows = db.prepare(
-    'SELECT volc_group_id, name FROM asset_groups WHERE project_id = ?'
-  ).all(projectId);
+  // 获取当前项目所有 ARK 资产组（含 volc_id 用于多账户凭证）
+  // 单账户时用激活 Key 组 id 过滤，多账户时用 project.volc_id
+  const targetVolcId = resolveFilterVolcId(db, projectId);
+  const filter = buildVolcFilter(targetVolcId);
+  let groupQuery = 'SELECT volc_group_id, name, volc_id FROM asset_groups WHERE project_id = ?';
+  const groupParams = [projectId];
+  if (filter.sql) {
+    groupQuery += ' AND ' + filter.sql;
+    groupParams.push(...filter.params);
+  }
+  const groupRows = db.prepare(groupQuery).all(...groupParams);
   const volcGroupIds = groupRows.map((r) => r.volc_group_id).filter(Boolean);
   // 本地权威组名映射（已通过 resolveUniqueAssetGroupName 去重）
   const groupNameByVolcId = new Map(groupRows.map((r) => [r.volc_group_id, r.name]));
+  // volc_group_id → volc_id（Key组ID）映射，用于多账户凭证
+  const volcIdByGroupId = new Map(
+    groupRows.filter((r) => r.volc_id).map((r) => [r.volc_group_id, r.volc_id])
+  );
 
   // 无 ARK 资产组：降级为本地 DB
   if (volcGroupIds.length === 0) {
@@ -354,11 +427,12 @@ export async function listProjectAssetsLive(projectId, options = {}) {
   // 串行拉取所有资产组（避免并发触发 ARK rate limit 导致部分失败、数量不稳定）
   let arkItems = [];
   for (const volcGroupId of volcGroupIds) {
+    const keyGroupId = volcIdByGroupId.get(volcGroupId) || null;
     try {
       const items = [];
       let pageNum = 1;
       while (pageNum <= 20) {
-        const resp = await listAssets({ groupId: volcGroupId, pageSize: 100, pageNum });
+        const resp = await listAssets({ groupId: volcGroupId, pageSize: 100, pageNum, keyGroupId });
         const batch = resp?.Items || [];
         items.push(...batch);
         if (!batch.length || batch.length < 100) break;

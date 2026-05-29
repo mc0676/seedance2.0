@@ -586,6 +586,56 @@ export function initDatabase() {
     }
   }
 
+  // 增量迁移：项目组绑定 API 账户、Key组分组权重、资产归属
+  // projects 加 volc_id
+  {
+    const pCols = db.prepare("PRAGMA table_info(projects)").all().map((c) => c.name);
+    if (!pCols.includes('volc_id')) {
+      console.log('[database] 迁移：projects 添加 volc_id 列...');
+      db.exec(`ALTER TABLE projects ADD COLUMN volc_id INTEGER REFERENCES volc_key_groups(id) ON DELETE SET NULL`);
+      // 已有项目默认绑定 id=1
+      db.exec(`UPDATE projects SET volc_id = 1 WHERE volc_id IS NULL`);
+      console.log('[database] 迁移完成：projects.volc_id 已添加，已有项目已绑定默认 id=1');
+    }
+  }
+  // volc_key_groups 加 grouping_weight
+  {
+    const vCols = db.prepare("PRAGMA table_info(volc_key_groups)").all().map((c) => c.name);
+    if (!vCols.includes('grouping_weight')) {
+      console.log('[database] 迁移：volc_key_groups 添加 grouping_weight 列...');
+      db.exec(`ALTER TABLE volc_key_groups ADD COLUMN grouping_weight INTEGER DEFAULT 0`);
+      // 默认 id=1 设置为 100%
+      db.exec(`UPDATE volc_key_groups SET grouping_weight = 100 WHERE id = 1 AND is_active = 1`);
+      console.log('[database] 迁移完成：volc_key_groups.grouping_weight 已添加');
+    }
+  }
+  // asset_groups 加 volc_id
+  {
+    const agCols = db.prepare("PRAGMA table_info(asset_groups)").all().map((c) => c.name);
+    if (!agCols.includes('volc_id')) {
+      console.log('[database] 迁移：asset_groups 添加 volc_id 列...');
+      db.exec(`ALTER TABLE asset_groups ADD COLUMN volc_id INTEGER`);
+      // 如果存在旧列 volc_key_group_id 则迁移数据
+      if (agCols.includes('volc_key_group_id')) {
+        db.exec(`UPDATE asset_groups SET volc_id = volc_key_group_id WHERE volc_key_group_id IS NOT NULL`);
+      }
+      console.log('[database] 迁移完成：asset_groups.volc_id 已添加');
+    }
+  }
+  // project_assets 加 volc_id
+  {
+    const paCols = db.prepare("PRAGMA table_info(project_assets)").all().map((c) => c.name);
+    if (!paCols.includes('volc_id')) {
+      console.log('[database] 迁移：project_assets 添加 volc_id 列...');
+      db.exec(`ALTER TABLE project_assets ADD COLUMN volc_id INTEGER`);
+      // 如果存在旧列 volc_key_group_id 则迁移数据
+      if (paCols.includes('volc_key_group_id')) {
+        db.exec(`UPDATE project_assets SET volc_id = volc_key_group_id WHERE volc_key_group_id IS NOT NULL`);
+      }
+      console.log('[database] 迁移完成：project_assets.volc_id 已添加');
+    }
+  }
+
   console.log(`[database] 数据库初始化成功：${DB_PATH}`);
   return db;
 }

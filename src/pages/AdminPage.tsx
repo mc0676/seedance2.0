@@ -22,6 +22,7 @@ import {
   createVolcKeyGroup,
   updateVolcKeyGroup,
   activateVolcKeyGroup,
+  deactivateVolcKeyGroup,
   deleteVolcKeyGroup,
   type VolcKeyGroup,
   getWuyinKey,
@@ -316,18 +317,15 @@ export default function AdminPage() {
   // 全局任务查询（火山方舟直连，使用激活Key组或手动输入key）
   const GLOBAL_ARK_KEY = 'c7cf1f3a-6a5f-42e2-aae1-ac804020c18c';
   const [manualApiKey, setManualApiKey] = useState<string>(GLOBAL_ARK_KEY);
-  const [volcTasks, setVolcTasks] = useState<VolcArkTask[]>([]);
-  const [volcTotal, setVolcTotal] = useState<number>(0);
-  const [volcPageNum, setVolcPageNum] = useState<number>(1);
-  const [volcRawJson, setVolcRawJson] = useState<string>('');
   const [accountTasksLoading, setAccountTasksLoading] = useState(false);
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
 
   // 火山Key组管理
   const [volcKeyGroups, setVolcKeyGroups] = useState<VolcKeyGroup[]>([]);
-  const [newKeyGroup, setNewKeyGroup] = useState({ name: '', ark_model_key: 'c7cf1f3a-6a5f-42e2-aae1-ac804020c18c', volc_access_key: '', volc_secret_key: '', note: '' });
+  const [newKeyGroup, setNewKeyGroup] = useState({ name: '', ark_model_key: 'c7cf1f3a-6a5f-42e2-aae1-ac804020c18c', volc_access_key: '', volc_secret_key: '', grouping_weight: 0, note: '' });
   const [editingKeyGroup, setEditingKeyGroup] = useState<VolcKeyGroup | null>(null);
   const [keyGroupsLoading, setKeyGroupsLoading] = useState(false);
+  const [multiAccountEnabled, setMultiAccountEnabled] = useState(false);
 
   // 速创API Key
   const [wuyinKey, setWuyinKey] = useState('');
@@ -414,12 +412,30 @@ export default function AdminPage() {
   const [volcAkSkEditing, setVolcAkSkEditing] = useState(false);
   const [volcAkIdDraft, setVolcAkIdDraft] = useState('');
   const [volcSkKeyDraft, setVolcSkKeyDraft] = useState('');
+  // 资产库 / 全局任务查询按 API 账户 tab 切换
+  const [assetTabKeyGroupId, setAssetTabKeyGroupId] = useState<number | null>(null);
+  const [taskTabKeyGroupId, setTaskTabKeyGroupId] = useState<number | null>(null);
 
-  const loadVolcGroups = async (page = 1, search = volcGroupSearch) => {
+  // 资产库按 tab 缓存：{ [keyGroupId]: { groups: VolcAssetGroup[], total: number } }
+  const [assetCache, setAssetCache] = useState<Record<number, { groups: VolcAssetGroup[]; total: number }>>({});
+
+  // 全局任务查询按 tab 缓存：{ [keyGroupId]: { tasks, total, pageNum, rawJson, apiKey } }
+  const [taskCache, setTaskCache] = useState<Record<number, { tasks: VolcArkTask[]; total: number; pageNum: number; rawJson: string; apiKey: string }>>({});
+
+  // 从缓存读取当前 tab 的任务数据（派生状态）
+  const activeTaskCache = taskTabKeyGroupId != null ? (taskCache[taskTabKeyGroupId] ?? null) : null;
+  const volcTasks: VolcArkTask[] = activeTaskCache?.tasks ?? [];
+  const volcTotal = activeTaskCache?.total ?? 0;
+  const volcPageNum = activeTaskCache?.pageNum ?? 1;
+  const volcRawJson = activeTaskCache?.rawJson ?? '';
+
+  const loadVolcGroups = async (page = 1, search = volcGroupSearch, keyGroupId?: number | null) => {
     setVolcGroupsLoading(true);
+    const kId = keyGroupId ?? assetTabKeyGroupId;
     try {
       const params = new URLSearchParams({ pageNumber: String(page), pageSize: '20' });
       if (search.trim()) params.set('name', search.trim());
+      if (kId) params.set('keyGroupId', String(kId));
       const res = await fetch(`/api/admin/volc-native/asset-groups?${params}`, { headers: getAuthHeaders() });
       const data = await res.json();
       if (!data.success) throw new Error(data.error);
@@ -427,6 +443,10 @@ export default function AdminPage() {
       setVolcAssetGroups(items);
       setVolcGroupTotal(data.data?.TotalCount || 0);
       setVolcGroupPage(page);
+      // 写入缓存
+      if (kId) {
+        setAssetCache(prev => ({ ...prev, [kId]: { groups: items.slice(), total: data.data?.TotalCount || 0 } }));
+      }
       // 异步加载每组封面
       items.forEach(async (g) => {
         try {
@@ -440,8 +460,12 @@ export default function AdminPage() {
           if (url) setVolcAssetGroups(prev => prev.map(item => item.Id === g.Id ? { ...item, coverUrl: url } : item));
         } catch {}
       });
-    } catch (e) { alert(e instanceof Error ? e.message : '加载失败'); }
-    finally { setVolcGroupsLoading(false); }
+    } catch (e) {
+      if (kId) {
+        setAssetCache(prev => ({ ...prev, [kId]: { groups: [], total: 0 } }));
+      }
+      alert(e instanceof Error ? e.message : '加载失败');
+    } finally { setVolcGroupsLoading(false); }
   };
 
   const loadVolcAssets = async (page = 1, groupId = selectedGroup?.Id, search = volcAssetSearch) => {
@@ -460,14 +484,18 @@ export default function AdminPage() {
       // 异步加载每个素材 URL
       items.forEach(async (a) => {
         try {
-          const r = await fetch(`/api/admin/volc-native/asset?id=${encodeURIComponent(a.Id)}`, { headers: getAuthHeaders() });
+          const r = await fetch(`/api/admin/volc-native/asset?id=${encodeURIComponent(a.Id)}&keyGroupId=${assetTabKeyGroupId || ''}`, { headers: getAuthHeaders() });
           const d = await r.json();
           const url: string | undefined = d.data?.URL;
           if (url) setAssetUrlMap(prev => ({ ...prev, [a.Id]: url }));
         } catch {}
       });
-    } catch (e) { alert(e instanceof Error ? e.message : '加载失败'); }
-    finally { setVolcAssetsLoading(false); }
+    } catch (e) {
+      if (assetTabKeyGroupId) {
+        setAssetCache(prev => ({ ...prev, [assetTabKeyGroupId]: { groups: [], total: 0 } }));
+      }
+      alert(e instanceof Error ? e.message : '加载失败');
+    } finally { setVolcAssetsLoading(false); }
   };
 
   const handleEnterGroup = (g: VolcAssetGroup) => {
@@ -496,7 +524,7 @@ export default function AdminPage() {
       const res = await fetch(`/api/admin/volc-native/asset-groups/${encodeURIComponent(editingGroup.Id)}`, {
         method: 'PUT',
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ name: editGroupName.trim(), description: editGroupDesc.trim() }),
+        body: JSON.stringify({ name: editGroupName.trim(), description: editGroupDesc.trim(), keyGroupId: assetTabKeyGroupId }),
       });
       const data = await res.json();
       if (!data.success) throw new Error(data.error);
@@ -511,7 +539,7 @@ export default function AdminPage() {
     try {
       const res = await fetch(`/api/admin/volc-native/asset-groups/${encodeURIComponent(g.Id)}`, {
         method: 'DELETE', headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({}),
+        body: JSON.stringify({ keyGroupId: assetTabKeyGroupId }),
       });
       const data = await res.json();
       if (!data.success) throw new Error(data.error);
@@ -526,7 +554,7 @@ export default function AdminPage() {
       const res = await fetch(`/api/admin/volc-native/assets/${encodeURIComponent(editingAsset.Id)}`, {
         method: 'PUT',
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ name: editAssetName.trim() }),
+        body: JSON.stringify({ name: editAssetName.trim(), keyGroupId: assetTabKeyGroupId }),
       });
       const data = await res.json();
       if (!data.success) throw new Error(data.error);
@@ -541,7 +569,7 @@ export default function AdminPage() {
     try {
       const res = await fetch(`/api/admin/volc-native/assets/${encodeURIComponent(a.Id)}`, {
         method: 'DELETE', headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({}),
+        body: JSON.stringify({ keyGroupId: assetTabKeyGroupId }),
       });
       const data = await res.json();
       if (!data.success) throw new Error(data.error);
@@ -553,7 +581,7 @@ export default function AdminPage() {
     setDetailLoading(true);
     setDetailAsset(null);
     try {
-      const res = await fetch(`/api/admin/volc-native/asset?id=${encodeURIComponent(a.Id)}`, { headers: getAuthHeaders() });
+      const res = await fetch(`/api/admin/volc-native/asset?id=${encodeURIComponent(a.Id)}&keyGroupId=${assetTabKeyGroupId || ''}`, { headers: getAuthHeaders() });
       const data = await res.json();
       if (!data.success) throw new Error(data.error);
       setDetailAsset(data.data);
@@ -798,7 +826,21 @@ export default function AdminPage() {
       .catch(() => {});
     getAudioGenConfig().then((d) => { setAudioCfg(d.config); setAudioCfgOptions(d.options); }).catch(() => {});
     if (isSuperAdmin) {
-      loadVolcKeyGroups();
+      loadMultiAccountStatus();
+      loadVolcKeyGroups().then(() => {
+        // 默认选中第一个可用的 Key 组
+        setVolcKeyGroups(groups => {
+          const firstActive = groups.find(g => g.is_active);
+          if (firstActive) {
+            if (!assetTabKeyGroupId) setAssetTabKeyGroupId(firstActive.id);
+            if (!taskTabKeyGroupId) {
+              setTaskTabKeyGroupId(firstActive.id);
+              setManualApiKey(firstActive.ark_model_key);
+            }
+          }
+          return groups;
+        });
+      });
       getWuyinKey().then((d) => setWuyinKey(d.key)).catch(() => {});
       getMediaKitKey().then((d) => setMediaKitKey(d.key)).catch(() => {});
       // HappyHorse
@@ -928,19 +970,22 @@ export default function AdminPage() {
 
   const handleManualKeyQuery = async (page: number = 1) => {
     const key = manualApiKey.trim();
-    setVolcPageNum(page);
+    const tabId = taskTabKeyGroupId ?? 0; // 用 0 作为手动输入 key 的缓存键
     setAccountTasksLoading(true);
-    setVolcRawJson('');
     try {
       const result = await listVolcTasks({ apiKey: key || undefined, pageNum: page, pageSize: 20 });
       const items = result.data || result.items || result.tasks || [];
-      setVolcTasks(items as VolcArkTask[]);
-      setVolcTotal(result.total || items.length);
-      setVolcRawJson(JSON.stringify(result, null, 2));
+      const raw = JSON.stringify(result, null, 2);
+      setTaskCache((prev) => ({
+        ...prev,
+        [tabId]: { tasks: items as VolcArkTask[], total: result.total || items.length, pageNum: page, rawJson: raw, apiKey: key },
+      }));
     } catch (e) {
       alert(e instanceof Error ? e.message : '加载任务失败');
-      setVolcTasks([]);
-      setVolcTotal(0);
+      setTaskCache((prev) => ({
+        ...prev,
+        [tabId]: { tasks: [], total: 0, pageNum: page, rawJson: '', apiKey: key },
+      }));
     } finally {
       setAccountTasksLoading(false);
     }
@@ -959,7 +1004,7 @@ export default function AdminPage() {
     }
     try {
       await createVolcKeyGroup(newKeyGroup);
-      setNewKeyGroup({ name: '', ark_model_key: 'c7cf1f3a-6a5f-42e2-aae1-ac804020c18c', volc_access_key: '', volc_secret_key: '', note: '' });
+      setNewKeyGroup({ name: '', ark_model_key: 'c7cf1f3a-6a5f-42e2-aae1-ac804020c18c', volc_access_key: '', volc_secret_key: '', grouping_weight: 0, note: '' });
       await loadVolcKeyGroups();
     } catch (e) { alert(e instanceof Error ? e.message : '创建失败'); }
   };
@@ -974,10 +1019,22 @@ export default function AdminPage() {
   };
 
   const handleActivateKeyGroup = async (id: number) => {
+    // 单账户模式：弹确认框提示将禁用其他组
+    if (!multiAccountEnabled && !confirm('激活该组将禁用其他所有 Key 组，确认继续？')) {
+      return;
+    }
     try {
       await activateVolcKeyGroup(id);
       await loadVolcKeyGroups();
     } catch (e) { alert(e instanceof Error ? e.message : '激活失败'); }
+  };
+
+  const handleDeactivateKeyGroup = async (id: number, name: string) => {
+    if (!confirm(`确认停用 Key 组「${name}」？`)) return;
+    try {
+      await deactivateVolcKeyGroup(id);
+      await loadVolcKeyGroups();
+    } catch (e) { alert(e instanceof Error ? e.message : '停用失败'); }
   };
 
   const handleDeleteKeyGroup = async (id: number, name: string) => {
@@ -988,6 +1045,39 @@ export default function AdminPage() {
     } catch (e) { alert(e instanceof Error ? e.message : '删除失败'); }
   };
 
+  const loadMultiAccountStatus = async () => {
+    try {
+      const r = await fetch('/api/admin/multi-account', { headers: getAuthHeaders() });
+      const d = await r.json();
+      if (d?.success) setMultiAccountEnabled(d.data.enabled);
+    } catch {}
+  };
+
+  const handleToggleMultiAccount = async () => {
+    const next = !multiAccountEnabled;
+    // 关闭开关（单账户模式）时，检查是否有多组激活
+    if (!next) {
+      const activeCount = volcKeyGroups.filter(g => g.is_active).length;
+      if (activeCount > 1) {
+        if (!confirm(`关闭多账户模式将只保留第一组激活，其余 ${activeCount - 1} 组将被停用。确认继续？`)) {
+          return;
+        }
+      }
+    }
+    try {
+      const r = await fetch('/api/admin/multi-account', {
+        method: 'PUT', headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ enabled: next }),
+      });
+      const d = await r.json();
+      if (d?.success) {
+        setMultiAccountEnabled(d.data.enabled);
+        await loadVolcKeyGroups(); // 刷新Key组列表，反映激活状态变化
+      }
+    } catch (e) { alert(e instanceof Error ? e.message : '切换失败'); }
+  };
+
+  // 速创API Key
   const handleSaveWuyinKey = async () => {
     try {
       await updateWuyinKey(wuyinKeyDraft);
@@ -1928,7 +2018,7 @@ export default function AdminPage() {
             </div>
             <div className="flex gap-2 flex-wrap">
               {volcLevel === 'groups' && (
-                <button onClick={() => loadVolcGroups(1)} disabled={volcGroupsLoading}
+                <button onClick={() => loadVolcGroups(1, volcGroupSearch, assetTabKeyGroupId)} disabled={volcGroupsLoading}
                   className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 rounded-xl text-white text-xs">
                   {volcGroupsLoading ? '加载中...' : '查询'}
                 </button>
@@ -1939,12 +2029,55 @@ export default function AdminPage() {
                   {volcAssetsLoading ? '加载中...' : '刷新'}
                 </button>
               )}
-              {isSuperAdmin && (
-              <button onClick={() => { setVolcAkSkEditing(v => !v); setVolcAkIdDraft(volcAkId); setVolcSkKeyDraft(volcSkKey); }}
-                className="px-3 py-1.5 bg-[#0f111a] border border-gray-700 rounded-xl text-gray-400 hover:text-white text-xs">配置 AK/SK</button>
-              )}
+              {isSuperAdmin && (() => {
+                const selGroup = volcKeyGroups.find(kg => kg.id === assetTabKeyGroupId);
+                const ak = selGroup?.volc_access_key || volcAkId;
+                const sk = selGroup?.volc_secret_key || volcSkKey;
+                return (
+                <button onClick={() => { setVolcAkSkEditing(v => !v); setVolcAkIdDraft(ak); setVolcSkKeyDraft(sk); }}
+                  className="px-3 py-1.5 bg-[#0f111a] border border-gray-700 rounded-xl text-gray-400 hover:text-white text-xs">配置 AK/SK</button>
+                );
+              })()}
             </div>
           </div>
+
+          {/* API 账户 Tab 切换 */}
+          {volcLevel === 'groups' && volcKeyGroups.length > 0 && (
+            <div className="mb-4 flex flex-wrap gap-1.5">
+              {volcKeyGroups.map((kg) => {
+                const isActive = assetTabKeyGroupId === kg.id;
+                const isDisabled = !kg.is_active;
+                return (
+                  <button
+                    key={kg.id}
+                    onClick={() => {
+                      if (isActive) return;
+                      setAssetTabKeyGroupId(kg.id);
+                      // 恢复缓存的 tab 数据
+                      const cached = assetCache[kg.id];
+                      if (cached) {
+                        setVolcAssetGroups(cached.groups);
+                        setVolcGroupTotal(cached.total);
+                      } else {
+                        setVolcAssetGroups([]);
+                        setVolcGroupTotal(0);
+                      }
+                    }}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                      isActive
+                        ? 'bg-purple-600 text-white shadow-sm shadow-purple-600/20'
+                        : isDisabled
+                          ? 'bg-gray-800/50 text-gray-500 border border-gray-700/50 hover:border-gray-600'
+                          : 'bg-[#0f111a] text-gray-400 border border-gray-700 hover:border-gray-500 hover:text-gray-300'
+                    }`}
+                  >
+                    {kg.name}
+                    {isDisabled && <span className="ml-1 text-[10px] opacity-60">(未激活)</span>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           {/* AK/SK 配置面板（仅系统管理员） */}
           {isSuperAdmin && volcAkSkEditing && (
@@ -2170,7 +2303,23 @@ export default function AdminPage() {
         <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
           <div className="mb-4">
             <h2 className="text-xl font-semibold text-white">火山Key组管理</h2>
-            <p className="text-xs text-gray-500 mt-1">模型Key + 资产库Key 绑定为一组；同一时刻只能有一组处于激活状态，视频生成使用激活组的模型Key</p>
+            <p className="text-xs text-gray-500 mt-1">
+              {multiAccountEnabled
+                ? '多组可同时激活，按分组权重分配给新项目；权重总和需保持 100%'
+                : '当前为单账户模式，同时仅一组可激活'}
+            </p>
+            <div className="mt-2 flex items-center gap-2">
+              <span className="text-xs text-gray-500">多账户模式：</span>
+              <button
+                onClick={handleToggleMultiAccount}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${multiAccountEnabled ? 'bg-purple-600' : 'bg-gray-700'}`}
+              >
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${multiAccountEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+              </button>
+              <span className={`text-xs ${multiAccountEnabled ? 'text-purple-400' : 'text-gray-500'}`}>
+                {multiAccountEnabled ? '已启用' : '已关闭'}
+              </span>
+            </div>
           </div>
 
           {/* 新增Key组 */}
@@ -2181,7 +2330,10 @@ export default function AdminPage() {
               <input className="px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm font-mono" placeholder="ARK 模型Key *" value={newKeyGroup.ark_model_key} onChange={(e) => setNewKeyGroup((s) => ({ ...s, ark_model_key: e.target.value }))} />
               <input className="px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm font-mono" placeholder="资产库 Access Key ID（AK）" value={newKeyGroup.volc_access_key} onChange={(e) => setNewKeyGroup((s) => ({ ...s, volc_access_key: e.target.value }))} />
               <input className="px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm font-mono" placeholder="资产库 Secret Access Key（SK）" type="password" value={newKeyGroup.volc_secret_key} onChange={(e) => setNewKeyGroup((s) => ({ ...s, volc_secret_key: e.target.value }))} />
-              <input className="px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm md:col-span-2" placeholder="备注（可选）" value={newKeyGroup.note} onChange={(e) => setNewKeyGroup((s) => ({ ...s, note: e.target.value }))} />
+              {multiAccountEnabled && (
+                <input className="px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm" type="number" min="0" max="100" placeholder="分组权重 % (0-100)" value={newKeyGroup.grouping_weight || ''} onChange={(e) => setNewKeyGroup((s) => ({ ...s, grouping_weight: parseInt(e.target.value) || 0 }))} />
+              )}
+              <input className="px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm" placeholder="备注（可选）" value={newKeyGroup.note} onChange={(e) => setNewKeyGroup((s) => ({ ...s, note: e.target.value }))} />
             </div>
             <button onClick={handleCreateKeyGroup} className="mt-3 btn-primary flex items-center gap-2">
               <PlusIcon className="w-4 h-4" />新增
@@ -2200,11 +2352,12 @@ export default function AdminPage() {
                   {editingKeyGroup?.id === g.id ? (
                     <div className="space-y-3">
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <input className="px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm" placeholder="Key组名称 *" value={editingKeyGroup.name} onChange={(e) => setEditingKeyGroup((s) => s ? { ...s, name: e.target.value } : s)} />
-                        <input className="px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm font-mono" placeholder="ARK 模型Key *" value={editingKeyGroup.ark_model_key} onChange={(e) => setEditingKeyGroup((s) => s ? { ...s, ark_model_key: e.target.value } : s)} />
-                        <input className="px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm font-mono" placeholder="资产库 Access Key ID（AK）" value={editingKeyGroup.volc_access_key} onChange={(e) => setEditingKeyGroup((s) => s ? { ...s, volc_access_key: e.target.value } : s)} />
-                        <input className="px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm font-mono" placeholder="资产库 Secret Access Key（SK）" type="password" value={editingKeyGroup.volc_secret_key} onChange={(e) => setEditingKeyGroup((s) => s ? { ...s, volc_secret_key: e.target.value } : s)} />
-                        <input className="px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm md:col-span-2" placeholder="备注（可选）" value={editingKeyGroup.note} onChange={(e) => setEditingKeyGroup((s) => s ? { ...s, note: e.target.value } : s)} />
+                        <label className="text-xs text-gray-400">名称 <input className="mt-1 w-full px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm" placeholder="Key组名称 *" value={editingKeyGroup.name} onChange={(e) => setEditingKeyGroup((s) => s ? { ...s, name: e.target.value } : s)} /></label>
+                        <label className="text-xs text-gray-400">ARK API Key <input className="mt-1 w-full px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm font-mono" placeholder="ARK 模型Key *" value={editingKeyGroup.ark_model_key} onChange={(e) => setEditingKeyGroup((s) => s ? { ...s, ark_model_key: e.target.value } : s)} /></label>
+                        <label className="text-xs text-gray-400">AK <input className="mt-1 w-full px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm font-mono" placeholder="资产库 Access Key ID（AK）" value={editingKeyGroup.volc_access_key} onChange={(e) => setEditingKeyGroup((s) => s ? { ...s, volc_access_key: e.target.value } : s)} /></label>
+                        <label className="text-xs text-gray-400">SK <input className="mt-1 w-full px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm font-mono" placeholder="资产库 Secret Access Key（SK）" type="password" value={editingKeyGroup.volc_secret_key} onChange={(e) => setEditingKeyGroup((s) => s ? { ...s, volc_secret_key: e.target.value } : s)} /></label>
+                        {multiAccountEnabled && <label className="text-xs text-gray-400">分组权重 (%) <input className="mt-1 w-full px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm" type="number" min="0" max="100" placeholder="分组权重 %" value={editingKeyGroup.grouping_weight ?? ''} onChange={(e) => setEditingKeyGroup((s) => s ? { ...s, grouping_weight: parseInt(e.target.value) || 0 } : s)} /></label>}
+                        <label className="text-xs text-gray-400 md:col-span-2">备注 <input className="mt-1 w-full px-3 py-2 bg-[#1c1f2e] border border-gray-700 rounded text-white text-sm" placeholder="备注（可选）" value={editingKeyGroup.note} onChange={(e) => setEditingKeyGroup((s) => s ? { ...s, note: e.target.value } : s)} /></label>
                       </div>
                       <div className="flex gap-2">
                         <button onClick={handleSaveKeyGroup} className="btn-save">保存</button>
@@ -2227,10 +2380,27 @@ export default function AdminPage() {
                         <div className="text-xs text-gray-500 font-mono">Access Key: {g.volc_access_key ? `${g.volc_access_key.slice(0, 8)}...` : '（未配置）'}</div>
                         <div className="text-xs text-gray-500 font-mono">Secret Key: {g.volc_secret_key ? '••••••••' : '（未配置）'}</div>
                         {g.note && <div className="text-xs text-gray-600 mt-1">{g.note}</div>}
+                        {multiAccountEnabled && (
+                          <div className="text-xs text-gray-400 mt-1">
+                            {!!g.is_active && (
+                              <>
+                                分组权重：<span className="text-purple-400 font-medium">{g.grouping_weight ?? 0}%</span>
+                                <span className="mx-2">·</span>
+                              </>
+                            )}
+                            组数：{g.bound_count ?? 0}
+                            {g.id === 1 && (g.default_count ?? 0) > 0 && (
+                              <span className="text-gray-500">（另有 {g.default_count} 个默认组）</span>
+                            )}
+                          </div>
+                        )}
                       </div>
                       <div className="flex items-center gap-2 flex-shrink-0">
                         {!g.is_active && (
                           <button onClick={() => handleActivateKeyGroup(g.id)} className="px-3 py-1.5 bg-green-600 hover:bg-green-500 rounded-md text-white text-xs font-medium">激活</button>
+                        )}
+                        {multiAccountEnabled && !!g.is_active && (
+                          <button onClick={() => handleDeactivateKeyGroup(g.id, g.name)} className="px-3 py-1.5 bg-orange-600 hover:bg-orange-500 rounded-md text-white text-xs font-medium">停用</button>
                         )}
                         <button onClick={() => setEditingKeyGroup({ ...g })} className="btn-edit">编辑</button>
                         {!g.is_active && (
@@ -2627,6 +2797,37 @@ export default function AdminPage() {
               <p className="text-xs text-gray-500 mt-1">直接调火山方舟 ListContentGenerationTasks 接口；默认使用当前激活Key组，也可手动输入其他Key</p>
             </div>
           </div>
+          {/* API 账户 Tab 切换 */}
+          {volcKeyGroups.length > 1 && (
+            <div className="mb-4 flex flex-wrap gap-1.5">
+              {volcKeyGroups.map((kg) => {
+                const isActive = taskTabKeyGroupId === kg.id;
+                const isDisabled = !kg.is_active;
+                return (
+                  <button
+                    key={kg.id}
+                    onClick={() => {
+                      if (isActive) return;
+                      setTaskTabKeyGroupId(kg.id);
+                      // 从缓存恢复该 tab 的 apiKey，无缓存时用默认值
+                      const cached = taskCache[kg.id];
+                      setManualApiKey(cached?.apiKey ?? kg.ark_model_key);
+                    }}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                      isActive
+                        ? 'bg-purple-600 text-white shadow-sm shadow-purple-600/20'
+                        : isDisabled
+                          ? 'bg-gray-800/50 text-gray-500 border border-gray-700/50 hover:border-gray-600'
+                          : 'bg-[#0f111a] text-gray-400 border border-gray-700 hover:border-gray-500 hover:text-gray-300'
+                    }`}
+                  >
+                    {kg.name}
+                    {isDisabled && <span className="ml-1 text-[10px] opacity-60">(未激活)</span>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <div className="flex gap-2 mb-4">
             <input
               type="text"

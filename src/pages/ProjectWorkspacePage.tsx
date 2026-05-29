@@ -6,6 +6,7 @@ import {
   inviteProjectMember,
   removeProjectMember,
 } from '../services/assetService';
+import { getVolcKeyStatus } from '../services/settingsService';
 import type { ProjectMember } from '../types';
 import { formatDateTime, formatDate, useUserTimezone } from '../utils/datetime';
 
@@ -74,6 +75,19 @@ export default function ProjectWorkspacePage() {
   const { state, currentUser, loadProjects } = useApp();
   const currentProject = state.currentProject;
   const [tab, setTab] = useState<Tab>('volc');
+
+  // ── 火山账号状态检查 ─────────────────────────────
+  const [multiAccountEnabled, setMultiAccountEnabled] = useState(false);
+  useEffect(() => {
+    getVolcKeyStatus()
+      .then((s) => setMultiAccountEnabled(s.multiAccountEnabled))
+      .catch(() => {});
+  }, []);
+  const isVolcKeyDisabled = !!(
+    multiAccountEnabled &&
+    currentProject?.volc_id != null &&
+    currentProject?.volc_is_active !== 1
+  );
 
   // ─── 火山资产库 ───
   const [volcLevel, setVolcLevel] = useState<'groups' | 'assets'>('groups');
@@ -285,11 +299,13 @@ export default function ProjectWorkspacePage() {
       const persistedName: string = d1.data?.finalName || finalName;
 
       setCreateGroupStep('写入封面素材...');
-      await fetch('/api/volc-native/assets', {
+      const r2 = await fetch('/api/volc-native/assets', {
         method: 'POST',
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ groupId, url: ossUrl, assetType: 'Image', name: persistedName }),
       });
+      const d2 = await r2.json();
+      if (!d2.success) throw new Error(d2.error || '封面素材上传失败');
 
       setShowCreateGroup(false);
       setNewGroupName(''); setNewGroupDesc(''); setNewGroupFile(null); setNewGroupPreview('');
@@ -418,6 +434,9 @@ export default function ProjectWorkspacePage() {
         <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">项目组</p>
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-bold text-white">{currentProject.name}</h1>
+          {(currentProject as any).volc_name && (
+            <span className="text-sm text-gray-400 bg-gray-800/50 px-2 py-0.5 rounded-lg ml-1">API账户: {(currentProject as any).volc_name}</span>
+          )}
           <button
             className="text-gray-500 hover:text-white transition-colors"
             title="重命名"
@@ -455,6 +474,15 @@ export default function ProjectWorkspacePage() {
 
       {/* ═══ 资产库 Tab ═══ */}
       {tab === 'volc' && (
+        isVolcKeyDisabled ? (
+          <div className="flex items-center justify-center py-20">
+            <div className="text-center max-w-md">
+              <div className="text-6xl mb-4">⚠️</div>
+              <h2 className="text-xl font-bold text-amber-400 mb-2">火山账号未启用</h2>
+              <p className="text-gray-400 text-sm">当前项目所关联的火山账号未启用，请联系管理员启用。</p>
+            </div>
+          </div>
+        ) : (
         <div>
           {/* 工具栏 */}
           <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
@@ -777,6 +805,7 @@ export default function ProjectWorkspacePage() {
             )
           )}
         </div>
+        )
       )}
 
       {/* ═══ 成员管理 Tab ═══ */}

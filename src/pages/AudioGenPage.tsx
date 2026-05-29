@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { uploadToOss } from '../services/ossService';
 import { submitAudioGeneration, listAudioGenerations, getAudioGeneration, getAudioGenPublicConfig, estimateAudioGenCredits, type AudioGenPublicConfig, type AudioGenEstimate } from '../services/audioService';
 import { getProjectAssets } from '../services/projectService';
+import { listProjectAssetGroups } from '../services/assetService';
 import { getCreditBalance, type CreditBalance } from '../services/pricingService';
+import { getVolcKeyStatus } from '../services/settingsService';
 import { videoUrlToMp3Blob, downloadBlob, ExpiredVideoUrlError, isSignedUrlExpired } from '../utils/audioExtractor';
 import { formatDateTime, useUserTimezone } from '../utils/datetime';
 import type { AudioGeneration, ProjectAsset } from '../types';
@@ -24,7 +26,21 @@ const inflightConversion = new Set<number>();
 export default function AudioGenPage() {
   useUserTimezone();
   const { state } = useApp();
-  const projectId = state.currentProject?.id ?? null;
+  const currentProject = state.currentProject;
+  const projectId = currentProject?.id ?? null;
+
+  // ── 火山账号状态检查 ─────────────────────────────
+  const [multiAccountEnabled, setMultiAccountEnabled] = useState(false);
+  useEffect(() => {
+    getVolcKeyStatus()
+      .then((s) => setMultiAccountEnabled(s.multiAccountEnabled))
+      .catch(() => {});
+  }, []);
+  const isVolcKeyDisabled = !!(
+    multiAccountEnabled &&
+    currentProject?.volc_id != null &&
+    currentProject?.volc_is_active !== 1
+  );
 
   // ── 提交表单 ─────────────────────────────────────────────
   const [refImageUrl, setRefImageUrl] = useState<string | null>(null);
@@ -73,6 +89,8 @@ export default function AudioGenPage() {
   // 工作组素材组：可选取的图片素材（file_url 有效 + active + approved），自动加载
   const [projectAssets, setProjectAssets] = useState<ProjectAsset[]>([]);
   const [, setAssetSyncing] = useState(false);
+  // 素材组列表（asset_groups 表）
+  const [projectAssetGroups, setProjectAssetGroups] = useState<import('../types').AssetGroupInfo[]>([]);
   function pickAsset(a: ProjectAsset) {
     if (!a.file_url) return;
     setRefImageUrl(a.file_url);
@@ -113,48 +131,55 @@ export default function AudioGenPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 切换工作组时清空素材列表（picker 打开时再按需加载）
-  // 切换工作组时自动加载素材组（先本地快照，再 ARK 实时覆盖）
+  // 加载项目素材组（asset_groups 表）
   useEffect(() => {
-    setProjectAssets([]);
-    if (!projectId) return;
+    if (!projectId) { setProjectAssetGroups([]); return; }
     let cancelled = false;
-
-    // 第一阶段：本地 DB
-    getProjectAssets(projectId, { pageSize: 200, skipLive: true } as any)
-      .then((r) => {
-        if (cancelled) return;
-        const filtered = r.assets.filter((a) => a.file_type === 'image' && a.review_status !== 'rejected' && !!a.file_url);
-        if (filtered.length > 0) setProjectAssets(filtered);
-      })
+    listProjectAssetGroups(projectId)
+      .then((groups) => { if (!cancelled) setProjectAssetGroups(groups); })
       .catch(() => {});
-
-    // 第二阶段：ARK 实时
-    setAssetSyncing(true);
-    getProjectAssets(projectId, { pageSize: 200 })
-      .then((r) => {
-        if (cancelled) return;
-        const filtered = r.assets.filter((a) => a.file_type === 'image' && a.review_status !== 'rejected' && !!a.file_url);
-        setProjectAssets((prev) => filtered.length >= prev.length ? filtered : prev);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setTimeout(() => {
-            if (cancelled) return;
-            getProjectAssets(projectId, { pageSize: 200 })
-              .then((r) => {
-                if (cancelled) return;
-                const filtered = r.assets.filter((a) => a.file_type === 'image' && a.review_status !== 'rejected' && !!a.file_url);
-                setProjectAssets((prev) => filtered.length >= prev.length ? filtered : prev);
-              })
-              .catch(() => {});
-          }, 1500);
-        }
-      })
-      .finally(() => { if (!cancelled) setAssetSyncing(false); });
-
     return () => { cancelled = true; };
   }, [projectId]);
+
+  // 加载项目素材（用于按组展示所有素材）
+  useEffect(() => {
+    if (!projectId) { setProjectAssets([]); return; }
+    let cancelled = false;
+    getProjectAssets(projectId, { pageSize: 200 })
+      .then((data) => {
+        if (cancelled) return;
+        const assets = data.assets
+          .filter((a) => a.status === 'active' && a.review_status !== 'rejected' && a.file_url)
+          .filter((a) => a.file_type === 'image');
+        setProjectAssets(assets);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [projectId]);
+
+  // 将素材按素材组名称分组
+  const groupedAssets = useMemo(() => {
+    const groupNameMap = new Map<string, string>();
+    for (const g of projectAssetGroups) {
+      if (g.volc_group_id) {
+        groupNameMap.set(g.volc_group_id, g.name);
+      }
+    }
+    const groups: { name: string; assets: ProjectAsset[] }[] = [];
+    const seen = new Map<string, { name: string; assets: ProjectAsset[] }>();
+    for (const a of projectAssets) {
+      const key = a.volc_group_id && groupNameMap.has(a.volc_group_id)
+        ? groupNameMap.get(a.volc_group_id)!
+        : '未分组';
+      if (!seen.has(key)) {
+        const entry = { name: key, assets: [] };
+        seen.set(key, entry);
+        groups.push(entry);
+      }
+      seen.get(key)!.assets.push(a);
+    }
+    return groups;
+  }, [projectAssets, projectAssetGroups]);
 
   async function loadList(targetPage = page) {
     setLoading(true);
@@ -343,6 +368,16 @@ export default function AudioGenPage() {
         <h1 className="text-lg font-bold">音频生成</h1>
       </div>
 
+      {isVolcKeyDisabled ? (
+        <div className="flex-1 flex items-center justify-center p-8">
+          <div className="text-center max-w-md">
+            <div className="text-6xl mb-4">⚠️</div>
+            <h2 className="text-xl font-bold text-amber-400 mb-2">火山账号未启用</h2>
+            <p className="text-gray-400 text-sm">当前项目所关联的火山账号未启用，请联系管理员启用。</p>
+          </div>
+        </div>
+      ) : (
+      <>
       {/* Left Panel */}
       <div className="flex-1 md:w-[520px] md:flex-none md:border-r border-gray-800 overflow-y-auto custom-scrollbar p-4 md:p-6 bg-[#0f111a]">
         <div className="hidden md:flex flex-col gap-1 mb-4">
@@ -428,43 +463,49 @@ export default function AudioGenPage() {
 
           </div>
 
-          {/* 工作组素材组（有空素材才渲染） */}
-          {projectAssets.length > 0 && (
+          {/* 素材（按素材组分组展示，点击选取为参考图） */}
+          {groupedAssets.length > 0 && (
             <div className="bg-[#1c1f2e] rounded-2xl p-4 border border-gray-800">
-              <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-3">项目组素材组</label>
-              <div className="flex flex-wrap gap-2">
-                {projectAssets.map((a) => {
-                  const isSelected = refImageUrl === a.file_url;
-                  const isInRepo = !!a.volc_asset_id;
-                  return (
-                    <button
-                      key={a.id}
-                      onClick={() => pickAsset(a)}
-                      className={`relative w-[72px] h-[72px] flex-shrink-0 rounded-xl overflow-hidden border-2 transition-all ${
-                        isSelected
-                          ? 'border-purple-500 ring-2 ring-purple-500/30'
-                          : 'border-gray-700 hover:border-purple-500/50 hover:bg-[#25293d]'
-                      }`}
-                      title={a.name || '无名称'}
-                    >
-                      {a.thumbnail_url || a.file_url ? (
-                        <img src={a.thumbnail_url || a.file_url} alt={a.name || ''} className="w-full h-full object-cover" />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center text-gray-600 text-[10px]">无图</div>
-                      )}
-                      <span className={`absolute top-0 right-0 text-[7px] font-bold px-0.5 py-px leading-none border-b border-l rounded-bl-lg ${
-                        isInRepo
-                          ? 'bg-emerald-600/80 text-white border-emerald-500/40'
-                          : 'bg-amber-600/80 text-white border-amber-500/40'
-                      }`}>
-                        {isInRepo ? '库' : '链'}
-                      </span>
-                      {isSelected && (
-                        <span className="absolute bottom-0 left-0 right-0 bg-purple-600/80 text-[8px] text-white text-center py-0.5 font-medium">已选</span>
-                      )}
-                    </button>
-                  );
-                })}
+              <div className="flex items-center justify-between mb-3">
+                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">
+                  素材组
+                </label>
+                <span className="text-[10px] text-gray-500">点击选取参考图</span>
+              </div>
+              <div className="space-y-3">
+                {groupedAssets.map((group) => (
+                  <div key={group.name}>
+                    <div className="text-[10px] text-gray-500 px-1 py-0.5">
+                      {group.name}
+                      <span className="text-gray-600 ml-1">({group.assets.length})</span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {group.assets.map((asset) => {
+                        const isSelected = refImageUrl === asset.file_url;
+                        return (
+                          <button
+                            key={asset.id}
+                            onClick={() => pickAsset(asset)}
+                            className={`relative w-20 h-20 rounded-xl overflow-hidden border-2 transition-all hover:scale-105 ${
+                              isSelected ? 'border-purple-400 shadow-lg shadow-purple-500/20' : 'border-gray-700 hover:border-gray-500'
+                            }`}
+                            title={asset.name}
+                          >
+                            {asset.thumbnail_url || asset.file_url ? (
+                              <img src={asset.thumbnail_url || asset.file_url!} alt={asset.name} className="w-full h-full object-cover" />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center text-gray-600 text-xl">🖼</div>
+                            )}
+                            {isSelected && (
+                              <span className="absolute top-0 right-0 text-[7px] font-bold px-0.5 py-px leading-none border-b border-l rounded-bl-lg bg-purple-500 text-white border-purple-500/40">✓</span>
+                            )}
+                            <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-[7px] text-white text-center py-0.5 font-medium truncate">{asset.name}</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           )}
@@ -626,6 +667,8 @@ export default function AudioGenPage() {
           </div>
         )}
       </div>
+      </>
+      )}
 
     </div>
   );

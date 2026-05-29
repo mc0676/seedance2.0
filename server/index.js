@@ -32,6 +32,7 @@ import * as happyhorsePricingService from './services/happyhorsePricingService.j
 import * as happyhorseWorker from './services/happyhorseWorker.js';
 import * as bssService from './services/bssService.js';
 import * as volcBillingService from './services/volcBillingService.js';
+import * as discountService from './services/discountService.js';
 import { readFileSync } from 'fs';
 
 // 初始化数据库
@@ -340,11 +341,40 @@ function getMissingSessionErrorMessage() {
   return '未配置可用的 API Key，请在管理后台激活一个火山Key组';
 }
 
-// 从激活的火山Key组取 ARK API Key
+// 从激活的火山Key组取 ARK API Key（无项目上下文时的兜底）
+function isMultiAccountEnabled() {
+  const db = getDatabase();
+  const row = db.prepare("SELECT value FROM system_config WHERE key = 'multi_volc_is_enable'").get();
+  return (row?.value === '1' || row?.value === 'true');
+}
+
 function resolveApiKey() {
   const db = getDatabase();
   const activeGroup = db.prepare('SELECT ark_model_key FROM volc_key_groups WHERE is_active = 1 LIMIT 1').get();
   return activeGroup?.ark_model_key || '';
+}
+
+// 根据项目绑定的 volc_id 取对应的 ARK API Key
+function resolveProjectApiKey(projectId, forceMulti = false) {
+  if (!projectId) return resolveApiKey();
+  const db = getDatabase();
+  const row = db.prepare(`
+    SELECT v.ark_model_key FROM volc_key_groups v
+    INNER JOIN projects p ON p.volc_id = v.id
+    WHERE p.id = ?
+  `).get(projectId);
+  return (isMultiAccountEnabled() || forceMulti) ? (row?.ark_model_key || resolveApiKey()) : resolveApiKey();
+}
+
+// 根据项目绑定的 volc_id 取对应的 Key 组（含 id, name, ark_model_key 等）
+function resolveProjectKeyGroup(projectId) {
+  if (!projectId) return null;
+  const db = getDatabase();
+  return db.prepare(`
+    SELECT v.* FROM volc_key_groups v
+    INNER JOIN projects p ON p.volc_id = v.id
+    WHERE p.id = ?
+  `).get(projectId) || null;
 }
 
 function pickFirstArray(...values) {
@@ -1485,7 +1515,7 @@ app.post('/api/generate-video', authenticate, upload.array('files', 5), async (r
     // 批量生成时生成批次 ID
     const concurrentId = batchSize > 1 ? crypto.randomUUID() : null;
 
-    const apiKey = resolveApiKey();
+    const apiKey = resolveProjectApiKey(targetProject.id);
     if (!apiKey) {
       return res.status(401).json({ error: getMissingSessionErrorMessage() });
     }
@@ -1791,7 +1821,7 @@ app.get('/api/task/:taskId', authenticate, async (req, res) => {
     const arkTaskId = dbTask.submit_id || dbTask.history_id;
     if (arkTaskId) {
       try {
-        const apiKey = resolveApiKey();
+        const apiKey = resolveProjectApiKey(dbTask.project_id);
         if (apiKey) {
           const arkResult = await getArkTask(apiKey, arkTaskId);
 
@@ -2679,7 +2709,7 @@ app.post('/api/download/refresh', authenticate, async (req, res) => {
       const arkTaskId = task.submit_id || task.history_id;
       if (!arkTaskId) return;
       try {
-        const apiKey = resolveApiKey();
+        const apiKey = resolveProjectApiKey(task.project_id);
         if (!apiKey) return;
 
         const arkResult = await getArkTask(apiKey, arkTaskId);
@@ -4388,31 +4418,62 @@ app.delete('/api/admin/model-pricing/:modelKey', authenticate, requireAdmin, (re
 });
 
 // ============================================================
-// 火山Key组管理（全局唯一激活）
+// 火山Key组管理（支持多组同时激活，按权重分配）
 // ============================================================
 
 // GET /api/admin/volc-key-groups
 app.get('/api/admin/volc-key-groups', authenticate, requireAdmin, (req, res) => {
   try {
     const db = getDatabase();
-    const groups = db.prepare('SELECT * FROM volc_key_groups ORDER BY id ASC').all();
+    const groups = db.prepare(`
+      SELECT v.*,
+        (SELECT COUNT(*) FROM projects WHERE volc_id = v.id) AS bound_count,
+        (SELECT COUNT(*) FROM projects WHERE volc_id IS NULL) AS default_count
+      FROM volc_key_groups v ORDER BY v.id ASC
+    `).all();
     res.json({ success: true, data: groups });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
+// 辅助：调整其他已激活组的 grouping_weight 腾空间
+function redistributeGroupingWeight(db, excludeId, newWeight) {
+  const others = db.prepare(
+    'SELECT id, grouping_weight FROM volc_key_groups WHERE is_active = 1 AND id != ? ORDER BY id'
+  ).all(excludeId);
+  if (others.length === 0) return;
+  const currentSum = others.reduce((s, o) => s + (o.grouping_weight || 0), 0);
+  const targetOthersSum = 100 - newWeight;
+  if (targetOthersSum < 0) throw new Error('grouping_weight 不能超过 100');
+  if (others.length === 1) {
+    db.prepare('UPDATE volc_key_groups SET grouping_weight = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .run(targetOthersSum, others[0].id);
+    return;
+  }
+  const delta = targetOthersSum - currentSum;
+  const perGroup = Math.floor(delta / others.length);
+  let remainder = delta - perGroup * others.length;
+  for (const o of others) {
+    let newVal = (o.grouping_weight || 0) + perGroup + (remainder > 0 ? 1 : 0);
+    if (remainder > 0) remainder--;
+    if (newVal < 0) newVal = 0;
+    db.prepare('UPDATE volc_key_groups SET grouping_weight = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .run(newVal, o.id);
+  }
+}
+
 // POST /api/admin/volc-key-groups
 app.post('/api/admin/volc-key-groups', authenticate, requireAdmin, (req, res) => {
   try {
     const db = getDatabase();
-    const { name, ark_model_key, volc_access_key = '', volc_secret_key = '', note = '' } = req.body;
+    const { name, ark_model_key, volc_access_key = '', volc_secret_key = '', note = '', grouping_weight = 0 } = req.body;
     if (!name || !ark_model_key) {
       return res.status(400).json({ error: 'name 和 ark_model_key 均必填' });
     }
     const result = db.prepare(
-      'INSERT INTO volc_key_groups (name, ark_model_key, ark_asset_key, volc_access_key, volc_secret_key, is_active, note) VALUES (?, ?, ?, ?, ?, 0, ?)'
-    ).run(name, ark_model_key, '', volc_access_key, volc_secret_key, note);
+      'INSERT INTO volc_key_groups (name, ark_model_key, ark_asset_key, volc_access_key, volc_secret_key, is_active, grouping_weight, note) VALUES (?, ?, ?, ?, ?, 0, ?, ?)'
+    ).run(name, ark_model_key, '', volc_access_key, volc_secret_key, grouping_weight, note);
     const group = db.prepare('SELECT * FROM volc_key_groups WHERE id = ?').get(result.lastInsertRowid);
     res.json({ success: true, data: group });
   } catch (error) {
@@ -4427,14 +4488,19 @@ app.put('/api/admin/volc-key-groups/:id', authenticate, requireAdmin, (req, res)
     const id = Number(req.params.id);
     const existing = db.prepare('SELECT * FROM volc_key_groups WHERE id = ?').get(id);
     if (!existing) return res.status(404).json({ error: '未找到该Key组' });
-    const { name, ark_model_key, volc_access_key, volc_secret_key, note } = req.body;
+    const { name, ark_model_key, volc_access_key, volc_secret_key, note, grouping_weight } = req.body;
+    // grouping_weight: 若该组已激活且 weight 变更，重新分配其他组权重
+    if (grouping_weight !== undefined && existing.is_active && grouping_weight !== existing.grouping_weight) {
+      redistributeGroupingWeight(db, id, grouping_weight);
+    }
     db.prepare(
-      'UPDATE volc_key_groups SET name=?, ark_model_key=?, volc_access_key=?, volc_secret_key=?, note=?, updated_at=CURRENT_TIMESTAMP WHERE id=?'
+      'UPDATE volc_key_groups SET name=?, ark_model_key=?, volc_access_key=?, volc_secret_key=?, grouping_weight=?, note=?, updated_at=CURRENT_TIMESTAMP WHERE id=?'
     ).run(
       name ?? existing.name,
       ark_model_key ?? existing.ark_model_key,
       volc_access_key ?? existing.volc_access_key ?? '',
       volc_secret_key ?? existing.volc_secret_key ?? '',
+      grouping_weight ?? existing.grouping_weight ?? 0,
       note ?? existing.note,
       id
     );
@@ -4445,22 +4511,116 @@ app.put('/api/admin/volc-key-groups/:id', authenticate, requireAdmin, (req, res)
   }
 });
 
-// PUT /api/admin/volc-key-groups/:id/activate - 激活（同时停用其他组，同步 AK/SK 到 system_config）
+// PUT /api/admin/volc-key-groups/:id/activate - 激活Key组
+// 多账户关闭时：单组模式，激活目标组并停用其他所有组
+// 多账户开启时：多组模式，可同时激活多组（权重总和需保持 100%）
 app.put('/api/admin/volc-key-groups/:id/activate', authenticate, requireAdmin, (req, res) => {
   try {
     const db = getDatabase();
     const id = Number(req.params.id);
     const existing = db.prepare('SELECT * FROM volc_key_groups WHERE id = ?').get(id);
     if (!existing) return res.status(404).json({ error: '未找到该Key组' });
-    db.prepare('UPDATE volc_key_groups SET is_active = 0').run();
-    db.prepare('UPDATE volc_key_groups SET is_active = 1, updated_at=CURRENT_TIMESTAMP WHERE id = ?').run(id);
-    // 同步该组的 AK/SK 到 system_config（供 volcArkAssetRequest 使用）
+
+    const multiRow = db.prepare("SELECT value FROM system_config WHERE key = 'multi_volc_is_enable'").get();
+    const multiEnabled = multiRow?.value === '1' || multiRow?.value === 'true';
+
+    if (multiEnabled) {
+      // 多账户模式：允许多组同时激活
+      // 如果当前无任何激活组，作为第一个激活组，重置所有权重后设为 100%
+      const existingActive = db.prepare('SELECT COUNT(*) AS c FROM volc_key_groups WHERE is_active = 1').get();
+      if (existingActive.c === 0) {
+        db.prepare('UPDATE volc_key_groups SET grouping_weight = 0').run();
+        db.prepare('UPDATE volc_key_groups SET is_active = 1, grouping_weight = 100, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
+        console.log(`[volc-key] 多账户模式首个激活组：重置所有权重，Key组 id=${id} 权重设为 100%`);
+      } else {
+        db.prepare('UPDATE volc_key_groups SET is_active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
+      }
+      // 校验激活后 grouping_weight 总和 = 100
+      const activeGroups = db.prepare(
+        'SELECT id, grouping_weight FROM volc_key_groups WHERE is_active = 1'
+      ).all();
+      const totalWeight = activeGroups.reduce((s, g) => s + (g.grouping_weight || 0), 0);
+      if (totalWeight !== 100) {
+        console.warn(`[volc-key] 激活后分组权重总和=${totalWeight}（期望=100），请手动调整`);
+      }
+    } else {
+      // 单账户模式：只允许一组激活，先停用其他所有组
+      db.prepare('UPDATE volc_key_groups SET is_active = (CASE WHEN id = ? THEN 1 ELSE 0 END), updated_at = CURRENT_TIMESTAMP').run(id);
+      console.log(`[volc-key] 单账户模式：Key组 id=${id} 已激活，其余已停用`);
+    }
+
+    // 同步 AK/SK 到 system_config
     if (existing.volc_access_key) {
       db.prepare("INSERT OR REPLACE INTO system_config (key, value) VALUES ('volc_access_key_id', ?)").run(existing.volc_access_key);
     }
     if (existing.volc_secret_key) {
       db.prepare("INSERT OR REPLACE INTO system_config (key, value) VALUES ('volc_secret_access_key', ?)").run(existing.volc_secret_key);
     }
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PUT /api/admin/volc-key-groups/:id/deactivate - 停用Key组（仅多账户模式下可用）
+// 停用时自动将停用组的权重平均分配到剩余激活组
+app.put('/api/admin/volc-key-groups/:id/deactivate', authenticate, requireAdmin, (req, res) => {
+  try {
+    const db = getDatabase();
+    const id = Number(req.params.id);
+    const existing = db.prepare('SELECT * FROM volc_key_groups WHERE id = ?').get(id);
+    if (!existing) return res.status(404).json({ error: '未找到该Key组' });
+    if (!existing.is_active) return res.status(400).json({ error: '该Key组未激活' });
+
+    const multiRow = db.prepare("SELECT value FROM system_config WHERE key = 'multi_volc_is_enable'").get();
+    const multiEnabled = multiRow?.value === '1' || multiRow?.value === 'true';
+    if (!multiEnabled) {
+      return res.status(400).json({ error: '单账户模式下不允许停用Key组，请直接激活其他组' });
+    }
+
+    const deactivatedWeight = existing.grouping_weight || 0;
+
+    // 停用目标组
+    db.prepare('UPDATE volc_key_groups SET is_active = 0, grouping_weight = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
+
+    // 查询剩余激活组，将停用组权重平均分配
+    const remaining = db.prepare(
+      'SELECT id, grouping_weight FROM volc_key_groups WHERE is_active = 1 AND id != ? ORDER BY id'
+    ).all(id);
+
+    if (remaining.length > 0 && deactivatedWeight > 0) {
+      const share = Math.floor(deactivatedWeight / remaining.length);
+      const remainder = deactivatedWeight - share * remaining.length;
+
+      const updateStmt = db.prepare('UPDATE volc_key_groups SET grouping_weight = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
+      const distributeMany = db.transaction((groups, baseShare, extra) => {
+        for (let i = 0; i < groups.length; i++) {
+          const newWeight = (groups[i].grouping_weight || 0) + baseShare + (i === groups.length - 1 ? extra : 0);
+          updateStmt.run(newWeight, groups[i].id);
+        }
+      });
+      distributeMany(remaining, share, remainder);
+
+      // 均分后校验总和，若不为 100 则按比例归一化
+      const afterGroups = db.prepare('SELECT id, grouping_weight FROM volc_key_groups WHERE is_active = 1').all();
+      const afterTotal = afterGroups.reduce((s, g) => s + (g.grouping_weight || 0), 0);
+      if (afterTotal > 0 && afterTotal !== 100) {
+        const normStmt = db.prepare('UPDATE volc_key_groups SET grouping_weight = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
+        const normMany = db.transaction((groups, total) => {
+          let distributed = 0;
+          for (let i = 0; i < groups.length; i++) {
+            const raw = Math.floor((groups[i].grouping_weight || 0) * 100 / total);
+            const w = (i === groups.length - 1) ? (100 - distributed) : raw;
+            distributed += w;
+            normStmt.run(w, groups[i].id);
+          }
+        });
+        normMany(afterGroups, afterTotal);
+        console.log(`[volc-key] 权重归一化：总和 ${afterTotal} → 100`);
+      }
+    }
+
+    console.log(`[volc-key] 多账户模式：Key组 id=${id} 已停用，权重 ${deactivatedWeight}% 已均分给 ${remaining.length} 组`);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -4495,6 +4655,62 @@ app.get('/api/admin/wuyin-key', authenticate, requireAdmin, (req, res) => {
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+// GET /api/admin/volc-key-groups/stats - 获取各组绑定的项目组数量
+app.get('/api/admin/volc-key-groups/stats', authenticate, requireAdmin, (req, res) => {
+  try {
+    const db = getDatabase();
+    const stats = db.prepare(`
+      SELECT v.id, v.name,
+        (SELECT COUNT(*) FROM projects WHERE volc_id = v.id) AS bound_count
+      FROM volc_key_groups v ORDER BY v.id ASC
+    `).all();
+    const defaultCount = db.prepare('SELECT COUNT(*) AS c FROM projects WHERE volc_id IS NULL').get();
+    res.json({ success: true, data: { stats, defaultCount: defaultCount?.c || 0 } });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/admin/multi-account — 获取多账户开关状态
+app.get('/api/admin/multi-account', authenticate, requireAdmin, (req, res) => {
+  const db = getDatabase();
+  const row = db.prepare("SELECT value FROM system_config WHERE key = 'multi_volc_is_enable'").get();
+  res.json({ success: true, data: { enabled: row?.value === '1' || row?.value === 'true' } });
+});
+
+// GET /api/volc-key-status — 普通用户获取多账户开关状态（用于判断项目绑定的火山账号是否可用）
+app.get('/api/volc-key-status', authenticate, (req, res) => {
+  const db = getDatabase();
+  const row = db.prepare("SELECT value FROM system_config WHERE key = 'multi_volc_is_enable'").get();
+  res.json({ success: true, data: { multiAccountEnabled: row?.value === '1' || row?.value === 'true' } });
+});
+
+// PUT /api/admin/multi-account — 切换多账户开关
+// 开启时：将当前激活组的权重设为 100%
+// 关闭时（单账户模式）：若有多组激活，只保留第一组，其余停用
+app.put('/api/admin/multi-account', authenticate, requireAdmin, (req, res) => {
+  const db = getDatabase();
+  const { enabled } = req.body || {};
+  db.prepare("INSERT OR REPLACE INTO system_config (key, value) VALUES ('multi_volc_is_enable', ?)").run(enabled ? '1' : '0');
+  if (enabled) {
+    // 多账户模式：重置所有权重为 0，只给唯一激活组设 100
+    const activeGroup = db.prepare('SELECT id FROM volc_key_groups WHERE is_active = 1 LIMIT 1').get();
+    db.prepare('UPDATE volc_key_groups SET grouping_weight = 0').run();
+    if (activeGroup) {
+      db.prepare('UPDATE volc_key_groups SET grouping_weight = 100 WHERE id = ?').run(activeGroup.id);
+      console.log(`[multi-account] 多账户模式已启用，重置所有权重，Key组 id=${activeGroup.id} 权重设为 100%`);
+    }
+  } else {
+    // 单账户模式：只保留第一组，停用其余
+    const firstGroup = db.prepare('SELECT id FROM volc_key_groups ORDER BY id ASC LIMIT 1').get();
+    if (firstGroup) {
+      db.prepare('UPDATE volc_key_groups SET is_active = CASE WHEN id = ? THEN 1 ELSE 0 END, updated_at = CURRENT_TIMESTAMP').run(firstGroup.id);
+      console.log(`[multi-account] 单账户模式：仅保留Key组 id=${firstGroup.id} 激活，其余已停用`);
+    }
+  }
+  res.json({ success: true, data: { enabled: !!enabled } });
 });
 
 // PUT /api/admin/wuyin-key
@@ -5410,7 +5626,6 @@ app.put('/api/admin/happyhorse-pricing', authenticate, requireAdmin, (req, res) 
 // ============================================================
 // 模型折扣管理（模型计费 + HappyHorse 共用）
 // ============================================================
-import * as discountService from './services/discountService.js';
 
 app.get('/api/admin/discounts', authenticate, requireAdmin, (req, res) => {
   try {
@@ -5541,7 +5756,7 @@ app.post('/api/audio-generations', authenticate, async (req, res) => {
       }
     }
 
-    const apiKey = resolveApiKey();
+    const apiKey = resolveProjectApiKey(targetProject.id);
     if (!apiKey) {
       return res.status(401).json({ error: getMissingSessionErrorMessage() });
     }
@@ -5758,11 +5973,49 @@ function volcSign(method, host, path, query, body, accessKeyId, secretAccessKey)
   return { authorization, 'x-date': timestamp };
 }
 
-async function volcArkAssetRequest(action, body, db) {
-  const akRow = db.prepare("SELECT value FROM system_config WHERE key = 'volc_access_key_id'").get();
-  const skRow = db.prepare("SELECT value FROM system_config WHERE key = 'volc_secret_access_key'").get();
-  const ak = akRow?.value || process.env.VOLC_ACCESS_KEY_ID;
-  const sk = skRow?.value || process.env.VOLC_SECRET_ACCESS_KEY;
+/** 翻译 ARK API 常见错误信息 */
+function translateArkError(msg) {
+  const map = {
+    'Width must be between 300px and 6000px.': '图片宽度必须在 300px 到 6000px 之间',
+    'Height must be between 300px and 6000px.': '图片高度必须在 300px 到 6000px 之间',
+    'Width and Height must be between 300px and 6000px.': '图片宽高必须在 300px 到 6000px 之间',
+    'The asset is invalid.': '素材无效（可能是不支持的格式或损坏的文件）',
+    'The asset is too small.': '素材尺寸过小',
+    'The asset is too large.': '素材文件过大',
+    'The asset format is not supported.': '不支持的素材格式',
+    'The file format is not supported.': '不支持的文件格式',
+    'Quota exceeded': 'API 配额已用尽',
+    'Invalid parameter': '请求参数无效',
+    'Unauthorized': '认证失败，请检查 AK/SK',
+    'Forbidden': '无权限访问该资源',
+    'Not Found': '资源不存在',
+    'Internal Server Error': '火山引擎内部错误，请稍后重试',
+    'Service Unavailable': '火山引擎服务暂时不可用',
+  };
+  // 精确匹配
+  if (map[msg]) return map[msg];
+  // 包含匹配
+  for (const [en, zh] of Object.entries(map)) {
+    if (msg.includes(en)) return zh;
+  }
+  return msg;
+}
+
+async function volcArkAssetRequest(action, body, db, keyGroupId = null) {
+  let ak, sk;
+  if (keyGroupId) {
+    const kg = db.prepare('SELECT volc_access_key, volc_secret_key FROM volc_key_groups WHERE id = ?').get(keyGroupId);
+    ak = kg?.volc_access_key;
+    sk = kg?.volc_secret_key;
+  }
+  if (!ak) {
+    const akRow = db.prepare("SELECT value FROM system_config WHERE key = 'volc_access_key_id'").get();
+    ak = akRow?.value || process.env.VOLC_ACCESS_KEY_ID;
+  }
+  if (!sk) {
+    const skRow = db.prepare("SELECT value FROM system_config WHERE key = 'volc_secret_access_key'").get();
+    sk = skRow?.value || process.env.VOLC_SECRET_ACCESS_KEY;
+  }
   if (!ak || !sk) throw new Error('未配置火山引擎 AK/SK（请在管理员后台设置或配置 VOLC_ACCESS_KEY_ID / VOLC_SECRET_ACCESS_KEY 环境变量）');
 
   const host = 'open.volcengineapi.com';
@@ -5789,7 +6042,8 @@ async function volcArkAssetRequest(action, body, db) {
     throw new Error(`火山API返回非JSON响应（HTTP ${resp.status}）：${text.slice(0, 200)}`);
   }
   if (!resp.ok || json.ResponseMetadata?.Error) {
-    throw new Error(json.ResponseMetadata?.Error?.Message || JSON.stringify(json));
+    const rawMsg = json.ResponseMetadata?.Error?.Message || JSON.stringify(json);
+    throw new Error(translateArkError(rawMsg));
   }
   return json.Result || json;
 }
@@ -5823,47 +6077,59 @@ app.put('/api/admin/volc-native/aksk', authenticate, requireAdmin, (req, res) =>
 app.get('/api/admin/volc-native/asset', authenticate, requireAdmin, async (req, res) => {
   try {
     const db = getDatabase();
-    const { id, projectName = 'default' } = req.query;
+    const { id, projectName = 'default', keyGroupId } = req.query;
     if (!id) return res.status(400).json({ error: 'id 参数必填' });
-    const result = await volcArkAssetRequest('GetAsset', { Id: id, ProjectName: projectName }, db);
+    // 若未传 keyGroupId，从 project_assets 查
+    let kId = keyGroupId ? Number(keyGroupId) : null;
+    if (!kId) {
+      const pa = db.prepare('SELECT volc_id FROM project_assets WHERE volc_asset_id = ?').get(id);
+      kId = pa?.volc_id || null;
+    }
+    const result = await volcArkAssetRequest('GetAsset', { Id: id, ProjectName: projectName }, db, kId);
     res.json({ success: true, data: result });
   } catch (e) {
     res.status(502).json({ error: e.message });
   }
 });
 
-// GET /api/admin/volc-native/asset-groups?pageNumber=&pageSize=&name=
+// GET /api/admin/volc-native/asset-groups?pageNumber=&pageSize=&name=&keyGroupId=
 app.get('/api/admin/volc-native/asset-groups', authenticate, requireAdmin, async (req, res) => {
   try {
     const db = getDatabase();
-    const { pageNumber = 1, pageSize = 20, name } = req.query;
+    const { pageNumber = 1, pageSize = 20, name, keyGroupId } = req.query;
     const filter = { GroupType: 'AIGC' };
     if (name) filter.Name = name;
     const result = await volcArkAssetRequest('ListAssetGroups', {
       Filter: filter,
       PageNumber: Number(pageNumber),
       PageSize: Number(pageSize),
-    }, db);
+    }, db, keyGroupId ? Number(keyGroupId) : null);
     res.json({ success: true, data: result });
   } catch (e) {
     res.status(502).json({ error: e.message });
   }
 });
 
-// GET /api/admin/volc-native/assets?groupId=&pageNumber=&pageSize=&name=&statuses=
+// GET /api/admin/volc-native/assets?groupId=&pageNumber=&pageSize=&name=&statuses=&keyGroupId=
 app.get('/api/admin/volc-native/assets', authenticate, requireAdmin, async (req, res) => {
   try {
     const db = getDatabase();
-    const { groupId, pageNumber = 1, pageSize = 20, name, statuses } = req.query;
+    const { groupId, pageNumber = 1, pageSize = 20, name, statuses, keyGroupId } = req.query;
     const filter = { GroupType: 'AIGC' };
     if (groupId) filter.GroupIds = [groupId];
     if (name) filter.Name = name;
     if (statuses) filter.Statuses = statuses.split(',');
+    // 若未传 keyGroupId，从 asset_groups 查
+    let kId = keyGroupId ? Number(keyGroupId) : null;
+    if (!kId && groupId) {
+      const ag = db.prepare('SELECT volc_id FROM asset_groups WHERE volc_group_id = ?').get(groupId);
+      kId = ag?.volc_id || null;
+    }
     const result = await volcArkAssetRequest('ListAssets', {
       Filter: filter,
       PageNumber: Number(pageNumber),
       PageSize: Number(pageSize),
-    }, db);
+    }, db, kId);
     res.json({ success: true, data: result });
   } catch (e) {
     res.status(502).json({ error: e.message });
@@ -5874,14 +6140,11 @@ app.get('/api/admin/volc-native/assets', authenticate, requireAdmin, async (req,
 app.post('/api/admin/volc-native/asset-groups', authenticate, requireAdmin, async (req, res) => {
   try {
     const db = getDatabase();
-    const { name, description = '', projectName = 'default' } = req.body;
+    const { name, description = '', projectName = 'default', keyGroupId } = req.body;
     if (!name) return res.status(400).json({ error: 'name 必填' });
     const result = await volcArkAssetRequest('CreateAssetGroup', {
-      Name: name,
-      Description: description,
-      GroupType: 'AIGC',
-      ProjectName: projectName,
-    }, db);
+      Name: name, Description: description, GroupType: 'AIGC', ProjectName: projectName,
+    }, db, keyGroupId ? Number(keyGroupId) : null);
     res.json({ success: true, data: result });
   } catch (e) {
     res.status(502).json({ error: e.message });
@@ -5892,15 +6155,25 @@ app.post('/api/admin/volc-native/asset-groups', authenticate, requireAdmin, asyn
 app.post('/api/admin/volc-native/assets', authenticate, requireAdmin, async (req, res) => {
   try {
     const db = getDatabase();
-    const { groupId, url, assetType = 'Image', name = '', projectName = 'default' } = req.body;
+    const { groupId, url, assetType = 'Image', name = '', projectName = 'default', keyGroupId } = req.body;
     if (!groupId || !url) return res.status(400).json({ error: 'groupId 和 url 必填' });
+    // 若未传 keyGroupId，从 asset_groups 表查该组的 volc_id
+    let kId = keyGroupId ? Number(keyGroupId) : null;
+    if (!kId) {
+      const ag = db.prepare('SELECT volc_id FROM asset_groups WHERE volc_group_id = ?').get(groupId);
+      kId = ag?.volc_id || null;
+    }
     const result = await volcArkAssetRequest('CreateAsset', {
-      GroupId: groupId,
-      URL: url,
-      AssetType: assetType,
-      Name: name,
-      ProjectName: projectName,
-    }, db);
+      GroupId: groupId, URL: url, AssetType: assetType, Name: name, ProjectName: projectName,
+    }, db, kId);
+    // 写入本地 project_assets 表，便于后续按 volc_id 查询
+    if (result?.Id && kId) {
+      const ag = db.prepare('SELECT project_id FROM asset_groups WHERE volc_group_id = ?').get(groupId);
+      db.prepare(`
+        INSERT OR REPLACE INTO project_assets (project_id, asset_group_id, volc_asset_id, volc_id, name, file_type, file_url, status, updated_at)
+        VALUES (?, (SELECT id FROM asset_groups WHERE volc_group_id = ?), ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP)
+      `).run(ag?.project_id || null, groupId, result.Id, kId, name, assetType === 'Video' ? 'video' : 'image', url);
+    }
     res.json({ success: true, data: result });
   } catch (e) {
     res.status(502).json({ error: e.message });
@@ -5911,8 +6184,8 @@ app.post('/api/admin/volc-native/assets', authenticate, requireAdmin, async (req
 app.delete('/api/admin/volc-native/assets/:id', authenticate, async (req, res) => {
   try {
     const db = getDatabase();
-    const { projectName = 'default' } = req.body || {};
-    const result = await volcArkAssetRequest('DeleteAsset', { Id: req.params.id, ProjectName: projectName }, db);
+    const { projectName = 'default', keyGroupId } = req.body || {};
+    const result = await volcArkAssetRequest('DeleteAsset', { Id: req.params.id, ProjectName: projectName }, db, keyGroupId ? Number(keyGroupId) : null);
     // 同步删除本地记录
     db.prepare("UPDATE project_assets SET status = 'deleted' WHERE volc_asset_id = ?").run(req.params.id);
     res.json({ success: true, data: result });
@@ -5925,9 +6198,9 @@ app.delete('/api/admin/volc-native/assets/:id', authenticate, async (req, res) =
 app.post('/api/admin/volc-native/asset-groups/get', authenticate, requireAdmin, async (req, res) => {
   try {
     const db = getDatabase();
-    const { id, projectName = 'default' } = req.body;
+    const { id, projectName = 'default', keyGroupId } = req.body;
     if (!id) return res.status(400).json({ error: 'id 必填' });
-    const result = await volcArkAssetRequest('GetAssetGroup', { Id: id, ProjectName: projectName }, db);
+    const result = await volcArkAssetRequest('GetAssetGroup', { Id: id, ProjectName: projectName }, db, keyGroupId ? Number(keyGroupId) : null);
     res.json({ success: true, data: result });
   } catch (e) {
     res.status(502).json({ error: e.message });
@@ -5938,11 +6211,11 @@ app.post('/api/admin/volc-native/asset-groups/get', authenticate, requireAdmin, 
 app.put('/api/admin/volc-native/asset-groups/:id', authenticate, requireAdmin, async (req, res) => {
   try {
     const db = getDatabase();
-    const { name, description, projectName = 'default' } = req.body;
+    const { name, description, projectName = 'default', keyGroupId } = req.body;
     const body = { Id: req.params.id, ProjectName: projectName };
     if (name !== undefined) body.Name = name;
     if (description !== undefined) body.Description = description;
-    const result = await volcArkAssetRequest('UpdateAssetGroup', body, db);
+    const result = await volcArkAssetRequest('UpdateAssetGroup', body, db, keyGroupId ? Number(keyGroupId) : null);
     res.json({ success: true, data: result });
   } catch (e) {
     res.status(502).json({ error: e.message });
@@ -5953,8 +6226,8 @@ app.put('/api/admin/volc-native/asset-groups/:id', authenticate, requireAdmin, a
 app.delete('/api/admin/volc-native/asset-groups/:id', authenticate, async (req, res) => {
   try {
     const db = getDatabase();
-    const { projectName = 'default' } = req.body || {};
-    const result = await volcArkAssetRequest('DeleteAssetGroup', { Id: req.params.id, ProjectName: projectName }, db);
+    const { projectName = 'default', keyGroupId } = req.body || {};
+    const result = await volcArkAssetRequest('DeleteAssetGroup', { Id: req.params.id, ProjectName: projectName }, db, keyGroupId ? Number(keyGroupId) : null);
     db.prepare('DELETE FROM asset_groups WHERE volc_group_id = ?').run(req.params.id);
     res.json({ success: true, data: result });
   } catch (e) {
@@ -5966,10 +6239,10 @@ app.delete('/api/admin/volc-native/asset-groups/:id', authenticate, async (req, 
 app.put('/api/admin/volc-native/assets/:id', authenticate, requireAdmin, async (req, res) => {
   try {
     const db = getDatabase();
-    const { name, projectName = 'default' } = req.body;
+    const { name, projectName = 'default', keyGroupId } = req.body;
     const body = { Id: req.params.id, ProjectName: projectName };
     if (name !== undefined) body.Name = name;
-    const result = await volcArkAssetRequest('UpdateAsset', body, db);
+    const result = await volcArkAssetRequest('UpdateAsset', body, db, keyGroupId ? Number(keyGroupId) : null);
     res.json({ success: true, data: result });
   } catch (e) {
     res.status(502).json({ error: e.message });
@@ -5989,12 +6262,22 @@ app.get('/api/volc-native/asset-groups', authenticate, async (req, res) => {
     if (projectId) {
       const project = projectService.getProjectById(projectId, req.user.id, isAdmin);
       if (!project) return res.status(404).json({ error: '项目不存在或无权访问' });
-      const boundRows = db.prepare(
-        'SELECT volc_group_id, name FROM asset_groups WHERE project_id = ?'
-      ).all(projectId);
+      // 单账户模式：激活 Key id=1 时 null 视为 1；其它 id 只精确匹配，null 不再视为该 id
+      let assetGroupQuery = 'SELECT volc_group_id, name, volc_id FROM asset_groups WHERE project_id = ?';
+      const assetGroupParams = [projectId];
+      if (!isMultiAccountEnabled()) {
+        const active = db.prepare('SELECT id FROM volc_key_groups WHERE is_active = 1 LIMIT 1').get();
+        if (active) {
+          assetGroupQuery += ' AND (volc_id = ? OR (? = 1 AND volc_id IS NULL))';
+          assetGroupParams.push(active.id, active.id);
+        }
+      }
+      const boundRows = db.prepare(assetGroupQuery).all(...assetGroupParams);
       // 本地 volc_group_id → 我们落库时已去重过的 name；展示时强制覆盖火山返回的 Name，
       // 避免火山端原始 Name 仍是重复值导致前端看到两个一样的素材组。
       const localNameByVolcId = new Map(boundRows.map((r) => [r.volc_group_id, r.name]));
+      // 按 volc_group_id → volc_id 映射，用于查询时指定 keyGroupId
+      const keyGroupByVolcId = new Map(boundRows.map((r) => [r.volc_group_id, r.volc_id]).filter(([, vid]) => vid != null));
       const volcGroupIds = boundRows.map(r => r.volc_group_id).filter(Boolean);
       if (volcGroupIds.length === 0) {
         return res.json({ success: true, data: { Items: [], TotalCount: 0 } });
@@ -6002,7 +6285,7 @@ app.get('/api/volc-native/asset-groups', authenticate, async (req, res) => {
       // 并发拉取每个绑定素材组的详情
       try {
         const details = await Promise.all(
-          volcGroupIds.map(id => volcArkAssetRequest('GetAssetGroup', { Id: id }, db).catch(() => null))
+          volcGroupIds.map(id => volcArkAssetRequest('GetAssetGroup', { Id: id }, db, keyGroupByVolcId.get(id) || null).catch(() => null))
         );
         const items = details.filter(Boolean).map((it) => {
           const local = localNameByVolcId.get(it.Id);
@@ -6037,9 +6320,15 @@ app.get('/api/volc-native/assets', authenticate, async (req, res) => {
     if (groupId) filter.GroupIds = [groupId];
     if (name) filter.Name = name;
     if (statuses) filter.Statuses = statuses.split(',');
+    // 从 asset_groups 查该组的 volc_id
+    let kId = null;
+    if (groupId) {
+      const ag = db.prepare('SELECT volc_id FROM asset_groups WHERE volc_group_id = ?').get(groupId);
+      kId = ag?.volc_id || null;
+    }
     const result = await volcArkAssetRequest('ListAssets', {
       Filter: filter, PageNumber: Number(pageNumber), PageSize: Number(pageSize),
-    }, db);
+    }, db, kId);
     res.json({ success: true, data: result });
   } catch (e) {
     res.status(502).json({ error: e.message });
@@ -6052,7 +6341,11 @@ app.get('/api/volc-native/asset', authenticate, async (req, res) => {
     const db = getDatabase();
     const { id, projectName = 'default' } = req.query;
     if (!id) return res.status(400).json({ error: 'id 必填' });
-    const result = await volcArkAssetRequest('GetAsset', { Id: id, ProjectName: projectName }, db);
+    // 从 project_assets 查该素材所属的 volc_id
+    let kId = null;
+    const pa = db.prepare('SELECT volc_id FROM project_assets WHERE volc_asset_id = ?').get(id);
+    if (pa?.volc_id) kId = pa.volc_id;
+    const result = await volcArkAssetRequest('GetAsset', { Id: id, ProjectName: projectName }, db, kId);
     res.json({ success: true, data: result });
   } catch (e) {
     res.status(502).json({ error: e.message });
@@ -6093,18 +6386,19 @@ app.post('/api/volc-native/asset-groups', authenticate, async (req, res) => {
 
     // 同项目组内名字唯一：若撞名则自动加 (2)/(3)... 后缀；前端理应已展示建议名
     const finalName = assetService.resolveUniqueAssetGroupName(projectId, String(name).trim());
+    const keyGroupId = project.volc_id || null;
 
     const result = await volcArkAssetRequest('CreateAssetGroup', {
       Name: finalName, Description: description, GroupType: 'AIGC', ProjectName: projectName,
-    }, db);
+    }, db, keyGroupId);
 
     const volcGroupId = result?.Id;
     if (volcGroupId) {
       // 绑定到当前项目组
       db.prepare(`
-        INSERT OR REPLACE INTO asset_groups (project_id, volc_group_id, name, updated_at)
-        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-      `).run(projectId, volcGroupId, finalName);
+        INSERT OR REPLACE INTO asset_groups (project_id, volc_group_id, name, volc_id, updated_at)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+      `).run(projectId, volcGroupId, finalName, keyGroupId);
     }
     // 把最终生效的名字一并回给前端，方便它感知（即使前端没 check-name 也能拿到）
     res.json({ success: true, data: { ...result, finalName } });
@@ -6154,11 +6448,25 @@ app.patch('/api/volc-native/asset-groups/:volcGroupId/rename', authenticate, (re
 app.post('/api/volc-native/assets', authenticate, async (req, res) => {
   try {
     const db = getDatabase();
-    const { groupId, url, assetType = 'Image', name = '', projectName = 'default' } = req.body;
+    const { groupId, url, assetType = 'Image', name = '', projectName = 'default', keyGroupId } = req.body;
     if (!groupId || !url) return res.status(400).json({ error: 'groupId 和 url 必填' });
+    // 若未传 keyGroupId，从 asset_groups 表查该组的 volc_id
+    let kId = keyGroupId ? Number(keyGroupId) : null;
+    if (!kId) {
+      const ag = db.prepare('SELECT volc_id FROM asset_groups WHERE volc_group_id = ?').get(groupId);
+      kId = ag?.volc_id || null;
+    }
     const result = await volcArkAssetRequest('CreateAsset', {
       GroupId: groupId, URL: url, AssetType: assetType, Name: name, ProjectName: projectName,
-    }, db);
+    }, db, kId);
+    // 写入本地 project_assets 表，便于后续按 volc_id 查询
+    if (result?.Id && kId) {
+      const ag = db.prepare('SELECT project_id FROM asset_groups WHERE volc_group_id = ?').get(groupId);
+      db.prepare(`
+        INSERT OR REPLACE INTO project_assets (project_id, asset_group_id, volc_asset_id, volc_id, name, file_type, file_url, status, updated_at)
+        VALUES (?, (SELECT id FROM asset_groups WHERE volc_group_id = ?), ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP)
+      `).run(ag?.project_id || null, groupId, result.Id, kId, name, assetType === 'Video' ? 'video' : 'image', url);
+    }
     res.json({ success: true, data: result });
   } catch (e) {
     res.status(502).json({ error: e.message });
@@ -6298,6 +6606,50 @@ app.delete('/api/projects/:id/members/:userId', authenticate, (req, res) => {
 // 项目资产库
 // ============================================================
 
+// GET /api/projects/:id/asset-groups - 获取项目素材组列表（含缩略图）
+app.get('/api/projects/:id/asset-groups', authenticate, async (req, res) => {
+  try {
+    const projectId = req.params.id;
+    const project = projectService.getProjectById(projectId, req.user.id, ['admin','super_admin'].includes(req.user.role));
+    if (!project) return res.status(404).json({ error: '项目不存在' });
+
+    const db = getDatabase();
+    // 单账户时用激活 Key 组 id 过滤，多账户时用 project.volc_id；null 永远等价于 1
+    let targetVolcId;
+    if (!isMultiAccountEnabled()) {
+      const active = db.prepare('SELECT id FROM volc_key_groups WHERE is_active = 1 LIMIT 1').get();
+      targetVolcId = active?.id ?? null;
+    } else {
+      targetVolcId = project.volc_id ?? null;
+    }
+    let volcFilter = '';
+    const volcParams = [projectId];
+    if (targetVolcId != null) {
+      if (targetVolcId === 1) {
+        volcFilter = 'AND (ag.volc_id IS NULL OR ag.volc_id = 1)';
+      } else {
+        volcFilter = 'AND (ag.volc_id = ?)';
+        volcParams.push(targetVolcId);
+      }
+    }
+    const groups = db.prepare(`
+      SELECT ag.*,
+        (SELECT COUNT(*) FROM project_assets pa WHERE pa.asset_group_id = ag.id AND pa.review_status != 'rejected' AND pa.status = 'active' AND pa.file_url IS NOT NULL) AS asset_count,
+        (SELECT pa.file_url FROM project_assets pa
+         WHERE pa.asset_group_id = ag.id AND pa.review_status != 'rejected' AND pa.status = 'active' AND pa.file_url IS NOT NULL
+         AND (pa.file_type = 'image' OR pa.thumbnail_url IS NOT NULL)
+         ORDER BY pa.created_at DESC LIMIT 1) AS preview_url
+      FROM asset_groups ag
+      WHERE ag.project_id = ? ${volcFilter}
+      ORDER BY ag.created_at DESC
+    `).all(...volcParams);
+
+    res.json({ success: true, data: groups });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // GET /api/projects/:id/assets - 获取项目资产列表（火山为真值实时过滤）
 app.get('/api/projects/:id/assets', authenticate, async (req, res) => {
   try {
@@ -6330,6 +6682,7 @@ app.post('/api/projects/:id/assets', authenticate, assetUpload.single('file'), a
     if (!project) return res.status(404).json({ error: '项目不存在' });
 
     let volcAssetId = null;
+    const keyGroupId = project.volc_id || null;
     let fileUrl = null;
     let thumbnailUrl = null;
 
@@ -6339,9 +6692,9 @@ app.post('/api/projects/:id/assets', authenticate, assetUpload.single('file'), a
 
     if (!volcGroupId) {
       try {
-        const groupResult = await assetService.createAssetGroup({ name: `project-${projectId}-${project.name}` });
+        const groupResult = await assetService.createAssetGroup({ name: `project-${projectId}-${project.name}` }, keyGroupId);
         volcGroupId = groupResult.GroupId || groupResult.group_id;
-        assetGroup = assetService.saveAssetGroup(projectId, volcGroupId, `project-${projectId}`);
+        assetGroup = assetService.saveAssetGroup(projectId, volcGroupId, `project-${projectId}`, keyGroupId);
         console.log(`[assets] 创建火山引擎资产组: ${volcGroupId}`);
       } catch (err) {
         console.error('[assets] 创建资产组失败:', err.message, err.stack);
@@ -6376,13 +6729,31 @@ app.post('/api/projects/:id/assets', authenticate, assetUpload.single('file'), a
             assetType: assetTypeMap[fileType] || 'Image',
             groupId: volcGroupId,
             name: originalName,
-          });
+          }, keyGroupId);
           volcAssetId = uploadResult.Id || uploadResult.AssetId || uploadResult.asset_id;
           fileUrl = uploadResult.URL || uploadResult.Url || uploadResult.url || fileUrl;
           thumbnailUrl = uploadResult.ThumbnailURL || uploadResult.ThumbnailUrl || thumbnailUrl;
           console.log(`[assets] ARK 导入成功: assetId=${volcAssetId}`);
         } catch (arkErr) {
           console.error('[assets] ARK 导入失败（已保存 OSS URL）:', arkErr.message);
+          // 仍保存本地记录，但返回警告让前端提示用户
+          const asset = assetService.saveProjectAsset({
+            projectId,
+            assetGroupId: assetGroup?.id,
+            volcAssetId: null,
+            name,
+            originalName,
+            fileType,
+            fileSize: req.file?.size || 0,
+            fileUrl,
+            thumbnailUrl,
+            uploadedBy: req.user.id,
+          });
+          return res.status(201).json({
+            success: true,
+            data: asset,
+            warning: `ARK 导入失败：${arkErr.message}。素材已保存到项目，但可能无法用于生成。`,
+          });
         }
       } catch (ossErr) {
         console.error('[assets] OSS 上传失败，回退本地:', ossErr.message);
@@ -6405,13 +6776,31 @@ app.post('/api/projects/:id/assets', authenticate, assetUpload.single('file'), a
           assetType: assetTypeMap[fileType] || 'Image',
           groupId: volcGroupId,
           name: originalName,
-        });
+        }, keyGroupId);
         volcAssetId = uploadResult.Id || uploadResult.AssetId || uploadResult.asset_id;
         fileUrl = uploadResult.URL || uploadResult.Url || uploadResult.url || req.body.url;
         thumbnailUrl = uploadResult.ThumbnailURL || uploadResult.ThumbnailUrl;
       } catch (volcErr) {
         console.error('[assets] 通过 URL 上传 ARK 失败:', volcErr.message);
         fileUrl = req.body.url;
+        // 保存本地记录，返回警告
+        const asset = assetService.saveProjectAsset({
+          projectId,
+          assetGroupId: assetGroup?.id,
+          volcAssetId: null,
+          name,
+          originalName,
+          fileType,
+          fileSize: 0,
+          fileUrl,
+          thumbnailUrl: null,
+          uploadedBy: req.user.id,
+        });
+        return res.status(201).json({
+          success: true,
+          data: asset,
+          warning: `ARK 导入失败：${volcErr.message}。素材已保存到项目，但可能无法用于生成。`,
+        });
       }
     }
 

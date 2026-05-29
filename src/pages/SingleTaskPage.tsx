@@ -12,11 +12,13 @@ import { generateVideo } from '../services/videoService';
 import { uploadToOss, FILE_LIMITS, validateMediaCombination } from '../services/ossService';
 import { estimatePricing, getCreditBalance, listEnabledModels, type RuntimeModelOption } from '../services/pricingService';
 import { getDownloadTasks, downloadTaskVideoDirect, makeDownloadFilename } from '../services/downloadService';
+import { getVolcKeyStatus } from '../services/settingsService';
 import { GearIcon, PlusIcon, CloseIcon, SparkleIcon } from '../components/Icons';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { getProjectAssets } from '../services/projectService';
-import type { ProjectAsset } from '../types/index';
+import { listProjectAssetGroups } from '../services/assetService';
+import type { ProjectAsset, AssetGroupInfo } from '../types/index';
 import { formatShortDateTime, useUserTimezone } from '../utils/datetime';
 
 interface AssetSelection {
@@ -236,6 +238,20 @@ export default function SingleTaskPage() {
   useUserTimezone();
   const { currentUser, state, loadProjectTasks } = useApp();
   const { settings } = state;
+  const currentProject = state.currentProject;
+
+  // ── 火山账号状态检查 ─────────────────────────────
+  const [multiAccountEnabled, setMultiAccountEnabled] = useState(false);
+  useEffect(() => {
+    getVolcKeyStatus()
+      .then((s) => setMultiAccountEnabled(s.multiAccountEnabled))
+      .catch(() => {});
+  }, []);
+  const isVolcKeyDisabled = !!(
+    multiAccountEnabled &&
+    currentProject?.volc_id != null &&
+    currentProject?.volc_is_active !== 1
+  );
   const [images, setImages] = useState<UploadedFile[]>([]);
   const [firstFrameImages, setFirstFrameImages] = useState<UploadedFile[]>([]);
   const [lastFrameImages, setLastFrameImages] = useState<UploadedFile[]>([]);
@@ -271,6 +287,10 @@ export default function SingleTaskPage() {
   const [projectAssets, setProjectAssets] = useState<ProjectAsset[]>([]);
   const [assetSelections, setAssetSelections] = useState<AssetSelection[]>([]);
   const [assetSyncing, setAssetSyncing] = useState(false);
+  // 素材组列表（asset_groups 表）
+  const [projectAssetGroups, setProjectAssetGroups] = useState<AssetGroupInfo[]>([]);
+  // 禁用的素材组 ID 集合
+  const [disabledGroupIds, setDisabledGroupIds] = useState<Set<number>>(new Set());
   // @ 小窗口键盘焦点索引（-1 = 无焦点）
   const [mentionFocusIdx, setMentionFocusIdx] = useState(-1);
   // 素材组面板键盘状态：当前聚焦的组索引 + 每组展开到第几个子素材
@@ -353,33 +373,86 @@ export default function SingleTaskPage() {
     });
   }, [prompt, availableAssets]);
 
-  // 资产按 volc_group_id 分组；按第一个资产的 created_at 排序
-  const assetGroups = useMemo(() => {
-    const map = new Map<string, ProjectAsset[]>();
-    for (const a of availableAssets) {
-      const key = a.volc_group_id || `_single_${a.id}`;
-      if (!map.has(key)) map.set(key, []);
-      map.get(key)!.push(a);
-    }
-    return Array.from(map.values()).sort((a, b) =>
-      (a[0].created_at || '').localeCompare(b[0].created_at || '')
-    );
-  }, [availableAssets]);
+  // 素材组卡片：来自 asset_groups 表，每行一个卡片；未禁用组显示为启用状态
+  const assetGroupCards = useMemo(() => {
+    return projectAssetGroups.map((g) => ({
+      ...g,
+      enabled: !disabledGroupIds.has(g.id),
+    }));
+  }, [projectAssetGroups, disabledGroupIds]);
+
+  // 切换素材组启用/禁用
+  const handleToggleAssetGroup = useCallback((groupId: number) => {
+    setDisabledGroupIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  }, []);
 
    // 选中某组后，@ 面板可选项只来自该组；activeAssetGroupKey=null 表示「全部」
+  // 禁用的素材组不参与 @ 联想
   const mentionableAssets = useMemo(() => {
-    if (!activeAssetGroupKey) return availableAssets;
-    return availableAssets.filter((a) => (a.volc_group_id || `_single_${a.id}`) === activeAssetGroupKey);
-  }, [availableAssets, activeAssetGroupKey]);
+    const enabledVolcGroupIds = new Set(
+      projectAssetGroups
+        .filter((g) => !disabledGroupIds.has(g.id) && g.volc_group_id)
+        .map((g) => g.volc_group_id!)
+    );
+    let filtered = availableAssets.filter((a) =>
+      a.volc_group_id ? enabledVolcGroupIds.has(a.volc_group_id) : true
+    );
+    if (activeAssetGroupKey) {
+      filtered = filtered.filter((a) => (a.volc_group_id || `_single_${a.id}`) === activeAssetGroupKey);
+    }
+    return filtered;
+  }, [availableAssets, activeAssetGroupKey, projectAssetGroups, disabledGroupIds]);
+
+  // 将 mentionableAssets 按素材组名称分组，用于 @ 面板分组显示
+  const groupedMentionableAssets = useMemo(() => {
+    // volc_group_id → 素材组名称
+    const groupNameMap = new Map<string, string>();
+    for (const g of projectAssetGroups) {
+      if (g.volc_group_id && !disabledGroupIds.has(g.id)) {
+        groupNameMap.set(g.volc_group_id, g.name);
+      }
+    }
+    const groups: { name: string; assets: ProjectAsset[] }[] = [];
+    const seen = new Map<string, { name: string; assets: ProjectAsset[] }>();
+    for (const a of mentionableAssets) {
+      const key = a.volc_group_id && groupNameMap.has(a.volc_group_id)
+        ? groupNameMap.get(a.volc_group_id)!
+        : '未分组';
+      if (!seen.has(key)) {
+        const entry = { name: key, assets: [] };
+        seen.set(key, entry);
+        groups.push(entry);
+      }
+      seen.get(key)!.assets.push(a);
+    }
+    return groups;
+  }, [mentionableAssets, projectAssetGroups, disabledGroupIds]);
+
+  // 从 availableAssets 提取每个素材组的封面图 URL（第一个有效素材），用于渲染素材组卡片预览
+  const groupCoverMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const a of availableAssets) {
+      if (!a.volc_group_id) continue;
+      if (map.has(a.volc_group_id)) continue;
+      const url = a.thumbnail_url || a.file_url;
+      if (url) map.set(a.volc_group_id, url);
+    }
+    return map;
+  }, [availableAssets]);
 
   // 切换工作组时重置组过滤；当前激活组在新列表里不存在也要回退到全部
   useEffect(() => {
     if (!activeAssetGroupKey) return;
-    const exists = assetGroups.some((grp) =>
-      (grp[0].volc_group_id || `_single_${grp[0].id}`) === activeAssetGroupKey
+    const exists = assetGroupCards.some((g) =>
+      (g.volc_group_id || `_single_${g.id}`) === activeAssetGroupKey
     );
     if (!exists) setActiveAssetGroupKey(null);
-  }, [assetGroups, activeAssetGroupKey]);
+  }, [assetGroupCards, activeAssetGroupKey]);
 
   // chipTag 直接用火山素材ID，全局唯一，不受排序影响
   function getAssetChipTag(asset: ProjectAsset, _assets?: ProjectAsset[]): string {
@@ -734,6 +807,17 @@ export default function SingleTaskPage() {
       })
       .finally(() => { if (!cancelled) setAssetSyncing(false); });
 
+    return () => { cancelled = true; };
+  }, [state.currentProject?.id]);
+
+  // 加载项目素材组（asset_groups 表）
+  useEffect(() => {
+    const pid = state.currentProject?.id;
+    if (!pid) { setProjectAssetGroups([]); return; }
+    let cancelled = false;
+    listProjectAssetGroups(pid)
+      .then((groups) => { if (!cancelled) setProjectAssetGroups(groups); })
+      .catch(() => {});
     return () => { cancelled = true; };
   }, [state.currentProject?.id]);
 
@@ -1620,6 +1704,16 @@ export default function SingleTaskPage() {
         </button>
       </div>
 
+      {isVolcKeyDisabled ? (
+        <div className="flex-1 flex items-center justify-center p-8">
+          <div className="text-center max-w-md">
+            <div className="text-6xl mb-4">⚠️</div>
+            <h2 className="text-xl font-bold text-amber-400 mb-2">火山账号未启用</h2>
+            <p className="text-gray-400 text-sm">当前项目所关联的火山账号未启用，请联系管理员启用。</p>
+          </div>
+        </div>
+      ) : (
+      <>
       {/* Left Panel */}
       <div className="flex-1 md:w-[520px] md:flex-none md:border-r border-gray-800 overflow-y-auto custom-scrollbar p-4 md:p-6 bg-[#0f111a]">
         <div className="hidden md:flex flex-col gap-1 mb-4">
@@ -1738,87 +1832,49 @@ export default function SingleTaskPage() {
           )}
 
           {/* 素材组（ARK AssetGroup；与参考素材、提示词同级；为空时不渲染） */}
-          {state.currentProject && assetGroups.length > 0 && (
+          {state.currentProject && assetGroupCards.length > 0 && (
             <div className="bg-[#1c1f2e] rounded-2xl p-4 border border-gray-800">
               <div className="flex items-center justify-between mb-3">
-                <label className="text-sm font-bold text-gray-300">素材 <span className="text-amber-400">（{availableAssets.length}）</span>{assetSyncing && <span className="ml-1 text-[10px] text-gray-500 animate-pulse">同步中…</span>}</label>
-                <span className="text-[10px] text-gray-500">↑↓←→ 导航 · Enter 插入</span>
+                <label className="text-sm font-bold text-gray-300">素材组 <span className="text-amber-400">（{assetGroupCards.filter(g => g.enabled).length}/{assetGroupCards.length}）</span></label>
+                <span className="text-[10px] text-gray-500">点击启用/关闭 · 启用组可用 @ 引用</span>
               </div>
               <div
                 className="focus:outline-none"
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  if (e.key === 'ArrowRight') {
-                    e.preventDefault();
-                    setPanelGroupIdx((p) => Math.min(p + 1, assetGroups.length - 1));
-                  } else if (e.key === 'ArrowLeft') {
-                    e.preventDefault();
-                    setPanelGroupIdx((p) => Math.max(p - 1, 0));
-                  } else if (e.key === 'ArrowDown') {
-                    e.preventDefault();
-                    const grp = assetGroups[panelGroupIdx];
-                    if (!grp) return;
-                    const key = grp[0].volc_group_id || `_single_${grp[0].id}`;
-                    setPanelSubIdxMap((m) => ({ ...m, [key]: Math.min((m[key] ?? 0) + 1, grp.length - 1) }));
-                  } else if (e.key === 'ArrowUp') {
-                    e.preventDefault();
-                    const grp = assetGroups[panelGroupIdx];
-                    if (!grp) return;
-                    const key = grp[0].volc_group_id || `_single_${grp[0].id}`;
-                    setPanelSubIdxMap((m) => ({ ...m, [key]: Math.max((m[key] ?? 0) - 1, 0) }));
-                  } else if (e.key === 'Enter') {
-                    e.preventDefault();
-                    const grp = assetGroups[panelGroupIdx];
-                    if (!grp) return;
-                    const key = grp[0].volc_group_id || `_single_${grp[0].id}`;
-                    const subIdx = panelSubIdxMap[key] ?? 0;
-                    const asset = grp[subIdx] ?? grp[0];
-                    insertAssetMention(asset);
-                    editorRef.current?.focus();
-                  }
-                }}
+                tabIndex={-1}
               >
                 <div className="flex gap-3 overflow-x-auto pb-1 custom-scrollbar">
-                  {assetGroups.map((grp, gIdx) => {
-                    const key = grp[0].volc_group_id || `_single_${grp[0].id}`;
-                    const subIdx = panelSubIdxMap[key] ?? 0;
-                    const focused = gIdx === panelGroupIdx;
-                    const asset = grp[subIdx] ?? grp[0];
-                    const thumb = asset.thumbnail_url || asset.file_url;
-                    const chipTag = getAssetChipTag(asset, availableAssets);
+                  {assetGroupCards.map((group) => {
                     return (
                       <div
-                        key={key}
-                        onClick={() => {
-                          setPanelGroupIdx(gIdx);
-                          insertAssetMention(asset);
-                          editorRef.current?.focus();
-                        }}
-                        className={`flex-shrink-0 w-24 cursor-pointer rounded-xl border-2 transition-all ${focused ? 'border-amber-400' : 'border-transparent hover:border-amber-400/40'}`}
+                        key={group.id}
+                        onClick={() => handleToggleAssetGroup(group.id)}
+                        className={`flex-shrink-0 w-24 cursor-pointer rounded-xl border-2 transition-all ${
+                          group.enabled ? 'border-amber-400' : 'border-gray-700 opacity-60'
+                        }`}
+                        title={group.enabled
+                          ? `${group.name}（${group.asset_count} 个素材）· 点击关闭`
+                          : `${group.name}（${group.asset_count} 个素材）· 点击启用`}
                       >
                         <div className="w-24 h-24 rounded-t-xl overflow-hidden bg-[#0d0f1a] relative">
-                          {thumb ? (
-                            <img src={thumb} alt={asset.name} className="w-full h-full object-cover" />
+                          {(group.preview_url || (group.volc_group_id && groupCoverMap.get(group.volc_group_id))) ? (
+                            <img src={group.preview_url || (group.volc_group_id ? groupCoverMap.get(group.volc_group_id) : '')} alt={group.name} className="w-full h-full object-cover" />
                           ) : (
                             <div className="w-full h-full flex items-center justify-center text-3xl">
-                              {asset.file_type === 'video' ? '🎬' : asset.file_type === 'audio' ? '🎵' : '🖼️'}
+                              📁
                             </div>
                           )}
-                          {grp.length > 1 && (
+                          {group.asset_count > 0 && (
                             <span className="absolute top-1 right-1 bg-black/70 text-white text-[9px] px-1 py-0.5 rounded-full">
-                              {subIdx + 1}/{grp.length}
+                              {group.asset_count}
                             </span>
                           )}
-                          <span className={`absolute top-0 left-0 text-[9px] font-bold px-1 py-0.5 rounded-tl-xl rounded-br-lg leading-none ${TYPE_BADGE[asset.file_type as 'image' | 'video' | 'audio']?.cls || 'bg-gray-600 text-white'}`}>
-                            {TYPE_BADGE[asset.file_type as 'image' | 'video' | 'audio']?.label || asset.file_type}
+                          <span className={`absolute top-0 left-0 text-[9px] font-bold px-1 py-0.5 rounded-tl-xl rounded-br-lg leading-none ${group.enabled ? 'bg-amber-500 text-white' : 'bg-gray-600 text-gray-300'}`}>
+                            {group.enabled ? '✓' : '✗'}
                           </span>
                         </div>
-                        <div className={`px-1.5 py-1.5 rounded-b-xl ${focused ? 'bg-amber-500/10' : 'bg-[#0d0f1a]'}`}>
-                          <div className="text-[10px] text-gray-300 font-medium truncate">{asset.name}</div>
-                          <div className="text-[9px] text-amber-400/70 truncate font-mono">{chipTag}</div>
-                          {grp.length > 1 && focused && (
-                            <div className="text-[9px] text-amber-400/60 mt-0.5">↑↓ 切换 {grp.length} 个</div>
-                          )}
+                        <div className={`px-1.5 py-1.5 rounded-b-xl ${group.enabled ? 'bg-amber-500/10' : 'bg-[#0d0f1a]'}`}>
+                          <div className="text-[10px] text-gray-300 font-medium truncate">{group.name}</div>
+                          <div className="text-[9px] text-gray-500 truncate">{group.asset_count} 个素材</div>
                         </div>
                       </div>
                     );
@@ -1878,34 +1934,52 @@ export default function SingleTaskPage() {
                         </button>
                       );
                     })}
-                    {mentionableAssets.length > 0 && (
+                    {groupedMentionableAssets.length > 0 && (
                       <>
                         {mentionItems.length > 0 && (
                           <div className="w-full border-t border-gray-800 mt-1 pt-1 mb-1">
                             <span className="text-[10px] text-amber-400/70 px-1">素材组</span>
                           </div>
                         )}
-                        {mentionableAssets.map((asset, ai) => {
-                          const flatIdx = mentionItems.length + ai;
-                          const isFocused = mentionFocusIdx === flatIdx;
-                          const chipTag = getAssetChipTag(asset, availableAssets);
+                        {groupedMentionableAssets.map((group) => {
+                          let assetOffset = 0;
+                          // 计算本组之前的所有素材累计偏移（用于 flatIdx）
+                          for (const g of groupedMentionableAssets) {
+                            if (g.name === group.name) break;
+                            assetOffset += g.assets.length;
+                          }
                           return (
-                            <button
-                              key={`${asset.id}-${ai}`}
-                              data-mention-idx={flatIdx}
-                              onMouseDown={(e) => { e.preventDefault(); insertAssetMention(asset); setMentionFocusIdx(-1); }}
-                              className={`flex items-center gap-2 px-3 py-2 border rounded-xl transition-all text-sm ${isFocused ? 'bg-amber-500/20 border-amber-400' : 'bg-[#1c1f2e] hover:bg-amber-500/10 border-gray-700 hover:border-amber-500/40'}`}
-                            >
-                              {asset.thumbnail_url || asset.file_url ? (
-                                <img src={asset.thumbnail_url || asset.file_url!} className="w-8 h-8 rounded-lg object-cover flex-shrink-0" />
-                              ) : (
-                                <span className="text-xl">{asset.file_type === 'video' ? '🎬' : asset.file_type === 'audio' ? '🎵' : '🖼️'}</span>
-                              )}
-                              <div className="text-left">
-                                <div className={`text-xs font-medium ${isFocused ? 'text-white' : 'text-gray-300'}`}>{asset.name}</div>
-                                <div className="text-[9px] text-amber-400/70 truncate max-w-[80px] font-mono">{chipTag}</div>
+                            <div key={group.name} className="w-full">
+                              <div className="text-[10px] text-gray-500 px-1 py-0.5">
+                                {group.name}
+                                <span className="text-gray-600 ml-1">({group.assets.length})</span>
                               </div>
-                            </button>
+                              <div className="flex flex-wrap gap-2">
+                                {group.assets.map((asset, ai) => {
+                                  const flatIdx = mentionItems.length + assetOffset + ai;
+                                  const isFocused = mentionFocusIdx === flatIdx;
+                                  const chipTag = getAssetChipTag(asset, availableAssets);
+                                  return (
+                                    <button
+                                      key={`${asset.id}-${ai}`}
+                                      data-mention-idx={flatIdx}
+                                      onMouseDown={(e) => { e.preventDefault(); insertAssetMention(asset); setMentionFocusIdx(-1); }}
+                                      className={`flex items-center gap-2 px-3 py-2 border rounded-xl transition-all text-sm ${isFocused ? 'bg-amber-500/20 border-amber-400' : 'bg-[#1c1f2e] hover:bg-amber-500/10 border-gray-700 hover:border-amber-500/40'}`}
+                                    >
+                                      {asset.thumbnail_url || asset.file_url ? (
+                                        <img src={asset.thumbnail_url || asset.file_url!} className="w-8 h-8 rounded-lg object-cover flex-shrink-0" />
+                                      ) : (
+                                        <span className="text-xl">{asset.file_type === 'video' ? '🎬' : asset.file_type === 'audio' ? '🎵' : '🖼️'}</span>
+                                      )}
+                                      <div className="text-left">
+                                        <div className={`text-xs font-medium ${isFocused ? 'text-white' : 'text-gray-300'}`}>{asset.name}</div>
+                                        <div className="text-[9px] text-amber-400/70 truncate max-w-[80px] font-mono">{chipTag}</div>
+                                      </div>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
                           );
                         })}
                       </>
@@ -2550,7 +2624,8 @@ export default function SingleTaskPage() {
           ))}
         </div>
       )}
+      </>
+      )}
     </div>
   );
 }
-
