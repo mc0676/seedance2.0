@@ -10,3 +10,6 @@ server/data/*.db-wal
 /output.log
 backups/
 /.deepseek/
+dist/
+data/
+*.mjs
