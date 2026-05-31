@@ -551,7 +551,9 @@ export interface AssetGroupInfo {
   name: string;
   description: string;
   asset_count: number;
+  pending_count: number;
   preview_url: string | null;
+  thumbnail_oss_url: string | null;
   created_at: string;
   updated_at: string;
 }

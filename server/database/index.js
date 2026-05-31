@@ -648,6 +648,11 @@ export function initDatabase() {
       }
       console.log('[database] 迁移完成：asset_groups.volc_id 已添加');
     }
+    if (!agCols.includes('thumbnail_oss_url')) {
+      console.log('[database] 迁移：asset_groups 添加 thumbnail_oss_url 列...');
+      db.exec(`ALTER TABLE asset_groups ADD COLUMN thumbnail_oss_url TEXT`);
+      console.log('[database] 迁移完成：asset_groups.thumbnail_oss_url 已添加');
+    }
   }
   // project_assets 加 volc_id
   {

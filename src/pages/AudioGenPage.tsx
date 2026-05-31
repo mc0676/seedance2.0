@@ -3,7 +3,8 @@ import { useApp } from '../context/AppContext';
 import { uploadToOss } from '../services/ossService';
 import { submitAudioGeneration, listAudioGenerations, getAudioGeneration, getAudioGenPublicConfig, estimateAudioGenCredits, type AudioGenPublicConfig, type AudioGenEstimate } from '../services/audioService';
 import { getProjectAssets } from '../services/projectService';
-import { listProjectAssetGroups, syncAssetReview } from '../services/assetService';
+import { listProjectAssetGroups } from '../services/assetService';
+import AssetGrid, { type GridAsset } from '../components/AssetGrid';
 import { getCreditBalance, type CreditBalance } from '../services/pricingService';
 import { getVolcKeyStatus } from '../services/settingsService';
 import { videoUrlToMp3Blob, downloadBlob, ExpiredVideoUrlError, isSignedUrlExpired } from '../utils/audioExtractor';
@@ -11,12 +12,6 @@ import { formatDateTime, useUserTimezone } from '../utils/datetime';
 import type { AudioGeneration, ProjectAsset } from '../types';
 import { MicIcon, SpinnerIcon, DownloadIcon, SparkleIcon, GearIcon } from '../components/Icons';
 import Layout from '../components/Layout';
-
-function SafeImg({ src, alt, className, fallback }: { src?: string | null; alt: string; className: string; fallback: React.ReactNode }) {
-  const [failed, setFailed] = useState(false);
-  if (!src || failed) return <>{fallback}</>;
-  return <img src={src} alt={alt} className={className} onError={() => setFailed(true)} />;
-}
 
 const STATUS_BADGE: Record<AudioGeneration['status'], { text: string; cls: string }> = {
   pending: { text: '排队中', cls: 'bg-gray-700/40 text-gray-300 border-gray-600' },
@@ -95,17 +90,7 @@ export default function AudioGenPage() {
 
   // 工作组素材组：可选取的图片素材（file_url 有效 + active + approved），自动加载
   const [projectAssets, setProjectAssets] = useState<ProjectAsset[]>([]);
-  
 
-  // 审核同步
-  const [syncingReviewIds, setSyncingReviewIds] = useState<Set<string>>(new Set());
-  const [dotTick, setDotTick] = useState(0);
-  useEffect(() => {
-    if (syncingReviewIds.size === 0) { setDotTick(0); return; }
-    const t = setInterval(() => setDotTick(p => p + 1), 400);
-    return () => clearInterval(t);
-  }, [syncingReviewIds.size]);
-  const dotStr = '.'.repeat((dotTick % 3) + 1);
   // 素材组列表（asset_groups 表）
   const [projectAssetGroups, setProjectAssetGroups] = useState<import('../types').AssetGroupInfo[]>([]);
   function pickAsset(a: ProjectAsset) {
@@ -166,27 +151,15 @@ export default function AudioGenPage() {
     return () => { cancelled = true; };
   }, [projectId]);
 
-  // 将素材按素材组名称分组（基于本地 asset_groups.id ↔ project_assets.asset_group_id）
-  const groupedAssets = useMemo(() => {
-    const groupNameMap = new Map<number, string>();
-    for (const g of projectAssetGroups) {
-      groupNameMap.set(g.id, g.name);
-    }
-    const groups: { name: string; assets: ProjectAsset[] }[] = [];
-    const seen = new Map<string, { name: string; assets: ProjectAsset[] }>();
-    for (const a of projectAssets) {
-      const key = a.asset_group_id != null && groupNameMap.has(a.asset_group_id)
-        ? groupNameMap.get(a.asset_group_id)!
-        : '未分组';
-      if (!seen.has(key)) {
-        const entry = { name: key, assets: [] };
-        seen.set(key, entry);
-        groups.push(entry);
-      }
-      seen.get(key)!.assets.push(a);
-    }
-    return groups;
-  }, [projectAssets, projectAssetGroups]);
+  // 统一 AssetGrid 所需数据
+  const gridAssets = useMemo((): GridAsset[] =>
+    projectAssets.map(a => ({ ...a })), [projectAssets]);
+
+  const groupNameMap = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const g of projectAssetGroups) m.set(g.id, g.name);
+    return m;
+  }, [projectAssetGroups]);
 
   async function loadList(targetPage = page) {
     setLoading(true);
@@ -433,7 +406,7 @@ export default function AudioGenPage() {
             ) : (
               <div className="space-y-3">
                 <div className="relative w-full aspect-video rounded-xl overflow-hidden bg-black">
-                  <img src={refImagePreview || refImageUrl} alt="参考图" className="w-full h-full object-contain" />
+                  <img src={refImagePreview || refImageUrl} alt="参考图" loading="lazy" decoding="async" className="w-full h-full object-contain" />
                   {uploading && (
                     <div className="absolute inset-0 bg-black/60 flex items-center justify-center text-sm text-white">
                       <SpinnerIcon className="w-5 h-5 mr-2 animate-spin" /> 上传中 {uploadPct}%
@@ -461,90 +434,19 @@ export default function AudioGenPage() {
 
           </div>
 
-          {/* 素材（按素材组分组展示，点击选取为参考图） */}
-          {groupedAssets.length > 0 && (
+          {/* 素材组（4列平铺，不分组；2行可见，超出滚动） */}
+          {gridAssets.length > 0 && (
             <div className="bg-[#1c1f2e] rounded-2xl p-4 border border-gray-800">
               <div className="flex items-center justify-between mb-3">
-                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">
-                  素材组
-                </label>
+                <label className="text-sm font-bold text-gray-300">素材组 <span className="text-amber-400">（{gridAssets.length} 个）</span></label>
                 <span className="text-[10px] text-gray-500">点击选取参考图</span>
               </div>
-              <div className="space-y-3">
-                {groupedAssets.map((group) => (
-                  <div key={group.name}>
-                    <div className="text-[10px] text-gray-500 px-1 py-0.5">
-                      {group.name}
-                      <span className="text-gray-600 ml-1">({group.assets.length})</span>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {group.assets.map((asset) => {
-                        const isSelected = refImageUrl && asset.file_url && refImageUrl === asset.file_url;
-                        const volcId = asset.volc_asset_id || '';
-                        const isSyncing = syncingReviewIds.has(volcId);
-                        const isRejected = asset.review_status === 'rejected';
-                        const isPending = asset.review_status === 'pending';
-                        const disabled = isRejected;
-                        return (
-                          <button
-                            key={asset.id}
-                            disabled={disabled}
-                            onClick={async () => {
-                              if (isPending && volcId && projectId) {
-                                setSyncingReviewIds(p => new Set(p).add(volcId));
-                                try {
-                                  const updated = await syncAssetReview(projectId, asset.id);
-                                  setProjectAssets(prev => prev.map(a =>
-                                    (a.volc_asset_id === volcId || a.id === asset.id)
-                                      ? { ...a, review_status: updated.review_status, status: updated.status }
-                                      : a
-                                  ));
-                                } catch {
-                                  alert('审核查询失败，请稍后重试');
-                                } finally {
-                                  setSyncingReviewIds(p => { const n = new Set(p); n.delete(volcId); return n; });
-                                }
-                              } else if (!isRejected) {
-                                pickAsset(asset);
-                              }
-                            }}
-                            title={isRejected ? '未过审' : isPending ? '审核中，点击刷新' : asset.name}
-                            className={`relative w-20 h-20 rounded-xl overflow-hidden border-2 transition-all ${
-                              disabled ? 'cursor-not-allowed' : 'hover:scale-105'
-                            } ${
-                              isRejected ? 'bg-red-500/10 border-red-500/40 opacity-60' :
-                              isSyncing ? 'bg-amber-500/10 border-amber-500/40 animate-pulse' :
-                              isPending ? 'bg-amber-500/10 border-amber-500/40' :
-                              isSelected ? 'border-purple-400 shadow-lg shadow-purple-500/20' : 'border-gray-700 hover:border-gray-500'
-                            }`}
-                          >
-                            <SafeImg src={asset.thumbnail_url || asset.file_url} alt={asset.name} className="w-full h-full object-cover" fallback={<div className="w-full h-full flex items-center justify-center text-gray-600 text-xl">🖼</div>} />
-                            {isRejected && (
-                              <span className="absolute top-0 right-0 text-[7px] font-bold px-0.5 py-px leading-none border-b border-l rounded-bl-lg bg-red-500 text-white border-red-500/40">✕</span>
-                            )}
-                            {isSyncing && (
-                              <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-                                <span className="text-[9px] text-amber-300">{`检测中${dotStr}`}</span>
-                              </div>
-                            )}
-                            {isPending && !isSyncing && (
-                              <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-                                <span className="text-xs text-amber-300 font-bold">审核中</span>
-                              </div>
-                            )}
-                            {isSelected && !isRejected && !isSyncing && !isPending && (
-                              <span className="absolute top-0 right-0 text-[7px] font-bold px-0.5 py-px leading-none border-b border-l rounded-bl-lg bg-purple-500 text-white border-purple-500/40">✓</span>
-                            )}
-                            <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-[7px] text-white text-center py-0.5 font-medium truncate">
-                              {isSyncing ? `检测中${dotStr}` : isRejected ? '未过审' : asset.name}
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <AssetGrid
+                assets={gridAssets}
+                groupNames={groupNameMap}
+                selectedUrl={refImageUrl}
+                onSelect={(a) => pickAsset(a as any)}
+              />
             </div>
           )}
 
@@ -632,7 +534,7 @@ export default function AudioGenPage() {
                           失败
                         </div>
                       ) : it.reference_image_url ? (
-                        <img src={it.reference_image_url} alt="" className="w-full h-full object-cover" />
+                        <img src={it.reference_image_url} alt="" loading="lazy" decoding="async" className="w-full h-full object-contain" />
                       ) : (
                         <div className="w-full h-full flex flex-col items-center justify-center text-gray-600">
                           <MicIcon className="w-8 h-8" />

@@ -15,10 +15,11 @@ import { getDownloadTasks, downloadTaskVideoDirect, makeDownloadFilename } from 
 import { getVolcKeyStatus } from '../services/settingsService';
 import { GearIcon, PlusIcon, CloseIcon, SparkleIcon } from '../components/Icons';
 import Layout from '../components/Layout';
+import AssetGrid, { type GridAsset } from '../components/AssetGrid';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { getProjectAssets } from '../services/projectService';
-import { listProjectAssetGroups, syncAssetReview } from '../services/assetService';
+import { listProjectAssetGroups } from '../services/assetService';
 import type { ProjectAsset, AssetGroupInfo } from '../types/index';
 import { formatShortDateTime, useUserTimezone } from '../utils/datetime';
 
@@ -28,15 +29,6 @@ function ImageWithFallback({ src }: { src: string }) {
     return <div className="w-8 h-8 rounded-lg bg-red-500/10 border border-red-500/30 flex items-center justify-center text-xs flex-shrink-0" title="图片已失效">⚠️</div>;
   }
   return <img src={src} className="w-8 h-8 rounded-lg object-cover border border-gray-700 flex-shrink-0" onError={() => setFailed(true)} />;
-}
-
-function GroupCoverImage({ group, coverMap }: { group: AssetGroupInfo & { enabled: boolean }; coverMap: Map<number, string> }) {
-  const src = group.preview_url || coverMap.get(group.id) || null;
-  const [failed, setFailed] = useState(false);
-  if (!src || failed) {
-    return <div className="w-full h-full flex items-center justify-center text-3xl">📁</div>;
-  }
-  return <img src={src} alt={group.name} className="w-full h-full object-cover" onError={() => setFailed(true)} />;
 }
 
 interface AssetSelection {
@@ -307,19 +299,6 @@ export default function SingleTaskPage() {
   const [assetSyncing, setAssetSyncing] = useState(false);
   // 素材组列表（asset_groups 表）
   const [projectAssetGroups, setProjectAssetGroups] = useState<AssetGroupInfo[]>([]);
-  // 禁用的素材组 ID 集合
-  const [disabledGroupIds, setDisabledGroupIds] = useState<Set<number>>(new Set());
-  // 审核同步中的素材 ID 集合
-  const [syncingReviewIds, setSyncingReviewIds] = useState<Set<string>>(new Set());
-  // "检测中" 动画点计数
-  const [dotTick, setDotTick] = useState(0);
-  // 审核同步中时，动画点循环
-  useEffect(() => {
-    if (syncingReviewIds.size === 0) { setDotTick(0); return; }
-    const t = setInterval(() => setDotTick(p => p + 1), 400);
-    return () => clearInterval(t);
-  }, [syncingReviewIds.size]);
-  const dotStr = '.'.repeat((dotTick % 3) + 1);
 
   // @ 小窗口键盘焦点索引（-1 = 无焦点）
   const [mentionFocusIdx, setMentionFocusIdx] = useState(-1);
@@ -403,49 +382,30 @@ export default function SingleTaskPage() {
     });
   }, [prompt, availableAssets]);
 
-  // 素材组卡片：来自 asset_groups 表，每行一个卡片；未禁用组显示为启用状态
-  const assetGroupCards = useMemo(() => {
-    return projectAssetGroups.map((g) => ({
-      ...g,
-      enabled: !disabledGroupIds.has(g.id),
-    }));
-  }, [projectAssetGroups, disabledGroupIds]);
+  // 统一 AssetGrid 所需数据
+  const gridAssets = useMemo((): GridAsset[] =>
+    availableAssets.map(a => ({ ...a })), [availableAssets]);
 
-  // 切换素材组启用/禁用
-  const handleToggleAssetGroup = useCallback((groupId: number) => {
-    setDisabledGroupIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(groupId)) next.delete(groupId);
-      else next.add(groupId);
-      return next;
-    });
-  }, []);
+  const groupNameMap = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const g of projectAssetGroups) m.set(g.id, g.name);
+    return m;
+  }, [projectAssetGroups]);
 
-   // 选中某组后，@ 面板可选项只来自该组；activeAssetGroupKey=null 表示「全部」
-  // 禁用的素材组不参与 @ 联想（基于本地 asset_groups.id ↔ project_assets.asset_group_id）
+  // 选中某组后，@ 面板可选项只来自该组；activeAssetGroupKey=null 表示「全部」
   const mentionableAssets = useMemo(() => {
-    const enabledGroupIds = new Set(
-      projectAssetGroups
-        .filter((g) => !disabledGroupIds.has(g.id))
-        .map((g) => g.id)
-    );
-    let filtered = availableAssets.filter((a) =>
-      a.asset_group_id != null ? enabledGroupIds.has(a.asset_group_id) : true
-    );
+    let filtered = availableAssets;
     if (activeAssetGroupKey) {
       filtered = filtered.filter((a) => (a.asset_group_id != null ? String(a.asset_group_id) : `_single_${a.id}`) === activeAssetGroupKey);
     }
     return filtered;
-  }, [availableAssets, activeAssetGroupKey, projectAssetGroups, disabledGroupIds]);
+  }, [availableAssets, activeAssetGroupKey]);
 
   // 将 mentionableAssets 按素材组名称分组，用于 @ 面板分组显示
-  // 基于本地 asset_groups.id ↔ project_assets.asset_group_id
   const groupedMentionableAssets = useMemo(() => {
     const groupNameMap = new Map<number, string>();
     for (const g of projectAssetGroups) {
-      if (!disabledGroupIds.has(g.id)) {
-        groupNameMap.set(g.id, g.name);
-      }
+      groupNameMap.set(g.id, g.name);
     }
     const groups: { name: string; assets: ProjectAsset[] }[] = [];
     const seen = new Map<string, { name: string; assets: ProjectAsset[] }>();
@@ -461,28 +421,17 @@ export default function SingleTaskPage() {
       seen.get(key)!.assets.push(a);
     }
     return groups;
-  }, [mentionableAssets, projectAssetGroups, disabledGroupIds]);
+  }, [mentionableAssets, projectAssetGroups]);
 
-  // 从 availableAssets 提取每个素材组的封面图 URL（基于本地 asset_group_id）
-  const groupCoverMap = useMemo(() => {
-    const map = new Map<number, string>();
-    for (const a of availableAssets) {
-      if (a.asset_group_id == null) continue;
-      if (map.has(a.asset_group_id)) continue;
-      const url = a.thumbnail_url || a.file_url;
-      if (url) map.set(a.asset_group_id, url);
-    }
-    return map;
-  }, [availableAssets]);
 
-  // 切换工作组时重置组过滤；当前激活组在新列表里不存在也要回退到全部
+  // 切换工作组时重置组过滤
   useEffect(() => {
     if (!activeAssetGroupKey) return;
-    const exists = assetGroupCards.some((g) =>
+    const exists = projectAssetGroups.some((g) =>
       String(g.id) === activeAssetGroupKey || `_single_${g.id}` === activeAssetGroupKey
     );
     if (!exists) setActiveAssetGroupKey(null);
-  }, [assetGroupCards, activeAssetGroupKey]);
+  }, [projectAssetGroups, activeAssetGroupKey]);
 
   // chipTag 直接用火山素材ID，全局唯一，不受排序影响
   function getAssetChipTag(asset: ProjectAsset, _assets?: ProjectAsset[]): string {
@@ -1795,48 +1744,17 @@ export default function SingleTaskPage() {
           )}
 
           {/* 素材组（ARK AssetGroup；与参考素材、提示词同级；为空时不渲染） */}
-          {state.currentProject && assetGroupCards.length > 0 && (
+          {state.currentProject && projectAssetGroups.length > 0 && (
             <div className="bg-[#1c1f2e] rounded-2xl p-4 border border-gray-800">
               <div className="flex items-center justify-between mb-3">
-                <label className="text-sm font-bold text-gray-300">素材组 <span className="text-amber-400">（{assetGroupCards.filter(g => g.enabled).length}/{assetGroupCards.length}）</span></label>
-                <span className="text-[10px] text-gray-500">点击启用/关闭 · 启用组可用 @ 引用</span>
+                <label className="text-sm font-bold text-gray-300">素材组 <span className="text-amber-400">（{gridAssets.length} 个素材）</span></label>
+                <span className="text-[10px] text-gray-500">点击素材插入 @ 引用</span>
               </div>
-              <div
-                className="focus:outline-none"
-                tabIndex={-1}
-              >
-                <div className="flex gap-3 overflow-x-auto pb-1 custom-scrollbar">
-                  {assetGroupCards.map((group) => {
-                    return (
-                      <div
-                        key={group.id}
-                        onClick={() => handleToggleAssetGroup(group.id)}
-                        className={`flex-shrink-0 w-24 cursor-pointer rounded-xl border-2 transition-all ${
-                          group.enabled ? 'border-amber-400' : 'border-gray-700 opacity-60'
-                        }`}
-                        title={group.enabled
-                          ? `${group.name}（${group.asset_count} 个素材）· 点击关闭`
-                          : `${group.name}（${group.asset_count} 个素材）· 点击启用`}
-                      >
-                        <div className="w-24 h-24 rounded-t-xl overflow-hidden bg-[#0d0f1a] relative">
-                          <GroupCoverImage group={group} coverMap={groupCoverMap} />
-                          {group.asset_count > 0 && (
-                            <span className="absolute top-1 right-1 bg-black/70 text-white text-[9px] px-1 py-0.5 rounded-full">
-                              {group.asset_count}
-                            </span>
-                          )}
-                          <span className={`absolute top-0 left-0 text-[9px] font-bold px-1 py-0.5 rounded-tl-xl rounded-br-lg leading-none ${group.enabled ? 'bg-amber-500 text-white' : 'bg-gray-600 text-gray-300'}`}>
-                            {group.enabled ? '✓' : '✗'}
-                          </span>
-                        </div>
-                        <div className={`px-1.5 py-1.5 rounded-b-xl ${group.enabled ? 'bg-amber-500/10' : 'bg-[#0d0f1a]'}`}>
-                          <div className="text-[10px] text-gray-300 font-medium truncate">{group.name}</div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
+              <AssetGrid
+                assets={gridAssets}
+                groupNames={groupNameMap}
+                onSelect={(a) => { if ((a as any).volc_asset_id) insertAssetMention(a as any); }}
+              />
             </div>
           )}
 
@@ -1875,126 +1793,41 @@ export default function SingleTaskPage() {
                     <span>选择引用素材</span>
                     <span className="text-[10px]">↑↓←→ 导航 · Enter 选择</span>
                   </div>
-                  <div className="flex flex-wrap gap-2 p-3 max-h-48 overflow-y-auto">
-                    {mentionItems.map((item, i) => {
-                      const isFocused = mentionFocusIdx === i;
-                      return (
-                        <button
-                          key={item.tag}
-                          data-mention-idx={i}
-                          onMouseDown={(e) => { e.preventDefault(); insertMention(item.tag); setMentionFocusIdx(-1); }}
-                          className={`flex items-center gap-2 px-3 py-2 border rounded-xl transition-all text-sm ${isFocused ? 'bg-purple-500/30 border-purple-400' : 'bg-[#1c1f2e] hover:bg-purple-500/20 border-gray-700 hover:border-purple-500/60'}`}
-                        >
-                          {item.file.previewUrl ? (
-                            <img src={item.file.previewUrl} className="w-8 h-8 rounded-lg object-cover flex-shrink-0" />
-                          ) : (
-                            <span className="text-xl">{item.emoji}</span>
-                          )}
-                          <div className="text-left">
-                            <div className={`text-xs font-medium ${isFocused ? 'text-white' : 'text-purple-300'}`}>{item.tag}</div>
-                            <div className="text-[10px] text-gray-500 truncate max-w-[80px]">{item.file.name}</div>
-                          </div>
-                        </button>
-                      );
-                    })}
-                    {groupedMentionableAssets.length > 0 && (
-                      <>
-                        {mentionItems.length > 0 && (
-                          <div className="w-full border-t border-gray-800 mt-1 pt-1 mb-1">
-                            <span className="text-[10px] text-amber-400/70 px-1">素材组</span>
-                          </div>
-                        )}
-                        {groupedMentionableAssets.map((group) => {
-                          let assetOffset = 0;
-                          // 计算本组之前的所有素材累计偏移（用于 flatIdx）
-                          for (const g of groupedMentionableAssets) {
-                            if (g.name === group.name) break;
-                            assetOffset += g.assets.length;
-                          }
-                          return (
-                            <div key={group.name} className="w-full">
-                              <div className="text-[10px] text-gray-500 px-1 py-0.5">
-                                {group.name}
-                                <span className="text-gray-600 ml-1">({group.assets.length})</span>
-                              </div>
-                              <div className="flex flex-wrap gap-2">
-                                {group.assets.map((asset, ai) => {
-                                  const flatIdx = mentionItems.length + assetOffset + ai;
-                                  const isFocused = mentionFocusIdx === flatIdx;
-                                  const chipTag = getAssetChipTag(asset, availableAssets);
-                                  const volcId = asset.volc_asset_id || '';
-                                  const isSyncing = syncingReviewIds.has(volcId);
-                                  const isRejected = asset.review_status === 'rejected';
-                                  const isPending = asset.review_status === 'pending';
-                                  const disabled = isRejected;
-                                  return (
-                                    <button
-                                      key={`${asset.id}-${ai}`}
-                                      data-mention-idx={flatIdx}
-                                      disabled={disabled}
-                                      onMouseDown={async (e) => {
-                                        e.preventDefault();
-                                        if (isPending && volcId && state.currentProject?.id) {
-                                          setSyncingReviewIds(p => new Set(p).add(volcId));
-                                          try {
-                                            const updated = await syncAssetReview(state.currentProject.id, asset.id);
-                                            // 更新 projectAssets 中该资产的 review_status
-                                            setProjectAssets(prev => prev.map(a =>
-                                              (a.volc_asset_id === volcId || a.id === asset.id)
-                                                ? { ...a, review_status: updated.review_status, status: updated.status }
-                                                : a
-                                            ));
-                                          } catch {
-                                            alert('审核查询失败，请稍后重试');
-                                          } finally {
-                                            setSyncingReviewIds(p => { const n = new Set(p); n.delete(volcId); return n; });
-                                          }
-                                        } else if (!isRejected) {
-                                          insertAssetMention(asset);
-                                          setMentionFocusIdx(-1);
-                                        }
-                                      }}
-                                      className={`flex items-center gap-2 px-3 py-2 border rounded-xl transition-all text-sm ${
-                                        isRejected ? 'bg-red-500/10 border-red-500/40 opacity-60 cursor-not-allowed' :
-                                        isSyncing ? 'bg-amber-500/10 border-amber-500/40 animate-pulse' :
-                                        isPending ? 'bg-amber-500/10 border-amber-500/40 hover:bg-amber-500/20' :
-                                        isFocused ? 'bg-amber-500/20 border-amber-400' : 'bg-[#1c1f2e] hover:bg-amber-500/10 border-gray-700 hover:border-amber-500/40'
-                                      }`}
-                                    >
-                                      {asset.thumbnail_url || asset.file_url ? (
-                                        <div className="relative flex-shrink-0">
-                                          <img src={asset.thumbnail_url || asset.file_url!} className="w-8 h-8 rounded-lg object-cover" />
-                                          {isPending && !isSyncing && (
-                                            <div className="absolute inset-0 bg-black/40 rounded-lg flex items-center justify-center">
-                                              <span className="text-[7px] text-amber-300 font-bold">审核中</span>
-                                            </div>
-                                          )}
-                                        </div>
-                                      ) : (
-                                        <span className="text-xl">{asset.file_type === 'video' ? '🎬' : asset.file_type === 'audio' ? '🎵' : '🖼️'}</span>
-                                      )}
-                                      <div className="text-left">
-                                        <div className={`text-xs font-medium ${isFocused ? 'text-white' : isRejected ? 'text-red-400' : 'text-gray-300'}`}>
-                                          {isSyncing ? `检测中${dotStr}` : isPending ? '审核中' : asset.name}
-                                        </div>
-                                        <div className={`text-[9px] truncate max-w-[80px] font-mono ${
-                                          isRejected ? 'text-red-500/50' :
-                                          isPending ? 'text-amber-400' :
-                                          'text-amber-400/70'
-                                        }`}>
-                                          {isRejected ? '未过审' : isPending ? '审核中' : chipTag}
-                                        </div>
-                                      </div>
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </>
-                    )}
-                  </div>
+                  {/* 上传文件快捷chip区 */}
+                  {mentionItems.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 px-3 pt-2 pb-1">
+                      {mentionItems.map((item, i) => {
+                        const isFocused = mentionFocusIdx === i;
+                        return (
+                          <button
+                            key={item.tag}
+                            data-mention-idx={i}
+                            onMouseDown={(e) => { e.preventDefault(); insertMention(item.tag); setMentionFocusIdx(-1); }}
+                            className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border text-xs transition-all ${
+                              isFocused ? 'border-purple-400 bg-purple-500/20 text-white' : 'border-gray-700 bg-[#1c1f2e] text-gray-300 hover:border-gray-500'
+                            }`}
+                          >
+                            {item.file.previewUrl ? (
+                              <img src={item.file.previewUrl} className="w-5 h-5 rounded object-cover flex-shrink-0" />
+                            ) : (
+                              <span className="text-sm">{item.emoji}</span>
+                            )}
+                            <span className="truncate max-w-[60px]">{item.tag}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {/* 素材组资产网格 */}
+                  {groupedMentionableAssets.length > 0 && (
+                    <div className="p-3">
+                      <AssetGrid
+                        assets={gridAssets}
+                        groupNames={groupNameMap}
+                        onSelect={(a) => { if ((a as any).volc_asset_id) { insertAssetMention(a as any); setMentionFocusIdx(-1); } }}
+                      />
+                    </div>
+                  )}
                 </div>
               )}
               {showMention && mentionItems.length === 0 && availableAssets.length === 0 && (

@@ -6314,6 +6314,11 @@ app.delete('/api/admin/volc-native/asset-groups/:id', authenticate, async (req, 
     const db = getDatabase();
     const { projectName = 'default', keyGroupId } = req.body || {};
     const result = await volcArkAssetRequest('DeleteAssetGroup', { Id: req.params.id, ProjectName: projectName }, db, keyGroupId ? Number(keyGroupId) : null);
+    // 先删除关联素材，再删素材组（FK ON DELETE SET NULL）
+    const ag = db.prepare('SELECT id FROM asset_groups WHERE volc_group_id = ?').get(req.params.id);
+    if (ag) {
+      db.prepare('DELETE FROM project_assets WHERE asset_group_id = ?').run(ag.id);
+    }
     db.prepare('DELETE FROM asset_groups WHERE volc_group_id = ?').run(req.params.id);
     res.json({ success: true, data: result });
   } catch (e) {
@@ -6388,7 +6393,7 @@ app.get('/api/volc-native/asset-groups', authenticate, async (req, res) => {
       const project = projectService.getProjectById(projectId, req.user.id, isAdmin);
       if (!project) return res.status(404).json({ error: '项目不存在或无权访问' });
       // 单账户模式：激活 Key id=1 时 null 视为 1；其它 id 只精确匹配，null 不再视为该 id
-      let assetGroupQuery = 'SELECT id, volc_group_id, name, volc_id FROM asset_groups WHERE project_id = ?';
+      let assetGroupQuery = 'SELECT id, volc_group_id, name, volc_id, thumbnail_oss_url FROM asset_groups WHERE project_id = ?';
       const assetGroupParams = [projectId];
       if (!isMultiAccountEnabled()) {
         const active = db.prepare('SELECT id FROM volc_key_groups WHERE is_active = 1 LIMIT 1').get();
@@ -6397,10 +6402,22 @@ app.get('/api/volc-native/asset-groups', authenticate, async (req, res) => {
           assetGroupParams.push(active.id, active.id);
         }
       }
+      // name 过滤
+      if (name) {
+        assetGroupQuery += ' AND name LIKE ?';
+        assetGroupParams.push(`%${name}%`);
+      }
+      // 先查总数
+      const total = db.prepare(assetGroupQuery.replace('SELECT id, volc_group_id, name, volc_id, thumbnail_oss_url', 'SELECT COUNT(*) AS c')).get(...assetGroupParams).c;
+      // 分页
+      const offset = (Number(pageNumber) - 1) * Number(pageSize);
+      assetGroupQuery += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+      assetGroupParams.push(Number(pageSize), offset);
       const boundRows = db.prepare(assetGroupQuery).all(...assetGroupParams);
-      // 本地 volc_group_id → 我们落库时已去重过的 name；展示时强制覆盖火山返回的 Name，
-      // 避免火山端原始 Name 仍是重复值导致前端看到两个一样的素材组。
+      // 本地 volc_group_id → 我们落库时已去重过的 name
       const localNameByVolcId = new Map(boundRows.map((r) => [r.volc_group_id, r.name]));
+      // 按 volc_group_id → thumbnail_oss_url 映射（OSS永久URL）
+      const thumbOssByVolcId = new Map(boundRows.map((r) => [r.volc_group_id, r.thumbnail_oss_url]));
       // 按 volc_group_id → volc_id 映射，用于查询时指定 keyGroupId
       const keyGroupByVolcId = new Map(boundRows.map((r) => [r.volc_group_id, r.volc_id]).filter(([, vid]) => vid != null));
       const volcGroupIds = boundRows.map(r => r.volc_group_id).filter(Boolean);
@@ -6417,6 +6434,7 @@ app.get('/api/volc-native/asset-groups', authenticate, async (req, res) => {
         Id: r.volc_group_id,
         Name: r.name,
         _localId: r.id,
+        thumbnail_oss_url: r.thumbnail_oss_url || null,
       }));
 
       // 有文件夹但无素材时，自动触发一次同步
@@ -6431,7 +6449,7 @@ app.get('/api/volc-native/asset-groups', authenticate, async (req, res) => {
         }
       }
 
-      return res.json({ success: true, data: { Items: items, TotalCount: items.length } });
+      return res.json({ success: true, data: { Items: items, TotalCount: total } });
     }
 
     // 无 projectId：仅管理员可见全量
@@ -6545,42 +6563,41 @@ app.get('/api/volc-native/asset-groups/check-name', authenticate, (req, res) => 
 app.post('/api/volc-native/asset-groups', authenticate, async (req, res) => {
   try {
     const db = getDatabase();
-    const { name, description = '', projectName = 'default', projectId } = req.body;
+    const { name, description = '', projectName = 'default', projectId, thumbnail_oss_url } = req.body;
     if (!name) return res.status(400).json({ error: 'name 必填' });
     if (!projectId) return res.status(400).json({ error: 'projectId 必填（素材组必须绑定到一个项目组）' });
     const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
     const project = projectService.getProjectById(projectId, req.user.id, isAdmin);
     if (!project) return res.status(404).json({ error: '项目组不存在或无权访问' });
 
-    // 全局名字唯一：若撞名则循环加 (2)/(3)... 后缀
-    let finalName = String(name).trim();
-    const checkStmt = db.prepare('SELECT COUNT(*) AS c FROM asset_groups WHERE name = ?');
-    let candidate = finalName;
-    let idx = 2;
-    while (checkStmt.get(candidate).c > 0) {
-      candidate = `${finalName} (${idx++})`;
-    }
-    finalName = candidate;
+    const displayName = String(name).trim();
     const keyGroupId = project.volc_id || null;
 
     const result = await volcArkAssetRequest('CreateAssetGroup', {
-      Name: finalName, Description: description, GroupType: 'AIGC', ProjectName: projectName,
+      Name: displayName, Description: description, GroupType: 'AIGC', ProjectName: projectName,
     }, db, keyGroupId);
 
     const volcGroupId = result?.Id;
-    if (volcGroupId) {
-      // WHERE NOT EXISTS 兜底：防竞态/边缘情况导致的重名
-      const insertStmt = db.prepare(
-        'INSERT INTO asset_groups (project_id, volc_group_id, name, volc_id, updated_at) SELECT ?, ?, ?, ?, CURRENT_TIMESTAMP WHERE NOT EXISTS (SELECT 1 FROM asset_groups WHERE project_id = ? AND name = ?)'
-      );
-      let nameToInsert = finalName;
-      for (let retry = 0; retry < 20; retry++) {
-        const r = insertStmt.run(projectId, volcGroupId, nameToInsert, keyGroupId, projectId, nameToInsert);
-        if (r.changes > 0) break;
-        nameToInsert = assetService.resolveUniqueAssetGroupName(projectId, nameToInsert);
+    if (!volcGroupId) {
+      return res.status(502).json({ error: 'ARK 创建素材组失败，未返回 ID' });
+    }
+
+    // 用 volc_group_id 尾段 UUID 保证唯一（如 group-...-z2sls → z2sls）
+    const uuidSuffix = volcGroupId.split('-').pop();
+    const storedName = displayName + '-' + uuidSuffix;
+
+    try {
+      db.prepare('INSERT INTO asset_groups (project_id, volc_group_id, name, volc_id, thumbnail_oss_url, updated_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)').run(projectId, volcGroupId, storedName, keyGroupId, thumbnail_oss_url || null);
+    } catch (insertErr) {
+      if (insertErr.message?.includes('UNIQUE')) {
+        console.warn('[asset-groups] 重复 volc_group_id 插入（忽略）:', volcGroupId);
+      } else {
+        console.error('[asset-groups] INSERT 失败:', insertErr.message, 'volc_group_id:', volcGroupId);
+        return res.status(500).json({ error: '本地保存失败' });
       }
     }
-    res.json({ success: true, data: { ...result, finalName } });
+
+    res.json({ success: true, data: { ...result, storedName } });
   } catch (e) {
     res.status(502).json({ error: e.message });
   }
@@ -6814,6 +6831,7 @@ app.get('/api/projects/:id/asset-groups', authenticate, async (req, res) => {
     const groups = db.prepare(`
       SELECT ag.*,
         (SELECT COUNT(*) FROM project_assets pa WHERE pa.asset_group_id = ag.id AND pa.review_status != 'rejected' AND pa.status = 'active' AND pa.file_url IS NOT NULL) AS asset_count,
+        (SELECT COUNT(*) FROM project_assets pa WHERE pa.asset_group_id = ag.id AND pa.review_status = 'pending' AND pa.status = 'active') AS pending_count,
         (SELECT COALESCE(pa.thumbnail_url, pa.file_url) FROM project_assets pa
          WHERE pa.asset_group_id = ag.id AND pa.review_status != 'rejected' AND pa.status = 'active'
          AND (pa.file_url IS NOT NULL OR pa.thumbnail_url IS NOT NULL)
@@ -6834,6 +6852,7 @@ app.get('/api/projects/:id/asset-groups', authenticate, async (req, res) => {
           const fresh = db.prepare(`
             SELECT ag.*,
               (SELECT COUNT(*) FROM project_assets pa WHERE pa.asset_group_id = ag.id AND pa.review_status != 'rejected' AND pa.status = 'active' AND pa.file_url IS NOT NULL) AS asset_count,
+              (SELECT COUNT(*) FROM project_assets pa WHERE pa.asset_group_id = ag.id AND pa.review_status = 'pending' AND pa.status = 'active') AS pending_count,
               (SELECT COALESCE(pa.thumbnail_url, pa.file_url) FROM project_assets pa
                WHERE pa.asset_group_id = ag.id AND pa.review_status != 'rejected' AND pa.status = 'active'
                AND (pa.file_url IS NOT NULL OR pa.thumbnail_url IS NOT NULL)

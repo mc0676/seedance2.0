@@ -9,6 +9,7 @@ import {
 import { getVolcKeyStatus } from '../services/settingsService';
 import type { ProjectMember } from '../types';
 import { formatDateTime, formatDate, useUserTimezone } from '../utils/datetime';
+import { compressImageToFile } from '../utils/imageCompress';
 
 type Tab = 'volc' | 'members';
 
@@ -17,6 +18,7 @@ interface VolcAssetGroup {
   GroupType?: string; ProjectName?: string;
   CreateTime?: string; UpdateTime?: string;
   coverUrl?: string;
+  thumbnail_oss_url?: string;
 }
 interface VolcAsset {
   Id: string; Name?: string; AssetType?: string;
@@ -177,7 +179,7 @@ export default function ProjectWorkspacePage() {
 
   // 加载组列表，并为每个组加载第一个 Asset 封面
   // 严格按当前工作组过滤：只显示当前工作组绑定的素材组
-  const loadVolcGroups = useCallback(async (page = 1, search = volcGroupSearch, sync = false) => {
+  const loadVolcGroups = useCallback(async (page: number, search: string, sync = false) => {
     if (!currentProject) { setVolcGroups([]); setVolcGroupTotal(0); return; }
     setVolcGroupsLoading(true);
     try {
@@ -187,27 +189,19 @@ export default function ProjectWorkspacePage() {
       const res = await fetch(`/api/volc-native/asset-groups?${params}`, { headers: getAuthHeaders() });
       const data = await res.json();
       if (!data.success) throw new Error(data.error);
-      const items: VolcAssetGroup[] = data.data?.Items || [];
+      const items: VolcAssetGroup[] = (data.data?.Items || []).map((g: VolcAssetGroup) => ({
+        ...g,
+        // 优先使用OSS永久缩略图，无则留空（不再并发拉火山API）
+        coverUrl: g.thumbnail_oss_url || undefined,
+      }));
       setVolcGroups(items);
       setVolcGroupTotal(data.data?.TotalCount || 0);
       setVolcGroupPage(page);
-       // 异步加载每个组的第一个 Asset 封面（从本地 project_assets.thumbnail_url）
-       items.forEach(async (g) => {
-         try {
-           const r = await fetch(`/api/volc-native/assets?groupId=${encodeURIComponent(g.Id)}&pageNumber=1&pageSize=1`, { headers: getAuthHeaders() });
-           const d = await r.json();
-           const firstAsset = d.data?.Items?.[0];
-           const url = firstAsset?.ThumbnailURL || firstAsset?.URL;
-           if (url) {
-             setVolcGroups(prev => prev.map(item => item.Id === g.Id ? { ...item, coverUrl: url } : item));
-           }
-         } catch {}
-       });
     } catch (e) { console.error(e); }
     finally { setVolcGroupsLoading(false); }
   }, [currentProject?.id]);
 
-  const loadVolcAssets = useCallback(async (page = 1, groupId?: string, search = volcAssetSearch) => {
+  const loadVolcAssets = useCallback(async (page: number, groupId: string, search: string) => {
     const gid = groupId ?? selectedGroup?.Id;
     if (!gid) return;
     setVolcAssetsLoading(true);
@@ -221,10 +215,14 @@ export default function ProjectWorkspacePage() {
       setVolcAssets(items);
       setVolcAssetTotal(data.data?.TotalCount || 0);
       setVolcAssetPage(page);
-      // 直接用本地 ThumbnailURL，不再调 ARK GetAsset
+      // 直接用本地 ThumbnailURL，一次性批量写入，避免逐条 setState 触发多次重渲染
+      const newUrlEntries: Record<string, string> = {};
       for (const a of items) {
         const url = a.ThumbnailURL || a.URL;
-        if (url) setAssetUrlMap(prev => ({ ...prev, [a.Id]: url }));
+        if (url) newUrlEntries[a.Id] = url;
+      }
+      if (Object.keys(newUrlEntries).length > 0) {
+        setAssetUrlMap(prev => ({ ...prev, ...newUrlEntries }));
       }
       return items;
     } catch (e) { console.error(e); }
@@ -301,28 +299,37 @@ export default function ProjectWorkspacePage() {
     if (!currentProject) { alert('请先选择项目组'); return; }
     if (!newGroupName.trim()) { alert('请输入素材组名称'); return; }
     if (!newGroupFile) { alert('请选择一张封面图片'); return; }
-    // 优先用建议名（撞名时附 (2)/(3)...），用户能看到、提交时使用
-    const finalName = (groupNameSuggestion?.suggestedName || newGroupName).trim();
+    const finalName = newGroupName.trim();
     setCreateGroupLoading(true);
     try {
+      // 1. 上传原图到OSS（火山用）
       setCreateGroupStep('上传图片到 OSS...');
       const ossUrl = await uploadToOss(newGroupFile);
 
+      // 2. 浏览器压缩后上传缩略图到OSS
+      setCreateGroupStep('生成缩略图...');
+      let thumbnailOssUrl: string | null = null;
+      try {
+        const thumbFile = await compressImageToFile(newGroupFile, { maxSize: 200, quality: 0.75 });
+        const thumbOssUrl = await uploadToOss(thumbFile);
+        thumbnailOssUrl = thumbOssUrl;
+      } catch (e) {
+        console.warn('[thumbnail] 压缩/上传失败，跳过缩略图:', e);
+      }
+
+      // 3. 创建素材组（传入thumbnail_oss_url写入DB）
       setCreateGroupStep('创建素材组...');
       const r1 = await fetch('/api/volc-native/asset-groups', {
         method: 'POST',
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ name: finalName, description: newGroupDesc.trim(), projectId: currentProject.id }),
+        body: JSON.stringify({ name: finalName, description: newGroupDesc.trim(), projectId: currentProject.id, thumbnail_oss_url: thumbnailOssUrl }),
       });
       const d1 = await r1.json();
       if (!d1.success) throw new Error(d1.error || '创建素材组失败');
       const groupId: string = d1.data?.Id;
-      // 后端可能再次微调（极端并发情况），用 finalName 兜底
-      const persistedName: string = d1.data?.finalName || finalName;
-      if (d1.data?.finalName && d1.data.finalName !== finalName) {
-        alert(`存在同名素材组，已自动改为：${persistedName}`);
-      }
+      const persistedName: string = d1.data?.storedName || finalName;
 
+      // 4. 写入封面素材（原图URL，火山审核用）
       setCreateGroupStep('写入封面素材...');
       const r2 = await fetch('/api/volc-native/assets', {
         method: 'POST',
@@ -335,7 +342,7 @@ export default function ProjectWorkspacePage() {
       setShowCreateGroup(false);
       setNewGroupName(''); setNewGroupDesc(''); setNewGroupFile(null); setNewGroupPreview('');
       setGroupNameSuggestion(null);
-      await loadVolcGroups(1);
+      await loadVolcGroups(1, volcGroupSearch);
     } catch (e) { alert(e instanceof Error ? e.message : '创建失败'); }
     finally { setCreateGroupLoading(false); setCreateGroupStep(''); }
   };
@@ -359,7 +366,7 @@ export default function ProjectWorkspacePage() {
       if (!data.success) throw new Error(data.error);
 
       setShowAddAsset(false); setAddAssetFile(null); setAddAssetName('');
-      await loadVolcAssets(1);
+      await loadVolcAssets(1, selectedGroup!.Id, volcAssetSearch);
     } catch (e) { alert(e instanceof Error ? e.message : '添加失败'); }
     finally { setAddAssetLoading(false); setAddAssetStep(''); }
   };
@@ -374,7 +381,7 @@ export default function ProjectWorkspacePage() {
       });
       const data = await res.json();
       if (!data.success) throw new Error(data.error);
-      await loadVolcAssets(volcAssetPage);
+      await loadVolcAssets(volcAssetPage, selectedGroup!.Id, volcAssetSearch);
     } catch (e) { alert(e instanceof Error ? e.message : '删除失败'); }
   };
 
@@ -435,7 +442,7 @@ export default function ProjectWorkspacePage() {
   };
 
   useEffect(() => {
-    if (currentProject) { void loadVolcGroups(1); void loadMembers(); }
+    if (currentProject) { void loadVolcGroups(1, volcGroupSearch); void loadMembers(); }
     return () => { if (volcPollRef.current) { clearInterval(volcPollRef.current); volcPollRef.current = null; } };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentProject?.id, loadVolcGroups]);
@@ -692,7 +699,7 @@ export default function ProjectWorkspacePage() {
           {volcLevel === 'assets' && (
             <div className="flex items-center gap-2 mb-4">
               <input value={volcAssetSearch} onChange={(e) => setVolcAssetSearch(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && loadVolcAssets(1, selectedGroup?.Id, volcAssetSearch)}
+                onKeyDown={(e) => e.key === 'Enter' && selectedGroup && loadVolcAssets(1, selectedGroup.Id, volcAssetSearch)}
                 placeholder="按名称搜索..."
                 className="max-w-64 bg-[#1c1f2e] border border-gray-700 rounded-xl px-4 py-2 text-white text-sm focus:outline-none focus:border-purple-500" />
             </div>
@@ -718,7 +725,7 @@ export default function ProjectWorkspacePage() {
                       {/* 封面 */}
                       <div className="aspect-square bg-[#0f111a] overflow-hidden relative flex-shrink-0">
                         {g.coverUrl ? (
-                          <img src={g.coverUrl} alt={g.Name} className="w-full h-full object-contain group-hover:scale-105 transition-transform duration-300" />
+                          <img src={g.coverUrl} alt={g.Name} loading="lazy" decoding="async" className="w-full h-full object-contain group-hover:scale-105 transition-transform duration-300" />
                         ) : (
                           <div className="w-full h-full flex items-center justify-center text-gray-600 text-3xl">👤</div>
                         )}
@@ -749,10 +756,10 @@ export default function ProjectWorkspacePage() {
                 </div>
                 {volcGroupTotal > 20 && (
                   <div className="mt-6 flex items-center justify-center gap-3">
-                    <button onClick={() => loadVolcGroups(volcGroupPage - 1)} disabled={volcGroupPage <= 1}
+                    <button onClick={() => loadVolcGroups(volcGroupPage - 1, volcGroupSearch)} disabled={volcGroupPage <= 1}
                       className="px-4 py-2 bg-[#1c1f2e] border border-gray-700 rounded-xl text-white text-sm disabled:opacity-50 hover:bg-gray-800">上一页</button>
-                    <span className="text-gray-400 text-sm">{volcGroupPage} · 共 {volcGroupTotal} 个</span>
-                    <button onClick={() => loadVolcGroups(volcGroupPage + 1)} disabled={volcGroups.length < 20}
+                    <span className="text-gray-400 text-sm">{volcGroupPage}/{Math.ceil(volcGroupTotal / 20) || 1} 页</span>
+                    <button onClick={() => loadVolcGroups(volcGroupPage + 1, volcGroupSearch)} disabled={volcGroups.length < 20}
                       className="px-4 py-2 bg-[#1c1f2e] border border-gray-700 rounded-xl text-white text-sm disabled:opacity-50 hover:bg-gray-800">下一页</button>
                   </div>
                 )}
@@ -782,7 +789,7 @@ export default function ProjectWorkspacePage() {
                         {/* 图片区 */}
                         <div className="aspect-square bg-[#0f111a] overflow-hidden relative flex-shrink-0">
                           {imgUrl && !isVideo ? (
-                            <img src={imgUrl} alt={a.Name || a.Id} className="w-full h-full object-contain" />
+                            <img src={imgUrl} alt={a.Name || a.Id} loading="lazy" decoding="async" className="w-full h-full object-contain" />
                           ) : imgUrl && isVideo ? (
                             <video src={imgUrl} className="w-full h-full object-contain" muted />
                           ) : (
@@ -825,10 +832,10 @@ export default function ProjectWorkspacePage() {
                 </div>
                 {(volcAssetPage > 1 || volcAssets.length >= 20) && (
                   <div className="mt-4 flex items-center justify-center gap-3">
-                    <button onClick={() => loadVolcAssets(volcAssetPage - 1)} disabled={volcAssetPage <= 1}
+                    <button onClick={() => loadVolcAssets(volcAssetPage - 1, selectedGroup!.Id, volcAssetSearch)} disabled={volcAssetPage <= 1}
                       className="px-4 py-2 bg-[#1c1f2e] border border-gray-700 rounded-xl text-white text-sm disabled:opacity-50 hover:bg-gray-800">上一页</button>
-                    <span className="text-gray-400 text-sm">{volcAssetPage} · 共 {volcAssetTotal} 个</span>
-                    <button onClick={() => loadVolcAssets(volcAssetPage + 1)} disabled={volcAssets.length < 20}
+                    <span className="text-gray-400 text-sm">{volcAssetPage}/{Math.ceil(volcAssetTotal / 20) || 1} 页</span>
+                    <button onClick={() => loadVolcAssets(volcAssetPage + 1, selectedGroup!.Id, volcAssetSearch)} disabled={volcAssets.length < 20}
                       className="px-4 py-2 bg-[#1c1f2e] border border-gray-700 rounded-xl text-white text-sm disabled:opacity-50 hover:bg-gray-800">下一页</button>
                   </div>
                 )}
@@ -945,7 +952,7 @@ export default function ProjectWorkspacePage() {
                   if (!r.ok || !d.success) throw new Error(d.error || '保存失败');
                   setEditAssetTarget(null);
                   setEditAssetName('');
-                  await loadVolcAssets(volcAssetPage);
+                  await loadVolcAssets(volcAssetPage, selectedGroup!.Id, volcAssetSearch);
                 } catch (e) {
                   alert(e instanceof Error ? e.message : '保存失败');
                 } finally {
@@ -1003,13 +1010,10 @@ export default function ProjectWorkspacePage() {
                   );
                   const d = await r.json();
                   if (!r.ok || !d.success) throw new Error(d.error || '保存失败');
-                  if (d.data?.suggested) {
-                    alert(`存在同名素材组，已自动改为：${d.data.finalName}`);
-                  }
                   setRenameGroupTarget(null);
                   setRenameGroupName('');
                   setRenameGroupDesc('');
-                  await loadVolcGroups(volcGroupPage);
+                  await loadVolcGroups(volcGroupPage, volcGroupSearch);
                 } catch (e) {
                   alert(e instanceof Error ? e.message : '保存失败');
                 } finally {

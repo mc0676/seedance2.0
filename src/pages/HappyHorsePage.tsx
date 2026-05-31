@@ -54,7 +54,7 @@ function MediaThumb({
             )}
           </div>
         ) : (
-          <img src={m.url} alt="" className="w-full h-full object-cover pointer-events-none" />
+          <img src={m.url} alt="" loading="lazy" decoding="async" className="w-full h-full object-contain pointer-events-none" />
         )}
         <span className={`absolute top-0 left-0 text-[9px] font-bold px-1 py-0.5 rounded-tl-xl rounded-br-lg leading-none ${
           isVideo ? 'bg-blue-600/90 text-white'

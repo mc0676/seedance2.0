@@ -1,5 +1,6 @@
 import type { Project, Task, ProjectAssetList, ApiResponse } from '../types/index';
 import { getAuthHeaders } from './authService';
+import { getCachedProjectAssets, setCachedProjectAssets } from '../utils/assetCache';
 
 const API_BASE = '/api';
 
@@ -117,6 +118,12 @@ export async function getProjectAssets(
   projectId: number,
   options: { page?: number; pageSize?: number; status?: string; skipLive?: boolean } = {}
 ): Promise<ProjectAssetList> {
+  // sessionStorage 缓存（仅对全量拉取 pageSize >= 100 生效，30s TTL）
+  const isFullFetch = !options.status && !options.skipLive && (options.pageSize || 100) >= 100;
+  if (isFullFetch) {
+    const cached = getCachedProjectAssets(projectId);
+    if (cached) return { assets: cached as any, total: cached.length, page: 1, pageSize: cached.length };
+  }
   const params = new URLSearchParams();
   if (options.page) params.set('page', String(options.page));
   if (options.pageSize) params.set('pageSize', String(options.pageSize));
@@ -129,6 +136,9 @@ export async function getProjectAssets(
   const result: ApiResponse<ProjectAssetList> = await response.json();
   if (!result.success) {
     throw new Error(result.error || '获取项目资产失败');
+  }
+  if (isFullFetch && result.data) {
+    setCachedProjectAssets(projectId, result.data.assets);
   }
   return result.data!;
 }

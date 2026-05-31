@@ -383,6 +383,7 @@ CREATE TABLE IF NOT EXISTS asset_groups (
   volc_id INTEGER,
   name TEXT NOT NULL,
   description TEXT DEFAULT '',
+  thumbnail_oss_url TEXT,  -- 压缩封面图OSS永久URL（浏览器压缩后上传，避免实时拉火山API）
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE

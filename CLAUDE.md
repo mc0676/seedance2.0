@@ -162,14 +162,41 @@ server/
 3. `src/App.tsx` / `src/context/AppContext.tsx`
 4. `src/services/*.ts` / `server/services/*.js`
 
+## 缩略图与缓存系统
+
+### 组件
+
+| 文件 | 作用 |
+|---|---|
+| `src/components/AssetGrid.tsx` | 统一素材网格组件（视频生成/音频生成/@弹窗共用），4列平铺，上下滑动 |
+| `src/utils/imageCompress.ts` | 浏览器端 Canvas 压缩工具，`compressImageToFile(file, {maxSize,quality})` |
+| `src/utils/assetCache.ts` | localStorage 缓存（5min TTL），避免切换页面重拉 API |
+
+### 数据流
+
+```
+上传: 文件 → Canvas压缩(200px) → OSS上传缩略图 → POST asset-groups 写入 thumbnail_oss_url
+浏览: GET asset-groups → 返回 thumbnail_oss_url → AssetGrid 优先读缩略图
+删除: DELETE asset-groups → 火山删除 → 硬删 project_assets → 删 asset_groups
+```
+
+### 关键约定
+
+1. `asset_groups.thumbnail_oss_url` — 组封面 OSS 永久缩略图（509 条已回填）
+2. `project_assets` 排序: `ag.created_at DESC, pa.created_at DESC`（先组后素材）
+3. AssetGrid props: `assets`, `groupNames`, `onSelect`, `selectedUrl`
+4. 审核状态：`pending` 显示遮罩不调用 API，`rejected` 置灰不可点击
+5. 素材组名防重: 末尾附加火山 groupId UUID 尾段（如 `name-z2sls`），静默处理
+6. `asset_groups` 分页: name 过滤 + LIMIT/OFFSET + 独立 COUNT
+
 ---
 
 ## ⚠️ 数据安全红线（AI 必读，每次操作前确认）
 
 **以下操作绝对禁止，无论任何理由：**
 
-1. `docker volume rm seedance-data` — 删除数据库 volume，**所有用户数据永久丢失**
-2. `docker rm -f seedance-blue` 后不挂载 volume 重建 — 容器重建必须带 `-v seedance-data:/app/server/data`
+1. 删除数据库 volume，**所有用户数据永久丢失**
+2. 后不挂载 volume 重建 — 容器重建必须带 `-v seedance-data:/app/server/data`
 3. 在服务器上执行任何覆盖 `/app/server/data/seedance.db` 的操作（`cp`、`mv`、`>`）
 4. `docker run` 启动新容器时不带 `-v seedance-data` 参数
 5. 用本地数据库文件 `scp` 覆盖服务器数据库
@@ -318,42 +345,3 @@ ssh -i .ssh/yunyu_server root@47.94.174.146 "docker exec seedance-blue node -e \
   console.log('已更新');
 \""
 ```
-
-### 火山 AI MediaKit（视频画质增强）
-
-- **Key**：存储于 DB `system_config.mediakit_api_key`，管理后台 → "火山 AI MediaKit Key" 卡片可改
-- **Base URL**：`https://mediakit.cn-beijing.volces.com/api/v1`
-- **认证**：`Authorization: Bearer <KEY>`
-- **提交**：`POST /tools/enhance-video`，body `{ video_url, scene, tool_version, resolution }`，返回 `{ task_id }`
-- **查询**：`GET /tasks/{task_id}`，`status=completed` 时 `result.video_url` 为增强后视频（48h 有效）
-- **场景**：`aigc` / `short_series` / `ugc` / `old_film`；**版本**：`standard`（RTF≈10）/ `professional`（RTF≈30+）
-- **计费**：表 `enhancement_pricing`，每秒视频积分 × 视频时长，后台可调
-- **存储**：`video_enhancements` 表与源 `tasks.id` 一对多；`credit_locks.enhancement_id` 走与图片/视频相同的 lock/settle/release 流程
-- **后台 worker**：`server/services/enhancementWorker.js` 每 30s 扫 `status='processing'` 的行轮询 MediaKit 同步状态，容器重启自动恢复
-- **入口**：左侧菜单「画质增强」（`/enhancement`，[src/pages/EnhancementPage.tsx](src/pages/EnhancementPage.tsx)），与「视频生成」并列。支持两种来源：(1) 选已生成的视频任务；(2) 粘贴外部视频 URL 或上传 mp4 到 OSS。SingleTaskPage 历史卡片不再有增强按钮和角标
-- **提交接口**：`POST /api/video-enhancements`，body 任选其一：`{ taskId, ... }`（已生成视频）或 `{ videoUrl, durationSeconds, ... }`（外部视频）；外部视频时 `video_enhancements.task_id = NULL`
-- **列表接口**：`GET /api/video-enhancements/list?page=&pageSize=` 分页拉当前用户全部增强记录（含外部）
-
-### 更新 MediaKit Key（在生产 DB 中）
-
-```bash
-ssh -i ~/.ssh/云屿 root@47.94.174.146 "docker exec seedance-blue node -e \"
-  const db = require('/app/server/node_modules/better-sqlite3')('/app/server/data/seedance.db');
-  db.prepare(\\\"INSERT OR REPLACE INTO system_config (key, value) VALUES ('mediakit_api_key', ?)\\\").run('新KEY');
-  console.log('已更新');
-\""
-```
-
-## Agent skills
-
-### Issue tracker
-
-Issues live as local markdown files under .scratch/. See docs/agents/issue-tracker.md.
-
-### Triage labels
-
-Five canonical roles with default label names. See docs/agents/triage-labels.md.
-
-### Domain docs
-
-Single-context layout. See docs/agents/domain.md.

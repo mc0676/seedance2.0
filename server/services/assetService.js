@@ -54,10 +54,11 @@ function translateArkError(msg) {
   return msg;
 }
 
-function buildVolcFilter(targetVolcId) {
+function buildVolcFilter(targetVolcId, prefix = '') {
+  const col = prefix ? prefix + '.volc_id' : 'volc_id';
   if (targetVolcId == null) return { sql: '', params: [] };
-  if (targetVolcId === 1) return { sql: '(volc_id IS NULL OR volc_id = 1)', params: [] };
-  return { sql: '(volc_id = ?)', params: [targetVolcId] };
+  if (targetVolcId === 1) return { sql: col + ' IS NULL OR ' + col + ' = 1', params: [] };
+  return { sql: col + ' = ?', params: [targetVolcId] };
 }
 
 function getCredentials(keyGroupId = null) {
@@ -314,7 +315,7 @@ export function saveAssetGroup(projectId, volcGroupId, name, volcId = null) {
 export function listProjectAssets(projectId, { page = 1, pageSize = 20, status, autoInject } = {}) {
   const db = getDatabase();
   const targetVolcId = resolveFilterVolcId(db, projectId);
-  const filter = buildVolcFilter(targetVolcId);
+  const filter = buildVolcFilter(targetVolcId, 'ag');
   const volcJoin = filter.sql ? ` LEFT JOIN asset_groups ag ON ag.id = pa.asset_group_id` : '';
   const conditions = ['pa.project_id = ?'];
   const params = [projectId];
@@ -322,12 +323,13 @@ export function listProjectAssets(projectId, { page = 1, pageSize = 20, status, 
   else { conditions.push("pa.status != 'deleted'"); }
   if (autoInject !== undefined) { conditions.push('pa.auto_inject = ?'); params.push(autoInject ? 1 : 0); }
   if (filter.sql) {
-    conditions.push(`(ag.${filter.sql} OR pa.asset_group_id IS NULL)`);
+    conditions.push(`(${filter.sql} OR pa.asset_group_id IS NULL)`);
     params.push(...filter.params);
   }
   const offset = (page - 1) * pageSize;
   const total = db.prepare(`SELECT COUNT(*) as n FROM project_assets pa${volcJoin} WHERE ${conditions.join(' AND ')}`).get(...params).n;
-  const assets = db.prepare(`SELECT pa.* FROM project_assets pa${volcJoin} WHERE ${conditions.join(' AND ')} ORDER BY pa.created_at DESC LIMIT ? OFFSET ?`).all(...params, pageSize, offset);
+  const orderBy = 'ag.created_at DESC, pa.created_at DESC';
+  const assets = db.prepare(`SELECT pa.* FROM project_assets pa LEFT JOIN asset_groups ag ON ag.id = pa.asset_group_id WHERE ${conditions.join(' AND ')} ORDER BY ${orderBy} LIMIT ? OFFSET ?`).all(...params, pageSize, offset);
   return { assets, total, page, pageSize };
 }
 
@@ -399,33 +401,39 @@ export function generateOriginalName(originalFileName = 'asset') {
 export async function listProjectAssetsLive(projectId, options = {}) {
   const db = getDatabase();
 
-  // 获取当前项目所有 ARK 资产组（含 volc_id 用于多账户凭证）
-  // 单账户时用激活 Key 组 id 过滤，多账户时用 project.volc_id
+  // 获取当前项目 ALL 资产组（不做 volc_id 过滤，确保映射完整）
+  const allGroupRows = db.prepare('SELECT volc_group_id, name, volc_id, id FROM asset_groups WHERE project_id = ?').all(projectId);
+  // 本地权威组名映射（已通过 resolveUniqueAssetGroupName 去重）
+  const groupNameByVolcId = new Map(allGroupRows.map((r) => [r.volc_group_id, r.name]));
+  // volc_group_id → local asset_groups.id 映射，用于写入 project_assets.asset_group_id
+  const assetGroupIdByVolcGroupId = new Map(
+    allGroupRows.filter((r) => r.volc_group_id).map((r) => [r.volc_group_id, r.id])
+  );
+
+  // 拉取 ARK 资产时按 volc_id 过滤（不影响映射）
   const targetVolcId = resolveFilterVolcId(db, projectId);
   const filter = buildVolcFilter(targetVolcId);
-  let groupQuery = 'SELECT volc_group_id, name, volc_id FROM asset_groups WHERE project_id = ?';
-  const groupParams = [projectId];
+  let fetchGroupIds = allGroupRows.map((r) => r.volc_group_id).filter(Boolean);
   if (filter.sql) {
-    groupQuery += ' AND ' + filter.sql;
-    groupParams.push(...filter.params);
+    const filteredRows = db.prepare(
+      'SELECT volc_group_id FROM asset_groups WHERE project_id = ? AND ' + filter.sql
+    ).all(projectId, ...filter.params);
+    const filteredVolcIds = new Set(filteredRows.map((r) => r.volc_group_id).filter(Boolean));
+    fetchGroupIds = fetchGroupIds.filter((gid) => filteredVolcIds.has(gid));
   }
-  const groupRows = db.prepare(groupQuery).all(...groupParams);
-  const volcGroupIds = groupRows.map((r) => r.volc_group_id).filter(Boolean);
-  // 本地权威组名映射（已通过 resolveUniqueAssetGroupName 去重）
-  const groupNameByVolcId = new Map(groupRows.map((r) => [r.volc_group_id, r.name]));
   // volc_group_id → volc_id（Key组ID）映射，用于多账户凭证
   const volcIdByGroupId = new Map(
-    groupRows.filter((r) => r.volc_id).map((r) => [r.volc_group_id, r.volc_id])
+    allGroupRows.filter((r) => r.volc_id).map((r) => [r.volc_group_id, r.volc_id])
   );
 
   // 无 ARK 资产组：降级为本地 DB
-  if (volcGroupIds.length === 0) {
+  if (fetchGroupIds.length === 0) {
     return listProjectAssets(projectId, options);
   }
 
   // 串行拉取所有资产组（避免并发触发 ARK rate limit 导致部分失败、数量不稳定）
   let arkItems = [];
-  for (const volcGroupId of volcGroupIds) {
+  for (const volcGroupId of fetchGroupIds) {
     const keyGroupId = volcIdByGroupId.get(volcGroupId) || null;
     try {
       const items = [];
@@ -447,11 +455,6 @@ export async function listProjectAssetsLive(projectId, options = {}) {
   arkItems = arkItems
     .filter((it) => it.Status !== 'Deleted')
     .sort((a, b) => (a.CreateTime || '').localeCompare(b.CreateTime || ''));
-
-  // volc_group_id → asset_groups.id 映射，用于写入 project_assets.asset_group_id
-  const assetGroupIdByVolcGroupId = new Map(
-    groupRows.map((r) => [r.volc_group_id, r.id]).filter(([gid]) => gid)
-  );
 
   // 从本地 DB 拉取元数据（name、file_url、auto_inject、review_status 等）供合并
   const localRows = db.prepare(

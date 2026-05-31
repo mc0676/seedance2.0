@@ -1,5 +1,6 @@
 import { getAuthHeaders } from './authService';
 import type { ProjectAsset, ProjectAssetList, AssetGroupInfo } from '../types';
+import { getCachedAssetGroups, setCachedAssetGroups } from '../utils/assetCache';
 
 const BASE = '/api/projects';
 
@@ -130,12 +131,20 @@ export async function updateProjectAsset(
   return result.data;
 }
 
-/** 获取项目素材组列表 */
+/** 获取项目素材组列表（带 sessionStorage 缓存，30s TTL） */
 export async function listProjectAssetGroups(projectId: number): Promise<AssetGroupInfo[]> {
+  const cached = getCachedAssetGroups(projectId);
+  if (cached) return cached;
   const res = await fetch(`${BASE}/${projectId}/asset-groups`, {
     headers: getAuthHeaders(),
   });
   const resp = await res.json();
   if (!resp.success) throw new Error(resp.error || '获取素材组失败');
+  setCachedAssetGroups(projectId, resp.data);
   return resp.data;
+}
+
+/** 已废弃：封面改走OSS永久URL，无需刷新。保留导出避免编译错误 */
+export async function refreshPreviewUrls(_groupIds: number[]): Promise<Record<number, string | null>> {
+  return {};
 }
