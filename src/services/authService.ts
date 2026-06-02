@@ -987,7 +987,9 @@ export interface AdminQuotaItem {
   totalQuota: number;   // 0 = 不限制
   dailyQuota: number;   // 0 = 不限制
   totalUsed: number;
-  todayUsed: number;
+  todayDailyUsed: number;
+  todaySelfPaying: number;
+  todaySelfRefund: number;
 }
 
 export const fetchAdminQuotas = () =>

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { listMyEnhancements } from '../services/enhancementService';
-import { uploadToOss } from '../services/ossService';
+import { uploadToOss, probeVideoDuration } from '../services/ossService';
 import type { VideoEnhancement, EnhancementPricing, EnhancementResolutionPreset } from '../types';
 import { SparkleIcon, SpinnerIcon, DownloadIcon, CloseIcon, GearIcon } from '../components/Icons';
 import Layout from '../components/Layout';
@@ -67,26 +67,33 @@ export default function EnhancementPage() {
   const [probeError, setProbeError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // 自动探测视频时长
+  // 自动探测视频时长（使用 ossService.probeVideoDuration + 后端 ossVideoInfo 兜底）
   useEffect(() => {
     setProbeError(null);
     if (!videoUrl || !/^https?:\/\//i.test(videoUrl)) return;
-    const v = document.createElement('video');
-    v.preload = 'metadata';
-    v.muted = true;
-    v.crossOrigin = 'anonymous';
-    const onMeta = () => {
-      if (Number.isFinite(v.duration) && v.duration > 0) {
-        setVideoDuration(Math.round(v.duration));
-      } else {
-        setProbeError('无法识别视频时长，请手动输入');
-      }
-    };
-    const onErr = () => setProbeError('视频加载失败，可能跨域受限，请手动输入时长');
-    v.addEventListener('loadedmetadata', onMeta);
-    v.addEventListener('error', onErr);
-    v.src = videoUrl;
-    return () => { v.removeEventListener('loadedmetadata', onMeta); v.removeEventListener('error', onErr); v.src = ''; };
+    let alive = true;
+    (async () => {
+      // 先尝试前端 HTML5 Video probe
+      try {
+        const sec = await probeVideoDuration(videoUrl);
+        if (alive) { setVideoDuration(Math.round(sec)); return; }
+      } catch {}
+      // 前端失败时尝试后端 OSS 视频信息 API
+      try {
+        const r = await fetch('/api/oss/probe-video', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: videoUrl }),
+        });
+        const d = await r.json();
+        if (alive && d.success && Number.isFinite(d.duration) && d.duration > 0) {
+          setVideoDuration(Math.round(d.duration));
+          return;
+        }
+      } catch {}
+      if (alive) setProbeError('无法识别视频时长，请手动输入');
+    })();
+    return () => { alive = false; };
   }, [videoUrl]);
 
   async function handleUpload(file: File) {

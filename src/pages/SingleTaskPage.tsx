@@ -9,6 +9,7 @@ import type {
 } from '../types/index';
 import { RATIO_OPTIONS, DURATION_OPTIONS, MODEL_OPTIONS } from '../types/index';
 import { generateVideo } from '../services/videoService';
+import { getAuthHeaders } from '../services/authService';
 import { uploadToOss, FILE_LIMITS, validateMediaCombination } from '../services/ossService';
 import { estimatePricing, getCreditBalance, listEnabledModels, type RuntimeModelOption } from '../services/pricingService';
 import { getDownloadTasks, downloadTaskVideoDirect, makeDownloadFilename } from '../services/downloadService';
@@ -312,6 +313,25 @@ export default function SingleTaskPage() {
   const mentionAnchorNodeRef = useRef<Node | null>(null);
   const mentionAnchorOffsetRef = useRef<number>(0);
   const editorRef = useRef<HTMLDivElement>(null);
+  const staleChipRef = useRef<HTMLElement | null>(null);
+  // document-level pointerdown: 用 elementFromPoint 绕过 contentEditable + pointer-events 限制
+  useEffect(() => {
+    const handler = (e: PointerEvent) => {
+      // elementFromPoint 忽略 pointer-events:none，能正确返回 chip 元素
+      const atPoint = document.elementFromPoint(e.clientX, e.clientY);
+      const chip = atPoint?.closest?.('.mention-chip--stale') as HTMLElement | null;
+      if (!chip || !editorRef.current?.contains(chip)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      staleChipRef.current = chip;
+      // 不移动光标、不移除 chip，仅打开 @ 选择面板
+      setShowMention(true);
+      setMentionQuery('');
+      setMentionFocusIdx(-1);
+    };
+    document.addEventListener('pointerdown', handler, true);
+    return () => document.removeEventListener('pointerdown', handler, true);
+  }, []);
   // 复用时存待写入的编辑器 HTML，useLayoutEffect 在 render 后立即应用，早于所有 useEffect
   const pendingEditorHtmlRef = useRef<string | null>(null);
   const mentionPanelRef = useRef<HTMLDivElement>(null);
@@ -454,6 +474,8 @@ export default function SingleTaskPage() {
   // 只匹配当前已上传素材的合法 tag，避免误把普通文字里的 @ 变成 chip
   function buildHtml(text: string, overrideSelections?: AssetSelection[]) {
     const sels = overrideSelections ?? assetSelections;
+    // 收集失效 chip tag 集合（volcAssetId 为空的特殊 selection）
+    const staleTagSet = new Set(sels.filter(s => !s.volcAssetId).map(s => s.chipTag));
     const escaped = text
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       .replace(/\n/g, '<br>');
@@ -485,7 +507,9 @@ export default function SingleTaskPage() {
     return escaped.replace(new RegExp(tagPattern, 'g'),
       m => {
         const display = tagDisplayMap.get(m) || m;
-        return `​<span contenteditable="false" class="mention-chip" data-tag="${m}">@${display}</span>​`;
+        const cls = staleTagSet.has(m) ? 'mention-chip mention-chip--stale' : 'mention-chip';
+        const attr = staleTagSet.has(m) ? ' data-stale="1"' : '';
+        return `​<span contenteditable="false" class="${cls}" data-tag="${m}"${attr}>@${display}</span>​`;
       });
   }
 
@@ -499,6 +523,7 @@ export default function SingleTaskPage() {
     firstImgs: UploadedFile[] = [],
     lastImgs: UploadedFile[] = [],
     displayMap?: Map<string, string>,
+    staleTags?: Set<string>,
   ) {
     const escaped = text
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -523,7 +548,10 @@ export default function SingleTaskPage() {
     return escaped.replace(new RegExp(tagPattern, 'g'),
       m => {
         const display = tagDisplayMap.get(m) || m;
-        return `​<span contenteditable="false" class="mention-chip" data-tag="${m}">@${display}</span>​`;
+        const isStale = staleTags?.has(m);
+        const cls = isStale ? 'mention-chip mention-chip--stale' : 'mention-chip';
+        const attr = isStale ? ` data-stale="1"` : '';
+        return `​<span contenteditable="false" class="${cls}" data-tag="${m}"${attr}>@${display}</span>​`;
       });
   }
 
@@ -1198,6 +1226,40 @@ export default function SingleTaskPage() {
   };
 
   const insertMention = (tag: string, displayName?: string) => {
+    // 如果有点击失效 chip，先替换它而不是插入到光标位置
+    if (staleChipRef.current) {
+      const chip = staleChipRef.current;
+      staleChipRef.current = null;
+      const edit = editorRef.current;
+      if (edit && chip.parentNode) {
+        const frag = document.createDocumentFragment();
+        const zwsBefore = document.createTextNode('\u200B');
+        const newChip = document.createElement('span');
+        newChip.className = 'mention-chip';
+        newChip.setAttribute('contenteditable', 'false');
+        newChip.setAttribute('data-tag', tag);
+        newChip.textContent = displayName ? `@${displayName}` : tag;
+        const zwsAfter = document.createTextNode('\u200B');
+        frag.appendChild(zwsBefore);
+        frag.appendChild(newChip);
+        frag.appendChild(zwsAfter);
+        chip.parentNode.replaceChild(frag, chip);
+        setPrompt(extractText(edit));
+        setShowMention(false);
+        mentionAnchorNodeRef.current = null;
+        // 光标放到新 chip 后
+        edit.focus();
+        const sel = window.getSelection();
+        if (sel) {
+          const r = document.createRange();
+          r.setStartAfter(newChip);
+          r.collapse(true);
+          sel.removeAllRanges();
+          sel.addRange(r);
+        }
+        return;
+      }
+    }
     if (!editorRef.current || !mentionAnchorNodeRef.current) return;
 
     // Snapshot undo before modifying DOM
@@ -1303,11 +1365,22 @@ export default function SingleTaskPage() {
   // 复用时由 pendingEditorHtmlRef 负责写入编辑器，跳过本 effect 的覆盖
   useEffect(() => {
     if (!showMention) return;
-    const close = (e: MouseEvent) => {
-      if (mentionPanelRef.current && !mentionPanelRef.current.contains(e.target as Node)) setShowMention(false);
+    // 延迟添加 close 监听器，让当前点击的 mousedown 先走完再启用关闭功能
+    const timer = setTimeout(() => {
+      const close = (e: MouseEvent) => {
+        if (mentionPanelRef.current && !mentionPanelRef.current.contains(e.target as Node)) setShowMention(false);
+      };
+      document.addEventListener('mousedown', close);
+      // 把 close 引用存到 cleanupRef 方便清理
+      (window as any).__mentionClose = () => document.removeEventListener('mousedown', close);
+    }, 0);
+    return () => {
+      clearTimeout(timer);
+      if (typeof (window as any).__mentionClose === 'function') {
+        (window as any).__mentionClose();
+        delete (window as any).__mentionClose;
+      }
     };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
   }, [showMention]);
 
   // 更新文件上传进度
@@ -1775,6 +1848,7 @@ export default function SingleTaskPage() {
               <div
                 ref={editorRef}
                 contentEditable={!isGenerating}
+                id="prompt-editor"
                 onInput={handleEditorInput}
                 onKeyDown={handleEditorKeyDown}
                 onPaste={handleEditorPaste}
@@ -2280,11 +2354,16 @@ export default function SingleTaskPage() {
                           const assetRefs = assets.filter((a) => a.uri.startsWith('asset://'));
 
                           let ossFailedCount = 0;
-                          // 检查 OSS URL 是否可访问，失效的不恢复
+                          // 通过后端代理检查 OSS URL 是否真正失效（避免前端 CORS 误判）
                           const checkOss = async (url: string) => {
                             try {
-                              const r = await fetch(url, { method: 'HEAD' });
-                              return r.ok;
+                              const r = await fetch('/api/oss/check-url', {
+                                method: 'POST',
+                                headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+                                body: JSON.stringify({ url }),
+                              });
+                              const d = await r.json();
+                              return d.success && d.data?.ok;
                             } catch { return false; }
                           };
                           const allOss = [...ossImages, ...ossVideos, ...ossAudios];
@@ -2350,9 +2429,9 @@ export default function SingleTaskPage() {
                             return;
                           }
 
-                          // 4. 还原素材引用：按位置匹配 prompt 中的 @素材N（兼容旧的 @资产N）标签
+                          // 4. 还原素材引用：匹配 prompt 中的 @asset-xxx / @素材N / @资产N 标签
                           const storedPrompt = item.prompt || '';
-                          const tagMatches = [...storedPrompt.matchAll(/@(?:素材|资产)\d+/g)].map((m) => m[0]);
+                          const tagMatches = [...storedPrompt.matchAll(/@(?:asset-[a-zA-Z0-9-]+|素材\d+|资产\d+)/g)].map((m) => m[0]);
                           const deletedNames: string[] = [];
                           const newSelections: AssetSelection[] = [];
                           let newPrompt = storedPrompt;
@@ -2362,7 +2441,16 @@ export default function SingleTaskPage() {
                             const asset = currentProjectAssets.find((a) => a.volc_asset_id === volcId);
                             const oldTag = tagMatches[idx];
                             if (!asset) {
-                              if (oldTag) newPrompt = newPrompt.split(oldTag).join('');
+                              // 失效素材：替换 tag 为 @失效素材 并保留其后文本
+                              if (oldTag) newPrompt = newPrompt.replace(oldTag, '@失效素材');
+                              // 加入 special selection 供编辑器渲染为灰色可点击 chip
+                              newSelections.push({
+                                id: `stale-${volcId || idx}`,
+                                volcAssetId: '',
+                                fileType: 'image',
+                                name: '失效素材',
+                                chipTag: '@失效素材',
+                              });
                               deletedNames.push(ref.originalName?.replace('asset://', '') || volcId);
                               return;
                             }
@@ -2392,14 +2480,18 @@ export default function SingleTaskPage() {
 
                           // 6. 把目标 HTML 存入 ref，下一次 render（useLayoutEffect）时写入编辑器
                           // 不用 setTimeout，避免被 useEffect([projectAssets]) 覆盖
-                          const finalHtml = buildHtmlExplicit(newPrompt, newSelections, restoredImages, restoredVideos, restoredAudios, [], [], assetDisplayMap);
+                          const staleTags = new Set(newSelections.filter(s => !s.volcAssetId).map(s => s.chipTag));
+                          const finalHtml = buildHtmlExplicit(newPrompt, newSelections, restoredImages, restoredVideos, restoredAudios, [], [], assetDisplayMap, staleTags);
                           pendingEditorHtmlRef.current = finalHtml;
 
                           // 7. 提示已删除/失效素材（先清历史 toast，重新计时）
                           setToasts([]);
                           const totalFailed = deletedNames.length + ossFailedCount;
                           if (totalFailed > 0) {
-                            showToast(`${totalFailed} 个素材已失效${deletedNames.length > 0 ? `（${deletedNames.length} 个已删除${ossFailedCount > 0 ? `，${ossFailedCount} 个不可访问` : ''}）` : ossFailedCount > 0 ? `（${ossFailedCount} 个不可访问）` : ''}，相关引用已移除`);
+                            let msg = `总共 ${totalFailed} 个素材失效。`;
+                            if (deletedNames.length > 0) msg += `${deletedNames.length} 个引用素材已经失效，相关引用已经断开。`;
+                            if (ossFailedCount > 0) msg += `${ossFailedCount} 个参考素材已经失效。`;
+                            showToast(msg.trim());
                           }
 
                           window.scrollTo({ top: 0, behavior: 'smooth' });

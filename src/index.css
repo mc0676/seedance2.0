@@ -110,6 +110,14 @@ body {
   box-shadow: 0 2px 10px rgba(139, 92, 246, 0.7);
 }
 
+/* 失效素材标签：灰色，可点击 */
+.mention-chip--stale {
+  background: linear-gradient(135deg, #4b5563 0%, #374151 100%);
+  box-shadow: 0 1px 6px rgba(107, 114, 128, 0.45);
+  pointer-events: auto;
+  cursor: pointer;
+}
+
 /* Q版选中效果：弹跳放大 + 暖色光晕 */
 .mention-chip--selected {
   background: linear-gradient(135deg, #fbbf24 0%, #f97316 100%);

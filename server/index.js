@@ -3735,15 +3735,25 @@ app.get('/api/admin/admin-quotas', authenticate, requireSuperAdmin, (req, res) =
 
     const rows = admins.map((a) => {
       const quota = db.prepare('SELECT total_quota, daily_quota FROM admin_quotas WHERE admin_id = ?').get(a.id);
-      const totalUsed = db.prepare(`
-        SELECT COALESCE(SUM(credits_amount), 0) AS total
-        FROM credit_distribution_logs
-        WHERE admin_id = ?
+      // 累计每日额度已兑出
+      const totalDailyUsed = db.prepare(`
+        SELECT COALESCE(SUM(ac.credits_value * ac.used_count), 0) AS total FROM activation_codes ac
+        WHERE ac.created_by = ? AND ac.is_credit_daily = 1
       `).get(a.id).total;
-      const todayUsed = db.prepare(`
-        SELECT COALESCE(SUM(credits_amount), 0) AS total
-        FROM credit_distribution_logs
-        WHERE admin_id = ? AND date(created_at) = date('now')
+      // 累计自费已兑出
+      const totalSelfDistributed = db.prepare(`
+        SELECT COALESCE(SUM(ac.credits_value * ac.used_count), 0) AS total FROM activation_codes ac
+        WHERE ac.created_by = ? AND ac.is_credit_daily = 0
+      `).get(a.id).total;
+      // 今日每日额度兑出量
+      const todayDailyUsed = db.prepare(`
+        SELECT COALESCE(SUM(ac.credits_value * ac.used_count), 0) AS total FROM activation_codes ac
+        WHERE ac.created_by = ? AND ac.is_credit_daily = 1 AND date(ac.updated_at) = date('now')
+      `).get(a.id).total;
+      // 今日自费兑出量
+      const todaySelfDistributed = db.prepare(`
+        SELECT COALESCE(SUM(ac.credits_value * ac.used_count), 0) AS total FROM activation_codes ac
+        WHERE ac.created_by = ? AND ac.is_credit_daily = 0 AND date(ac.updated_at) = date('now')
       `).get(a.id).total;
 
       return {
@@ -3753,8 +3763,10 @@ app.get('/api/admin/admin-quotas', authenticate, requireSuperAdmin, (req, res) =
         adminDepartment: a.department,
         totalQuota: quota ? quota.total_quota : 0,
         dailyQuota: quota ? quota.daily_quota : 0,
-        totalUsed,
-        todayUsed,
+        totalUsed: totalDailyUsed + totalSelfDistributed,
+        todayDailyUsed,
+        todaySelfPaying: todaySelfDistributed,
+        todaySelfRefund: 0,
       };
     });
 
@@ -4019,20 +4031,66 @@ app.get('/api/admin/activation-codes', authenticate, requireAdmin, (req, res) =>
 });
 
 // POST /api/admin/activation-codes - 创建激活码
+// 每日额度逻辑：superAdmin 不受限；普通 admin 先走每日免费额度，超出的由管理员个人积分承担
 app.post('/api/admin/activation-codes', authenticate, requireAdmin, (req, res) => {
   try {
     const { creditsValue, maxUses } = req.body;
     const cv = parseInt(creditsValue) || 0;
     const mu = parseInt(maxUses) || 1;
+    const db = getDatabase();
 
-    // 普通管理员额度检查：正数积分 * 份数 = 最大潜在发放量
     if (req.user.role === 'admin' && cv > 0) {
-      const db = getDatabase();
-      const err = checkAdminQuota(db, req.user.id, cv * mu);
-      if (err) return res.status(400).json({ error: err });
+      const totalNeed = cv * mu;
+      const quota = db.prepare('SELECT total_quota, daily_quota FROM admin_quotas WHERE admin_id = ?').get(req.user.id);
+      const dailyQuota = quota ? quota.daily_quota : 0;
+      const adminCredits = db.prepare('SELECT credits FROM users WHERE id = ?').get(req.user.id)?.credits || 0;
+
+      const usedDaily = db.prepare(`
+        SELECT COALESCE(SUM(ac.credits_value * ac.used_count), 0) AS total FROM activation_codes ac
+        WHERE ac.created_by = ? AND ac.is_credit_daily = 1 AND date(ac.updated_at) = date('now')
+      `).get(req.user.id).total;
+      const pendingDaily = db.prepare(`
+        SELECT COALESCE(SUM(credits_value * (max_uses - used_count)), 0) AS total FROM activation_codes
+        WHERE created_by = ? AND is_credit_daily = 1 AND credits_value > 0 AND used_count < max_uses
+          AND date(created_at) = date('now')
+          AND (time_of_expiration IS NULL OR datetime(time_of_expiration) > datetime('now'))
+      `).get(req.user.id).total;
+      const remainingDaily = dailyQuota > 0 ? dailyQuota - usedDaily - pendingDaily : 0;
+
+      if (dailyQuota > 0 && totalNeed <= remainingDaily) {
+        req.body.is_credit_daily = 1;
+        const endOfDay = new Date();
+        endOfDay.setHours(23, 59, 59, 999);
+        req.body.time_of_expiration = endOfDay.toISOString().replace('T', ' ').split('.')[0];
+      } else {
+        if (adminCredits < totalNeed) {
+          return res.status(400).json({
+            error: `目前你期望发放 ${totalNeed}，今日预计发放 ${dailyQuota}，其中已发 ${usedDaily}（${usedDaily} 积分被领取），剩余可发 ${Math.max(0, remainingDaily)}，你的账户余额不足（${adminCredits}），无法进行发放。`
+          });
+        }
+        if (!req.body.confirm) {
+          return res.json({
+            success: true,
+            data: {
+              needConfirm: true,
+              totalNeed,
+              dailyQuota,
+              usedDaily,
+              adminCredits,
+              warning: `目前你期望发放 ${totalNeed}，今日预计发放 ${dailyQuota}，其中已发 ${usedDaily}（${usedDaily} 积分被领取），剩余可发 ${Math.max(0, remainingDaily)}，剩余积分不足，如果继续将从你的账户余额里扣除 ${totalNeed}，是否继续？`
+            }
+          });
+        }
+        db.prepare(`UPDATE users SET credits = MAX(0, credits - ?) WHERE id = ?`).run(totalNeed, req.user.id);
+        db.prepare(`INSERT INTO credit_distribution_logs (admin_id, recipient_id, credits_amount, method, note) VALUES (?, ?, ?, 'self_paying', ?)`)
+          .run(req.user.id, req.user.id, -totalNeed, '管理员自费发分');
+        req.body.is_credit_daily = 0;
+        req.body.time_of_expiration = null;
+      }
     }
 
-    const code = jimengSessionService.createActivationCode({ ...req.body, createdBy: req.user.id });
+    const { confirm: _confirm, ...cleanBody } = req.body;
+    const code = jimengSessionService.createActivationCode({ ...cleanBody, createdBy: req.user.id });
     res.json({ success: true, data: code });
   } catch (error) {
     const msg = error.message?.includes('UNIQUE constraint failed')
@@ -6393,7 +6451,7 @@ app.get('/api/volc-native/asset-groups', authenticate, async (req, res) => {
       const project = projectService.getProjectById(projectId, req.user.id, isAdmin);
       if (!project) return res.status(404).json({ error: '项目不存在或无权访问' });
       // 单账户模式：激活 Key id=1 时 null 视为 1；其它 id 只精确匹配，null 不再视为该 id
-      let assetGroupQuery = 'SELECT id, volc_group_id, name, volc_id, thumbnail_oss_url FROM asset_groups WHERE project_id = ?';
+      let assetGroupQuery = 'SELECT id, volc_group_id, name, description, volc_id, thumbnail_oss_url FROM asset_groups WHERE project_id = ?';
       const assetGroupParams = [projectId];
       if (!isMultiAccountEnabled()) {
         const active = db.prepare('SELECT id FROM volc_key_groups WHERE is_active = 1 LIMIT 1').get();
@@ -6433,6 +6491,7 @@ app.get('/api/volc-native/asset-groups', authenticate, async (req, res) => {
       const items = boundRows.map(r => ({
         Id: r.volc_group_id,
         Name: r.name,
+        Description: r.description || '',
         _localId: r.id,
         thumbnail_oss_url: r.thumbnail_oss_url || null,
       }));

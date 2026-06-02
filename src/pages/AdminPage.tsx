@@ -97,7 +97,7 @@ async function fetchActivationCodes(): Promise<ActivationCode[]> {
   return result.data || [];
 }
 
-async function createActivationCode(payload: { code: string; maxUses: number; note: string; creditsValue: number }): Promise<void> {
+async function createActivationCode(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
   const res = await fetch('/api/admin/activation-codes', {
     method: 'POST',
     headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
@@ -105,6 +105,7 @@ async function createActivationCode(payload: { code: string; maxUses: number; no
   });
   const result = await res.json();
   if (!result.success) throw new Error(result.error || '创建失败');
+  return result.data || {};
 }
 
 async function updateActivationCode(id: number, payload: { maxUses?: number; note?: string; creditsValue?: number }): Promise<void> {
@@ -690,10 +691,16 @@ export default function AdminPage() {
     } catch {}
   };
 
-  const handleCreateCode = async () => {
+  const handleCreateCode = async (isConfirmed = false) => {
     if (!newCode.code.trim()) { alert('请输入激活码'); return; }
     try {
-      await createActivationCode(newCode);
+      const data = await createActivationCode(isConfirmed ? { ...newCode, confirm: true } : newCode);
+      if (data?.needConfirm && data?.warning) {
+        if (window.confirm(data.warning)) {
+          await handleCreateCode(true);
+          return;
+        }
+      }
       setNewCode({ code: '', maxUses: 1, note: '', creditsValue: 0 });
       await loadCodes();
     } catch (err) { alert(err instanceof Error ? err.message : '创建失败'); }
@@ -707,8 +714,12 @@ export default function AdminPage() {
     } catch (err) { alert(err instanceof Error ? err.message : '更新失败'); }
   };
 
-  const handleDeleteCode = async (id: number) => {
-    if (!confirm('确定删除此激活码？已激活的用户不受影响。')) return;
+  const handleDeleteCode = async (id: number, isSelfPaid = false, unused = 0) => {
+    if (isSelfPaid) {
+      if (!confirm(`该激活码涉及自费，删除将会退还 ${unused} 积分，是否继续？`)) return;
+    } else {
+      if (!confirm('确定删除此激活码？已激活的用户不受影响。')) return;
+    }
     try {
       await deleteActivationCode(id);
       await loadCodes();
@@ -825,7 +836,7 @@ export default function AdminPage() {
       .then((j) => { if (j?.success) setDiscounts(j.data.discounts || []); })
       .catch(() => {});
     getAudioGenConfig().then((d) => { setAudioCfg(d.config); setAudioCfgOptions(d.options); }).catch(() => {});
-    if (isSuperAdmin) {
+    if (isSuperAdmin || currentUser?.role === 'admin') {
       loadMultiAccountStatus();
       loadVolcKeyGroups().then(() => {
         // 默认选中第一个可用的 Key 组
@@ -1505,7 +1516,7 @@ export default function AdminPage() {
                   className="flex-1 bg-[#0f111a] border border-gray-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-purple-500"
                 />
                 <button
-                  onClick={handleCreateCode}
+                  onClick={() => handleCreateCode()}
                   className="flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 rounded-xl text-sm font-medium transition-all"
                 >
                   <PlusIcon className="w-4 h-4" />
@@ -1541,7 +1552,8 @@ export default function AdminPage() {
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase">积分变化</th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase">已用 / 总次</th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase">备注</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase">创建时间</th>
+                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase">用量</th>
+                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase">创建时间</th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase">操作</th>
                   </tr>
                 </thead>
@@ -1561,7 +1573,20 @@ export default function AdminPage() {
                           }}
                         />
                       </td>
-                      <td className="px-6 py-4 text-sm font-mono text-white">{c.code}</td>
+                        <td className="px-6 py-4 text-sm font-mono">
+                         {(() => {
+                           const trulyExpired = c.is_credit_daily === 1 && c.time_of_expiration && new Date(c.time_of_expiration) < new Date();
+                           const usedUp = c.used_count >= c.max_uses;
+                           const showExpiredBadge = trulyExpired && !usedUp;
+                           const gray = trulyExpired || usedUp;
+                           return (
+                             <span className="inline-flex items-center gap-2">
+                               <span className={gray ? 'text-gray-400' : 'text-white'}>{c.code}</span>
+                               {showExpiredBadge && <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-700/50 text-gray-400">过期</span>}
+                             </span>
+                           );
+                         })()}
+                       </td>
                       <td className="px-6 py-4 text-sm">
                         {editingCodeId === c.id ? (
                           <input
@@ -1603,9 +1628,22 @@ export default function AdminPage() {
                           c.note || '-'
                         )}
                       </td>
-                      <td className="px-6 py-4 text-sm text-gray-400">
-                        {formatDate(c.created_at)}
-                      </td>
+                       <td className="px-6 py-4 text-sm text-gray-400">
+                         {(currentUser?.role === 'super_admin' || c.created_by === currentUser?.id) && (
+                           (() => {
+                             const total = c.credits_value * c.max_uses;
+                             const consumed = c.credits_value * c.used_count;
+                             const expired = c.time_of_expiration && new Date(c.time_of_expiration) < new Date();
+                             if (expired || c.used_count >= c.max_uses) return null;
+                             if (c.is_credit_daily === 1) return <span className="text-blue-400">今日额度 {total}（{consumed} 已被领取）</span>;
+                             if (c.is_credit_daily === 0) return <span className="text-amber-400">自费额度 {total}（{consumed} 已被领取）</span>;
+                             return null;
+                           })()
+                         )}
+                       </td>
+                       <td className="px-6 py-4 text-sm text-gray-400">
+                         {formatDate(c.created_at)}
+                       </td>
                       <td className="px-6 py-4 text-sm">
                         <div className="flex gap-2">
                           {editingCodeId === c.id ? (
@@ -1619,7 +1657,11 @@ export default function AdminPage() {
                                 onClick={() => { setEditingCodeId(c.id); setEditingCodeData({ maxUses: c.max_uses, note: c.note, creditsValue: c.credits_value }); }}
                                 className="btn-edit"
                               >编辑</button>
-                              <button onClick={() => handleDeleteCode(c.id)} className="btn-danger">删除</button>
+                              <button onClick={() => {
+                                const isSelfPaid = c.is_credit_daily === 0;
+                                const unused = (c.max_uses - c.used_count) * c.credits_value;
+                                handleDeleteCode(c.id, isSelfPaid, unused);
+                              }} className="btn-danger">删除</button>
                             </>
                           )}
                         </div>

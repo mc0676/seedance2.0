@@ -605,6 +605,8 @@ CREATE TABLE IF NOT EXISTS activation_codes (
   ark_api_key TEXT NOT NULL DEFAULT '',
   account_name TEXT NOT NULL DEFAULT '',
   created_by INTEGER,
+  is_credit_daily INTEGER,                 -- 1=每日积分（从管理员每日额度扣除），null/0=管理员账户积分
+  time_of_expiration DATETIME,           -- 每日积分的截至日期（is_credit_daily=1 时有效）
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -615,7 +617,7 @@ CREATE TABLE IF NOT EXISTS credit_distribution_logs (
   admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   recipient_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   credits_amount INTEGER NOT NULL,
-  method TEXT NOT NULL CHECK (method IN ('activation_code', 'manual_set', 'manual_add', 'checkin')),
+  method TEXT NOT NULL CHECK (method IN ('activation_code', 'manual_set', 'manual_add', 'checkin', 'self_paying', 'code_refund')),
   note TEXT DEFAULT '',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -679,7 +681,8 @@ CREATE TABLE IF NOT EXISTS image_records (
   downloaded_at DATETIME,
   deleted_at DATETIME, -- 软删时间戳；NULL = 未删除
   downloadable INTEGER DEFAULT 1, -- [已废弃] 改用 deleted_at IS NULL 统一判断可见性
-  error_message TEXT
+  error_message TEXT,
+  wuyin_task_id TEXT           -- 吴音上游任务 ID，重启后恢复轮询
 );
 CREATE INDEX IF NOT EXISTS idx_image_records_user ON image_records(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_image_records_project ON image_records(project_id, created_at DESC);

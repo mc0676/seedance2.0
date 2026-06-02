@@ -16,6 +16,8 @@ const METHOD_LABELS: Record<string, string> = {
   manual_set: '后台手动调分',
   manual_add: '后台手动增加',
   checkin: '签到',
+  self_paying: '管理员自费发分',
+  code_refund: '自费发分退还',
 };
 
 const METHOD_COLORS: Record<string, string> = {
@@ -23,6 +25,8 @@ const METHOD_COLORS: Record<string, string> = {
   manual_set: 'bg-amber-500/20 text-amber-400',
   manual_add: 'bg-emerald-500/20 text-emerald-400',
   checkin: 'bg-purple-500/20 text-purple-400',
+  self_paying: 'bg-red-500/20 text-red-400',
+  code_refund: 'bg-teal-500/20 text-teal-400',
 };
 
 const PAGE_SIZE = 10;
@@ -42,6 +46,7 @@ export default function CreditDistributionPanel() {
   const [endDate, setEndDate] = useState(getDefaultEndDate);
   const [method, setMethod] = useState('');
   const [page, setPage] = useState(1);
+  const [includeSelfPaid, setIncludeSelfPaid] = useState(false);
 
   const [rows, setRows] = useState<DistributionLogItem[]>([]);
   const [pagination, setPagination] = useState({ page: 1, pageSize: PAGE_SIZE, total: 0, totalPages: 0 });
@@ -165,6 +170,8 @@ export default function CreditDistributionPanel() {
           <option value="manual_set">后台手动调分</option>
           <option value="activation_code">激活码充值</option>
           <option value="checkin">签到</option>
+          <option value="self_paying">管理员自费发分</option>
+          <option value="code_refund">自费发分退还</option>
         </select>
         <button
           onClick={loadData}
@@ -172,6 +179,15 @@ export default function CreditDistributionPanel() {
         >
           查询
         </button>
+        <label className="ml-3 flex items-center gap-1.5 text-gray-400 text-xs cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={includeSelfPaid}
+            onChange={(e) => setIncludeSelfPaid(e.target.checked)}
+            className="w-3.5 h-3.5"
+          />
+          包含管理员自费信息
+        </label>
       </div>
 
       {/* 汇总卡片 */}
@@ -246,7 +262,7 @@ export default function CreditDistributionPanel() {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((r) => (
+                  {rows.filter(r => includeSelfPaid || (r.method !== 'self_paying' && r.method !== 'code_refund')).map((r) => (
                     <tr key={r.id} className="border-b border-gray-800/50 text-white">
                       <td className="py-2.5 pr-3 text-gray-300 text-xs whitespace-nowrap">
                         {formatDateTime(r.created_at)}
@@ -328,10 +344,9 @@ export default function CreditDistributionPanel() {
                   <thead>
                     <tr className="text-gray-400 text-left border-b border-gray-800">
                       <th className="py-2 pr-3 font-medium">管理员</th>
-                      <th className="py-2 pr-3 font-medium text-right">累计额度</th>
-                      <th className="py-2 pr-3 font-medium text-right">每日额度</th>
-                      <th className="py-2 pr-3 font-medium text-right">累计已发</th>
-                      <th className="py-2 pr-3 font-medium text-right">今日已发</th>
+                      <th className="py-2 pr-3 font-medium text-right">今日预计发放</th>
+                      <th className="py-2 pr-3 font-medium text-right">实际发放</th>
+                      <th className="py-2 pr-3 font-medium text-right">累计发放</th>
                       <th className="py-2 font-medium text-right">操作</th>
                     </tr>
                   </thead>
@@ -351,30 +366,26 @@ export default function CreditDistributionPanel() {
                               <input
                                 type="number"
                                 min="0"
-                                value={editingQuota!.totalQuota}
-                                onChange={(e) => setEditingQuota({ ...editingQuota!, totalQuota: e.target.value })}
-                                placeholder="不限"
-                                className="w-20 bg-[#0f111a] border border-gray-700 rounded-lg px-2 py-1 text-sm text-white text-right focus:outline-none focus:border-amber-500"
-                              />
-                            ) : (
-                              <span className={item.totalQuota > 0 ? 'text-amber-400' : 'text-gray-500'}>
-                                {item.totalQuota > 0 ? item.totalQuota.toLocaleString() : '不限'}
-                              </span>
-                            )}
-                          </td>
-                          <td className="py-2.5 pr-3 text-right">
-                            {isEditing ? (
-                              <input
-                                type="number"
-                                min="0"
                                 value={editingQuota!.dailyQuota}
                                 onChange={(e) => setEditingQuota({ ...editingQuota!, dailyQuota: e.target.value })}
                                 placeholder="不限"
                                 className="w-20 bg-[#0f111a] border border-gray-700 rounded-lg px-2 py-1 text-sm text-white text-right focus:outline-none focus:border-amber-500"
                               />
+                            ) : item.dailyQuota > 0 ? (
+                              <span className="text-blue-400">
+                                {item.todayDailyUsed.toLocaleString()}/{item.dailyQuota.toLocaleString()}
+                              </span>
                             ) : (
-                              <span className={item.dailyQuota > 0 ? 'text-blue-400' : 'text-gray-500'}>
-                                {item.dailyQuota > 0 ? item.dailyQuota.toLocaleString() : '不限'}
+                              <span className={(item.todayDailyUsed + item.todaySelfPaying) > 0 ? 'text-blue-400' : 'text-gray-500'}>0</span>
+                            )}
+                          </td>
+                          <td className="py-2.5 pr-3 text-right">
+                            <span className={(item.todayDailyUsed + item.todaySelfPaying) > 0 ? 'text-emerald-400' : 'text-gray-500'}>
+                              {(item.todayDailyUsed + item.todaySelfPaying).toLocaleString()}
+                            </span>
+                            {item.todaySelfPaying > 0 && (
+                              <span className="text-amber-400 text-xs ml-1">
+                                （其中 {item.todaySelfPaying} 为预计之外）
                               </span>
                             )}
                           </td>
@@ -382,21 +393,6 @@ export default function CreditDistributionPanel() {
                             <span className={item.totalUsed > 0 ? 'text-gray-200' : 'text-gray-500'}>
                               {item.totalUsed.toLocaleString()}
                             </span>
-                            {item.totalQuota > 0 && (
-                              <span className="text-gray-600 text-xs ml-1">
-                                /{item.totalQuota}
-                              </span>
-                            )}
-                          </td>
-                          <td className="py-2.5 pr-3 text-right">
-                            <span className={item.todayUsed > 0 ? 'text-gray-200' : 'text-gray-500'}>
-                              {item.todayUsed.toLocaleString()}
-                            </span>
-                            {item.dailyQuota > 0 && (
-                              <span className="text-gray-600 text-xs ml-1">
-                                /{item.dailyQuota}
-                              </span>
-                            )}
                           </td>
                           <td className="py-2.5 text-right">
                             {isEditing ? (

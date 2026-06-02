@@ -668,6 +668,67 @@ export function initDatabase() {
     }
   }
 
+  // 增量迁移：activation_codes 加 is_credit_daily / time_of_expiration
+  {
+    const acCols = db.prepare("PRAGMA table_info(activation_codes)").all().map((c) => c.name);
+    if (!acCols.includes('is_credit_daily')) {
+      console.log('[database] 迁移：activation_codes 添加 is_credit_daily / time_of_expiration 列...');
+      db.exec(`ALTER TABLE activation_codes ADD COLUMN is_credit_daily INTEGER`);
+      db.exec(`ALTER TABLE activation_codes ADD COLUMN time_of_expiration DATETIME`);
+      console.log('[database] 迁移完成：activation_codes.is_credit_daily / time_of_expiration 已添加');
+    }
+  }
+
+  // 增量迁移：image_records 加 wuyin_task_id
+  {
+    const irCols = db.prepare("PRAGMA table_info(image_records)").all().map((c) => c.name);
+    if (!irCols.includes('wuyin_task_id')) {
+      console.log('[database] 迁移：image_records 添加 wuyin_task_id 列...');
+      db.exec(`ALTER TABLE image_records ADD COLUMN wuyin_task_id TEXT`);
+      console.log('[database] 迁移完成：image_records.wuyin_task_id 已添加');
+    }
+  }
+
+  // 增量迁移：credit_distribution_logs 扩展 method CHECK 约束，加入 self_paying / code_refund
+  {
+    const colInfo = db.prepare("PRAGMA table_info(credit_distribution_logs)").all();
+    if (colInfo.length > 0) {
+      // SQLite 不支持 ALTER CHECK，只能重建表
+      const needMigrate = !db.prepare("SELECT COUNT(*) AS c FROM credit_distribution_logs WHERE method = 'self_paying'").get(); // 如果 self_paying 能查询成功说明约束已更新
+      // 更稳健的方式：直接尝试插入 self_paying 的记录，失败则重建
+      let constraintOk = false;
+      try {
+        db.prepare("INSERT INTO credit_distribution_logs (admin_id, recipient_id, credits_amount, method, note) VALUES (NULL, 1, 0, 'self_paying', '__migrate_test__')").run();
+        db.prepare("DELETE FROM credit_distribution_logs WHERE note = '__migrate_test__'").run();
+        constraintOk = true;
+      } catch (e) {
+        constraintOk = false;
+      }
+      if (!constraintOk) {
+        console.log('[database] 迁移：credit_distribution_logs 扩展 method CHECK 约束...');
+        db.exec('BEGIN');
+        db.exec(`
+          CREATE TABLE credit_distribution_logs_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            recipient_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            credits_amount INTEGER NOT NULL,
+            method TEXT NOT NULL CHECK (method IN ('activation_code','manual_set','manual_add','checkin','self_paying','code_refund')),
+            note TEXT DEFAULT '',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+          )
+        `);
+        db.exec('INSERT INTO credit_distribution_logs_new SELECT * FROM credit_distribution_logs');
+        db.exec('DROP TABLE credit_distribution_logs');
+        db.exec('ALTER TABLE credit_distribution_logs_new RENAME TO credit_distribution_logs');
+        db.exec('CREATE INDEX IF NOT EXISTS idx_cdl_admin ON credit_distribution_logs(admin_id, created_at DESC)');
+        db.exec('CREATE INDEX IF NOT EXISTS idx_cdl_recipient ON credit_distribution_logs(recipient_id, created_at DESC)');
+        db.exec('COMMIT');
+        console.log('[database] 迁移完成：credit_distribution_logs.method 约束已扩展');
+      }
+    }
+  }
+
   console.log(`[database] 数据库初始化成功：${DB_PATH}`);
   return db;
 }
