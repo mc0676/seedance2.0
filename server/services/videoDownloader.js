@@ -707,6 +707,9 @@ export function getDownloadTasks(options = {}) {
       t.project_id,
       t.concurrent_id,
       p.name as project_name,
+      u.name as user_name,
+      u.email as user_email,
+      COALESCE(cl.actual_credits, 0) as credits_used,
       CASE
         WHEN t.status = 'error' OR t.status = 'cancelled' THEN 'failed'
         WHEN t.status IN ('generating', 'processing') OR (t.history_id IS NOT NULL AND (t.video_url IS NULL OR t.video_url = '') AND t.status NOT IN ('error', 'cancelled', 'done')) THEN 'generating'
@@ -717,6 +720,8 @@ export function getDownloadTasks(options = {}) {
       END as effective_download_status
     FROM tasks t
     LEFT JOIN projects p ON t.project_id = p.id
+    LEFT JOIN users u ON t.user_id = u.id
+    LEFT JOIN credit_locks cl ON cl.task_id = t.id AND cl.status = 'settled'
     ${whereClause}
   `;
 

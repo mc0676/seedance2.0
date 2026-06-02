@@ -5,6 +5,7 @@ import { submitAudioGeneration, listAudioGenerations, getAudioGeneration, getAud
 import { getProjectAssets } from '../services/projectService';
 import { listProjectAssetGroups } from '../services/assetService';
 import AssetGrid, { type GridAsset } from '../components/AssetGrid';
+import { invalidateProjectCache } from '../utils/assetCache';
 import { getCreditBalance, type CreditBalance } from '../services/pricingService';
 import { getVolcKeyStatus } from '../services/settingsService';
 import { videoUrlToMp3Blob, downloadBlob, ExpiredVideoUrlError, isSignedUrlExpired } from '../utils/audioExtractor';
@@ -138,9 +139,21 @@ export default function AudioGenPage() {
     if (!projectId) { setProjectAssetGroups([]); setProjectAssets([]); return; }
     let cancelled = false;
     (async () => {
-      const groups = await listProjectAssetGroups(projectId).catch(() => []);
+      const result = await listProjectAssetGroups(projectId).catch(() => ({ groups: [] as import('../types').AssetGroupInfo[], thumbnailsPending: 0 }));
       if (cancelled) return;
-      setProjectAssetGroups(groups);
+      setProjectAssetGroups(result.groups);
+
+      // 有待迁移到 OSS 的缩略图时，后台刷新完成后自动重拉
+      if (result.thumbnailsPending > 0) {
+        const pid = projectId;
+        setTimeout(async () => {
+          try {
+            invalidateProjectCache(pid);
+            const r2 = await listProjectAssetGroups(pid);
+            setProjectAssetGroups(r2.groups);
+          } catch { /* 刷新失败保持旧数据 */ }
+        }, 5000);
+      }
       const data = await getProjectAssets(projectId, { pageSize: 200, skipLive: true } as any).catch(() => null);
       if (cancelled || !data) return;
       const assets = data.assets

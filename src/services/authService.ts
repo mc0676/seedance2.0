@@ -886,13 +886,19 @@ export interface UserActivityData {
   }>;
 }
 
-export const fetchDailyTrend = (days = 30) =>
-  adminFetch<DailyTrendItem[]>(`/admin/credits/daily-trend?days=${days}`);
+export const fetchDailyTrend = (days = 30, departmentId?: number) => {
+  const sp = new URLSearchParams({ days: String(days) });
+  if (departmentId) sp.set('departmentId', String(departmentId));
+  return adminFetch<DailyTrendItem[]>(`/admin/credits/daily-trend?${sp}`);
+};
 
-export const fetchTodayRanking = () =>
-  adminFetch<TodayRankingItem[]>('/admin/credits/today-ranking');
+export const fetchTodayRanking = (departmentId?: number) => {
+  const sp = new URLSearchParams();
+  if (departmentId) sp.set('departmentId', String(departmentId));
+  return adminFetch<TodayRankingItem[]>(`/admin/credits/today-ranking?${sp}`);
+};
 
-export const fetchCreditDetails = (params: { page?: number; pageSize?: number; name?: string; email?: string; date?: string; action?: string; model?: string } = {}) => {
+export const fetchCreditDetails = (params: { page?: number; pageSize?: number; name?: string; email?: string; date?: string; action?: string; model?: string; departmentId?: number } = {}) => {
   const sp = new URLSearchParams();
   if (params.page) sp.set('page', String(params.page));
   if (params.pageSize) sp.set('pageSize', String(params.pageSize));
@@ -901,24 +907,35 @@ export const fetchCreditDetails = (params: { page?: number; pageSize?: number; n
   if (params.date) sp.set('date', params.date);
   if (params.action) sp.set('action', params.action);
   if (params.model) sp.set('model', params.model);
+  if (params.departmentId) sp.set('departmentId', String(params.departmentId));
   return adminFetch<{ rows: CreditDetailItem[]; pagination: { page: number; pageSize: number; total: number; totalPages: number } }>(`/admin/credits/details?${sp.toString()}`);
 };
 
-export const fetchGroupSummary = (days = 7, group?: string) => {
+export const fetchGroupSummary = (days = 7, group?: string, departmentId?: number) => {
   const sp = new URLSearchParams();
   sp.set('days', String(days));
   if (group) sp.set('group', group);
+  if (departmentId) sp.set('departmentId', String(departmentId));
   return adminFetch<GroupSummaryItem[] | TodayRankingItem[]>(`/admin/credits/group-summary?${sp.toString()}`);
 };
 
-export const fetchProjectConsumption = (days = 30) =>
-  adminFetch<ProjectConsumptionItem[]>(`/admin/credits/project-consumption?days=${days}`);
+export const fetchProjectConsumption = (days = 30, departmentId?: number) => {
+  const sp = new URLSearchParams({ days: String(days) });
+  if (departmentId) sp.set('departmentId', String(departmentId));
+  return adminFetch<ProjectConsumptionItem[]>(`/admin/credits/project-consumption?${sp}`);
+};
 
-export const fetchFailureAnalysis = (days = 7) =>
-  adminFetch<FailureItem[]>(`/admin/credits/failure-analysis?days=${days}`);
+export const fetchFailureAnalysis = (days = 7, departmentId?: number) => {
+  const sp = new URLSearchParams({ days: String(days) });
+  if (departmentId) sp.set('departmentId', String(departmentId));
+  return adminFetch<FailureItem[]>(`/admin/credits/failure-analysis?${sp}`);
+};
 
-export const fetchUserActivity = (days = 30) =>
-  adminFetch<UserActivityData>(`/admin/users/activity?days=${days}`);
+export const fetchUserActivity = (days = 30, departmentId?: number) => {
+  const sp = new URLSearchParams({ days: String(days) });
+  if (departmentId) sp.set('departmentId', String(departmentId));
+  return adminFetch<UserActivityData>(`/admin/users/activity?${sp}`);
+};
 
 // ==================== 积分发放统计 ====================
 

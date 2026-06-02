@@ -23,6 +23,7 @@ import { getProjectAssets } from '../services/projectService';
 import { listProjectAssetGroups } from '../services/assetService';
 import type { ProjectAsset, AssetGroupInfo } from '../types/index';
 import { formatShortDateTime, useUserTimezone } from '../utils/datetime';
+import { invalidateProjectCache } from '../utils/assetCache';
 
 function ImageWithFallback({ src }: { src: string }) {
   const [failed, setFailed] = useState(false);
@@ -759,9 +760,21 @@ export default function SingleTaskPage() {
 
     (async () => {
       // 先等 asset_groups 加载（可能含自动同步）
-      const groups = await listProjectAssetGroups(pid).catch(() => []);
+      const result = await listProjectAssetGroups(pid).catch(() => ({ groups: [] as AssetGroupInfo[], thumbnailsPending: 0 }));
       if (cancelled) return;
-      setProjectAssetGroups(groups);
+      setProjectAssetGroups(result.groups);
+
+      // 有待迁移到 OSS 的缩略图时，后台刷新完成后自动重拉
+      if (result.thumbnailsPending > 0) {
+        const pid2 = pid;
+        setTimeout(async () => {
+          try {
+            invalidateProjectCache(pid2);
+            const r2 = await listProjectAssetGroups(pid2);
+            setProjectAssetGroups(r2.groups);
+          } catch { /* 刷新失败保持旧数据 */ }
+        }, 5000);
+      }
       // 再加载 project_assets
       const r = await getProjectAssets(pid, { pageSize: 100, skipLive: true } as Parameters<typeof getProjectAssets>[1]).catch(() => null);
       if (cancelled || !r) return;
@@ -2290,8 +2303,19 @@ export default function SingleTaskPage() {
                   {/* Bottom row */}
                   <div className="flex items-end justify-between gap-2 mt-auto">
                     <span className="text-[10px] text-gray-600 flex-shrink-0">{formatShortDateTime(item.created_at)}</span>
-                    <div className="flex flex-col items-end gap-1.5">
-                      {/* 右下角参数角标 */}
+                    <div className="flex flex-col items-end gap-1">
+                      {/* 用户信息 + 积分（仅视频生成模块） */}
+                      {item.model_type === 'video' && (item as any).user_name && (
+                        <span className="text-[10px] text-gray-400 text-right leading-tight">
+                          {(item as any).user_name}{((item as any).user_email) ? `(${(item as any).user_email})` : ''}
+                        </span>
+                      )}
+                      {item.model_type === 'video' && (item as any).credits_used > 0 && (
+                        <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 leading-none" title="实际消耗积分">
+                          {(item as any).credits_used}积分
+                        </span>
+                      )}
+                      {/* 参数角标 */}
                       <div className="flex flex-wrap justify-end gap-1">
                         {item.model && (
                           <span className="text-[9px] px-1 py-0.5 rounded bg-purple-500/10 text-purple-300 border border-purple-500/20 leading-none">

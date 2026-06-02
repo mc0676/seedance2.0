@@ -127,13 +127,13 @@ async function deleteActivationCode(id: number): Promise<void> {
   if (!result.success) throw new Error(result.error || '删除失败');
 }
 
-async function fetchSystemConfig(): Promise<{ registrationEnabled: boolean; maintenanceMode: boolean; maintenanceMessage: string }> {
+async function fetchSystemConfig(): Promise<{ registrationEnabled: boolean; maintenanceMode: boolean; maintenanceMessage: string; informationOfAccountOfVolc: boolean }> {
   const res = await fetch('/api/admin/system-config', { headers: getAuthHeaders() });
   const result = await res.json();
-  return result.data || { registrationEnabled: true, maintenanceMode: false, maintenanceMessage: '系统维护中，请稍后再试。' };
+  return result.data || { registrationEnabled: true, maintenanceMode: false, maintenanceMessage: '系统维护中，请稍后再试。', informationOfAccountOfVolc: false };
 }
 
-async function saveSystemConfig(payload: { registrationEnabled?: boolean; maintenanceMode?: boolean; maintenanceMessage?: string }): Promise<void> {
+async function saveSystemConfig(payload: { registrationEnabled?: boolean; maintenanceMode?: boolean; maintenanceMessage?: string; informationOfAccountOfVolc?: boolean }): Promise<void> {
   const res = await fetch('/api/admin/system-config', {
     method: 'PUT',
     headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
@@ -676,6 +676,7 @@ export default function AdminPage() {
   const [registrationEnabled, setRegistrationEnabled] = useState(true);
   const [maintenanceMode, setMaintenanceMode] = useState(false);
   const [maintenanceMessage, setMaintenanceMessage] = useState('系统维护中，请稍后再试。');
+  const [informationOfAccountOfVolc, setInformationOfAccountOfVolc] = useState(false);
   const [savingConfig, setSavingConfig] = useState(false);
 
   const loadCodes = async () => {
@@ -688,6 +689,7 @@ export default function AdminPage() {
       setRegistrationEnabled(cfg.registrationEnabled);
       setMaintenanceMode(cfg.maintenanceMode);
       setMaintenanceMessage(cfg.maintenanceMessage);
+      setInformationOfAccountOfVolc(cfg.informationOfAccountOfVolc);
     } catch {}
   };
 
@@ -2360,6 +2362,22 @@ export default function AdminPage() {
               </button>
               <span className={`text-xs ${multiAccountEnabled ? 'text-purple-400' : 'text-gray-500'}`}>
                 {multiAccountEnabled ? '已启用' : '已关闭'}
+              </span>
+            </div>
+            <div className="mt-2 flex items-center gap-2">
+              <span className="text-xs text-gray-500">项目组显示API账户：</span>
+              <button
+                onClick={async () => {
+                  const next = !informationOfAccountOfVolc;
+                  setInformationOfAccountOfVolc(next);
+                  try { await saveSystemConfig({ informationOfAccountOfVolc: next }); } catch { setInformationOfAccountOfVolc(!next); }
+                }}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${informationOfAccountOfVolc ? 'bg-purple-600' : 'bg-gray-700'}`}
+              >
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${informationOfAccountOfVolc ? 'translate-x-6' : 'translate-x-1'}`} />
+              </button>
+              <span className={`text-xs ${informationOfAccountOfVolc ? 'text-purple-400' : 'text-gray-500'}`}>
+                {informationOfAccountOfVolc ? '已启用' : '已关闭'}
               </span>
             </div>
           </div>

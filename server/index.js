@@ -1082,6 +1082,39 @@ function mapWuyinUpstreamError(msg) {
   return msg;
 }
 
+// 重启后恢复 pending 状态的图片任务：通过 wuyin_task_id 轮询结果
+async function recoverImageRecord(db, record) {
+  if (!record.wuyin_task_id) return false;
+  const wuyinRow = db.prepare("SELECT value FROM system_config WHERE key = 'wuyin_api_key'").get();
+  const WUYIN_API_KEY = wuyinRow?.value || 'H8ZPElPf5BKM1amJrauK6txc73';
+  const WUYIN_BASE = 'https://api.wuyinkeji.com';
+  try {
+    const detailResp = await fetch(
+      `${WUYIN_BASE}/api/async/detail?id=${encodeURIComponent(record.wuyin_task_id)}&key=${encodeURIComponent(WUYIN_API_KEY)}`,
+      { headers: { 'Authorization': WUYIN_API_KEY } }
+    );
+    const detailData = await detailResp.json();
+    if (!detailResp.ok || detailData?.code !== 200) return false; // keep pending
+    const status = detailData?.data?.status;
+    if (status === 2) {
+      const resultUrls = Array.isArray(detailData.data.result) ? detailData.data.result : [];
+      const userRow = db.prepare('SELECT unlimited_credits FROM users WHERE id = ?').get(record.user_id);
+      const actualCost = userRow?.unlimited_credits ? 0 : 10;
+      try { creditLockService.settleForImage({ imageRecordId: record.id, actualCredits: actualCost }); } catch {}
+      db.prepare(`UPDATE image_records SET result_urls=?, credits_used=?, status='done' WHERE id=?`)
+        .run(JSON.stringify(resultUrls), actualCost, record.id);
+      return true;
+    } else if (status === 3) {
+      const rawMsg = detailData?.data?.message || '生成失败';
+      const friendly = mapWuyinUpstreamError(rawMsg) || rawMsg;
+      try { creditLockService.releaseForImage({ imageRecordId: record.id, reason: friendly }); } catch {}
+      db.prepare(`UPDATE image_records SET status='error', error_message=? WHERE id=?`).run(friendly, record.id);
+      return true;
+    }
+    return false; // still processing
+  } catch { return false; }
+}
+
 app.post('/api/generate-image', authenticate, async (req, res) => {
   const db = getDatabase();
   const { prompt, model, size, aspectRatio, urls, projectId: reqProjectId, sizeLabel, refUrls: reqRefUrls } = req.body;
@@ -1169,6 +1202,8 @@ app.post('/api/generate-image', authenticate, async (req, res) => {
       return res.status(502).json({ error: friendly });
     }
     wuyinTaskId = submitData.data.id;
+    // 立即持久化 wuyin_task_id，防止重启后任务丢失
+    db.prepare(`UPDATE image_records SET wuyin_task_id=? WHERE id=?`).run(wuyinTaskId, imageRecordId);
   } catch (e) {
     creditLockService.releaseForImage({ imageRecordId, reason: e.message });
     db.prepare(`UPDATE image_records SET status='error', error_message=? WHERE id=?`).run(e.message, imageRecordId);
@@ -1239,7 +1274,7 @@ app.post('/api/generate-image', authenticate, async (req, res) => {
 });
 
 // GET /api/image-records - 图片生成历史（按项目组过滤，无限滚动分页）
-app.get('/api/image-records', authenticate, (req, res) => {
+app.get('/api/image-records', authenticate, async (req, res) => {
   try {
     const db = getDatabase();
     const { page = 1, pageSize = 20, projectId } = req.query;
@@ -1260,6 +1295,27 @@ app.get('/api/image-records', authenticate, (req, res) => {
       params.push(parseInt(projectId));
     }
     const where = conditions.length ? conditions.join(' AND ') : '1=1';
+
+    // 恢复 pending 记录（重启后通过 wuyin_task_id 轮询结果）
+    const pendingRows = db.prepare(
+      `SELECT * FROM image_records WHERE ${where} AND status='pending' AND wuyin_task_id IS NOT NULL`
+    ).all(...params);
+    for (const row of pendingRows) {
+      await recoverImageRecord(db, row);
+    }
+
+    // pending 但没有 wuyin_task_id 的记录无法恢复，直接标记为失败
+    db.prepare(
+      `UPDATE image_records SET status='error', error_message='任务提交失败（未获取到上游任务ID），请重试' WHERE ${where} AND status='pending' AND wuyin_task_id IS NULL`
+    ).run(...params);
+    // 同时释放这些记录的积分锁
+    const orphanPending = db.prepare(
+      `SELECT id FROM image_records WHERE ${where} AND status='error' AND error_message='任务提交失败（未获取到上游任务ID），请重试'`
+    ).all(...params);
+    for (const r of orphanPending) {
+      try { creditLockService.releaseForImage({ imageRecordId: r.id, reason: '未获取到上游任务ID' }); } catch {}
+    }
+
     // 历史保留 done/error/pending：pending 是"生成中"持久化状态，切换页面/刷新后还能看到进度条
     const statusFilter = "status IN ('done','error','pending')";
     const total = db.prepare(`SELECT COUNT(*) as n FROM image_records WHERE ${where} AND ${statusFilter}`).get(...params).n;
@@ -3078,6 +3134,23 @@ app.delete('/api/admin/departments/:id', authenticate, requireAdmin, async (req,
   }
 });
 
+// GET /api/admin/departments/:id/members - 获取小组成员列表（消耗分析 autocomplete 用）
+app.get('/api/admin/departments/:id/members', authenticate, requireAdmin, (req, res) => {
+  try {
+    const db = getDatabase();
+    const id = Number(req.params.id);
+    // 检查部门存在
+    const dept = db.prepare('SELECT id, name FROM departments WHERE id = ?').get(id);
+    if (!dept) return res.status(404).json({ error: '部门不存在' });
+    const rows = db.prepare(
+      'SELECT id, email, COALESCE(name, \'\') AS name FROM users WHERE department_id = ? AND status = \'active\' ORDER BY name, email'
+    ).all(id);
+    res.json({ success: true, data: { department: dept, members: rows } });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // PUT /api/auth/password - 修改密码
 app.put('/api/auth/password', authenticate, async (req, res) => {
   try {
@@ -3306,6 +3379,10 @@ app.get('/api/admin/credits/daily-trend', authenticate, requireAdmin, (req, res)
 app.get('/api/admin/credits/today-ranking', authenticate, requireAdmin, (req, res) => {
   try {
     const db = getDatabase();
+    const { departmentId } = req.query;
+    let where = "date(ul.created_at) = date('now') AND ul.status = 'success'";
+    const params = [];
+    if (departmentId) { where += ' AND u.department_id = ?'; params.push(Number(departmentId)); }
     const rows = db.prepare(`
       SELECT u.id, u.email, u.name,
              COALESCE((SELECT d.name FROM departments d WHERE d.id = u.department_id), '') AS department,
@@ -3313,11 +3390,11 @@ app.get('/api/admin/credits/today-ranking', authenticate, requireAdmin, (req, re
              COUNT(*) AS call_count
       FROM usage_logs ul
       JOIN users u ON u.id = ul.user_id
-      WHERE date(ul.created_at) = date('now') AND ul.status = 'success'
+      WHERE ${where}
       GROUP BY u.id
       ORDER BY total_credits DESC
       LIMIT 50
-    `).all();
+    `).all(...params);
     res.json({ success: true, data: rows });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -3331,7 +3408,7 @@ app.get('/api/admin/credits/details', authenticate, requireAdmin, (req, res) => 
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize) || 20));
     const offset = (page - 1) * pageSize;
-    const { name, email, date, action, model } = req.query;
+    const { name, email, date, action, model, departmentId } = req.query;
 
     let where = 'WHERE 1=1';
     const params = [];
@@ -3340,6 +3417,7 @@ app.get('/api/admin/credits/details', authenticate, requireAdmin, (req, res) => 
     if (date) { where += " AND date(ul.created_at) = ?"; params.push(date); }
     if (action) { where += ' AND ul.action = ?'; params.push(action); }
     if (model) { where += ' AND ul.model LIKE ?'; params.push(`%${model}%`); }
+    if (departmentId) { where += ' AND u.department_id = ?'; params.push(Number(departmentId)); }
 
     const batchFilter = `AND (
       t.concurrent_id IS NULL
@@ -3397,12 +3475,13 @@ app.get('/api/admin/credits/details', authenticate, requireAdmin, (req, res) => 
 app.get('/api/admin/credits/export', authenticate, requireAdmin, (req, res) => {
   try {
     const db = getDatabase();
-    const { dateFrom, dateTo } = req.query;
+    const { dateFrom, dateTo, departmentId } = req.query;
 
     let where = 'WHERE 1=1';
     const params = [];
     if (dateFrom) { where += ' AND date(ul.created_at) >= ?'; params.push(dateFrom); }
     if (dateTo) { where += ' AND date(ul.created_at) <= ?'; params.push(dateTo); }
+    if (departmentId) { where += ' AND u.department_id = ?'; params.push(Number(departmentId)); }
 
     const rows = db.prepare(`
       SELECT ul.id, ul.user_id, ul.task_id, ul.model, ul.action, ul.credits_cost, ul.status,
@@ -3425,7 +3504,7 @@ app.get('/api/admin/credits/export', authenticate, requireAdmin, (req, res) => {
 app.get('/api/admin/credits/group-summary', authenticate, requireAdmin, (req, res) => {
   try {
     const db = getDatabase();
-    const { group, days } = req.query;
+    const { group, days, departmentId } = req.query;
     const ndays = Math.min(90, Math.max(1, parseInt(days) || 7));
 
     if (group) {
@@ -3444,7 +3523,10 @@ app.get('/api/admin/credits/group-summary', authenticate, requireAdmin, (req, re
       `).all(group, `-${ndays}`);
       res.json({ success: true, data: rows, group });
     } else {
-      // 第一级：按小组汇总
+      // 第一级：按小组汇总（order by 暂停）
+      let where = "ul.created_at >= date('now', ? || ' days') AND ul.status = 'success'";
+      const gsParams = [`-${ndays}`];
+      if (departmentId) { where += ' AND u.department_id = ?'; gsParams.push(Number(departmentId)); }
       const rows = db.prepare(`
         SELECT COALESCE(d.name, '未设置') AS department,
                COUNT(DISTINCT u.id) AS user_count,
@@ -3453,10 +3535,10 @@ app.get('/api/admin/credits/group-summary', authenticate, requireAdmin, (req, re
         FROM usage_logs ul
         JOIN users u ON u.id = ul.user_id
         LEFT JOIN departments d ON d.id = u.department_id
-        WHERE ul.created_at >= date('now', ? || ' days') AND ul.status = 'success'
+        WHERE ${where}
         GROUP BY d.name
         ORDER BY total_credits DESC
-      `).all(`-${ndays}`);
+      `).all(...gsParams);
       res.json({ success: true, data: rows });
     }
   } catch (error) {
@@ -3469,6 +3551,10 @@ app.get('/api/admin/credits/project-consumption', authenticate, requireAdmin, (r
   try {
     const db = getDatabase();
     const days = Math.min(90, Math.max(7, parseInt(req.query.days) || 30));
+    const { departmentId } = req.query;
+    let extra = '';
+    const params = [`-${days}`];
+    if (departmentId) { extra = ' AND u.department_id = ?'; params.push(Number(departmentId)); }
     const rows = db.prepare(`
       SELECT COALESCE(p.id, 0) AS id,
              COALESCE(p.name, '无项目') AS name,
@@ -3481,12 +3567,13 @@ app.get('/api/admin/credits/project-consumption', authenticate, requireAdmin, (r
       LEFT JOIN image_records ir ON ir.id = cl.image_record_id
       LEFT JOIN video_enhancements ve ON ve.id = cl.enhancement_id
       LEFT JOIN projects p ON p.id = COALESCE(t.project_id, th.project_id, ir.project_id, ve.project_id)
+      JOIN users u ON u.id = cl.user_id
       WHERE cl.status = 'settled'
-        AND cl.settled_at >= date('now', ? || ' days')
+        AND cl.settled_at >= date('now', ? || ' days')${extra}
       GROUP BY p.id
       ORDER BY total_credits DESC
       LIMIT 30
-    `).all(`-${days}`);
+    `).all(...params);
     res.json({ success: true, data: rows });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -3497,12 +3584,13 @@ app.get('/api/admin/credits/project-consumption', authenticate, requireAdmin, (r
 app.get('/api/admin/credits/export-group-summary', authenticate, requireAdmin, (req, res) => {
   try {
     const db = getDatabase();
-    const { dateFrom, dateTo } = req.query;
+    const { dateFrom, dateTo, departmentId } = req.query;
 
     let where = "ul.status = 'success'";
     const params = [];
     if (dateFrom) { where += ' AND date(ul.created_at) >= ?'; params.push(dateFrom); }
     if (dateTo) { where += ' AND date(ul.created_at) <= ?'; params.push(dateTo); }
+    if (departmentId) { where += ' AND u.department_id = ?'; params.push(Number(departmentId)); }
 
     const rows = db.prepare(`
       SELECT COALESCE(d.name, '未设置') AS department,
@@ -3526,12 +3614,13 @@ app.get('/api/admin/credits/export-group-summary', authenticate, requireAdmin, (
 app.get('/api/admin/credits/export-project-consumption', authenticate, requireAdmin, (req, res) => {
   try {
     const db = getDatabase();
-    const { dateFrom, dateTo } = req.query;
+    const { dateFrom, dateTo, departmentId } = req.query;
 
     let where = "cl.status = 'settled'";
     const params = [];
     if (dateFrom) { where += ' AND date(cl.settled_at) >= ?'; params.push(dateFrom); }
     if (dateTo) { where += ' AND date(cl.settled_at) <= ?'; params.push(dateTo); }
+    if (departmentId) { where += ' AND u.department_id = ?'; params.push(Number(departmentId)); }
 
     const rows = db.prepare(`
       SELECT COALESCE(p.id, 0) AS id,
@@ -3540,6 +3629,7 @@ app.get('/api/admin/credits/export-project-consumption', authenticate, requireAd
              SUM(cl.actual_credits) AS total_credits,
              COUNT(*) AS task_count
       FROM credit_locks cl
+      JOIN users u ON u.id = cl.user_id
       LEFT JOIN tasks t ON t.id = cl.task_id
       LEFT JOIN tasks_happyhorse th ON th.id = cl.task_happyhorse_id
       LEFT JOIN image_records ir ON ir.id = cl.image_record_id
@@ -3555,29 +3645,86 @@ app.get('/api/admin/credits/export-project-consumption', authenticate, requireAd
   }
 });
 
-// GET /api/admin/credits/failure-analysis - 失败分析
+// GET /api/admin/credits/failure-analysis - 失败分析（从源表直接查询）
 app.get('/api/admin/credits/failure-analysis', authenticate, requireAdmin, (req, res) => {
   try {
     const db = getDatabase();
-    const days = Math.min(90, Math.max(1, parseInt(req.query.days) || 7));
-    const rows = db.prepare(`
-      SELECT COALESCE(json_extract(cl.meta, '$.model'), '') AS model,
-             CASE COALESCE(json_extract(cl.meta, '$.type'), 'video')
-               WHEN 'image' THEN 'generate_image'
-               WHEN 'enhancement' THEN 'enhance_video'
-               WHEN 'happyhorse' THEN 'generate_video_happyhorse'
-               ELSE 'generate_video'
-             END AS action,
-             cl.release_reason AS error_message,
-             COUNT(*) AS fail_count,
-             SUM(cl.locked_credits) AS wasted_credits
-      FROM credit_locks cl
-      WHERE cl.status = 'released'
-        AND cl.settled_at >= date('now', ? || ' days')
-      GROUP BY model, action, cl.release_reason
+    const days = parseInt(req.query.days) || 7;
+    const { departmentId } = req.query;
+    const params = [];
+    const daysVal = days > 0 ? `-${Math.min(90, days)}` : null;
+    const dateClause = daysVal ? ` AND created_at >= date('now', '${daysVal}' || ' days')` : '';
+    const audioDateClause = daysVal ? ` AND t2.created_at >= date('now', '${daysVal}' || ' days')` : '';
+    // 部门过滤：在外部 WHERE 中统一处理
+    let deptJoin = '';
+    let deptWhere = '';
+    if (departmentId) {
+      deptJoin = 'JOIN users u ON u.id = base.user_id';
+      deptWhere = 'AND u.department_id = ?';
+      params.push(Number(departmentId));
+    }
+
+    const sql = `
+      SELECT base.action, COALESCE(base.error_message, '未知错误') AS error_message,
+             SUM(base.fail_count) AS fail_count,
+             SUM(base.wasted_credits) AS wasted_credits
+      FROM (
+        -- 1. 图片生成：image_records
+        SELECT '图片生成' AS action, ir.error_message,
+               1 AS fail_count,
+               COALESCE((SELECT SUM(cl.locked_credits) FROM credit_locks cl WHERE cl.image_record_id = ir.id AND cl.status = 'released'), 0) AS wasted_credits,
+               ir.user_id
+        FROM image_records ir
+        WHERE ir.status = 'error'${dateClause}
+
+        UNION ALL
+
+        -- 2. 视频生成：tasks (task_kind='video')
+        SELECT '视频生成' AS action, t.error_message,
+               1 AS fail_count,
+               COALESCE((SELECT SUM(cl.locked_credits) FROM credit_locks cl WHERE cl.task_id = t.id AND cl.status = 'released'), 0) AS wasted_credits,
+               t.user_id
+        FROM tasks t
+        WHERE t.status = 'error' AND t.task_kind = 'video'${dateClause}
+
+        UNION ALL
+
+        -- 3. 音频生成：audio_generations 关联 tasks (task_kind='audio_intermediate')
+        SELECT '音频生成' AS action, t2.error_message,
+               1 AS fail_count,
+               COALESCE((SELECT SUM(cl.locked_credits) FROM credit_locks cl WHERE cl.task_id = t2.id AND cl.status = 'released'), 0) AS wasted_credits,
+               t2.user_id
+        FROM audio_generations ag
+        JOIN tasks t2 ON t2.id = ag.task_id
+        WHERE t2.status = 'error' AND t2.task_kind = 'audio_intermediate'${audioDateClause}
+
+        UNION ALL
+
+        -- 4. 视频生成：tasks_happyhorse
+        SELECT '视频生成' AS action, th.error_message,
+               1 AS fail_count,
+               COALESCE((SELECT SUM(cl.locked_credits) FROM credit_locks cl WHERE cl.task_happyhorse_id = th.id AND cl.status = 'released'), 0) AS wasted_credits,
+               th.user_id
+        FROM tasks_happyhorse th
+        WHERE th.status = 'error'${dateClause}
+
+        UNION ALL
+
+        -- 5. 视频增强：video_enhancements
+        SELECT '视频增强' AS action, ve.error_message,
+               1 AS fail_count,
+               COALESCE((SELECT SUM(cl.locked_credits) FROM credit_locks cl WHERE cl.enhancement_id = ve.id AND cl.status = 'released'), 0) AS wasted_credits,
+               ve.user_id
+        FROM video_enhancements ve
+        WHERE ve.status = 'error'${dateClause}
+      ) AS base
+      ${deptJoin}
+      WHERE 1=1 ${deptWhere}
+      GROUP BY base.action, base.error_message
       ORDER BY fail_count DESC
       LIMIT 30
-    `).all(`-${days}`);
+    `;
+    const rows = db.prepare(sql).all(...params);
     res.json({ success: true, data: rows });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -4128,12 +4275,14 @@ app.get('/api/admin/system-config', authenticate, requireAdmin, (req, res) => {
   const row = db.prepare("SELECT value FROM system_config WHERE key = 'registration_enabled'").get();
   const mRow = db.prepare("SELECT value FROM system_config WHERE key = 'maintenance_mode'").get();
   const msgRow = db.prepare("SELECT value FROM system_config WHERE key = 'maintenance_message'").get();
+  const infoRow = db.prepare("SELECT value FROM system_config WHERE key = 'information_of_account_of_volc'").get();
   res.json({
     success: true,
     data: {
       registrationEnabled: row ? row.value !== '0' : true,
       maintenanceMode: mRow?.value === '1',
       maintenanceMessage: msgRow?.value || '系统维护中，请稍后再试。',
+      informationOfAccountOfVolc: infoRow?.value === '1',
     },
   });
 });
@@ -4141,7 +4290,7 @@ app.get('/api/admin/system-config', authenticate, requireAdmin, (req, res) => {
 // PUT /api/admin/system-config
 app.put('/api/admin/system-config', authenticate, requireAdmin, (req, res) => {
   const db = getDatabase();
-  const { registrationEnabled, maintenanceMode, maintenanceMessage } = req.body;
+  const { registrationEnabled, maintenanceMode, maintenanceMessage, informationOfAccountOfVolc } = req.body;
   if (registrationEnabled !== undefined) {
     const val = registrationEnabled ? '1' : '0';
     db.prepare("INSERT INTO system_config (key, value, description) VALUES ('registration_enabled', ?, '是否允许用户注册') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(val);
@@ -4153,7 +4302,18 @@ app.put('/api/admin/system-config', authenticate, requireAdmin, (req, res) => {
   if (maintenanceMessage !== undefined) {
     db.prepare("INSERT INTO system_config (key, value, description) VALUES ('maintenance_message', ?, '维护公告内容') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(maintenanceMessage);
   }
+  if (informationOfAccountOfVolc !== undefined) {
+    const val = informationOfAccountOfVolc ? '1' : '0';
+    db.prepare("INSERT INTO system_config (key, value, description) VALUES ('information_of_account_of_volc', ?, '项目组与资产管理页显示当前API账户') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(val);
+  }
   res.json({ success: true });
+});
+
+// GET /api/system-config/information_of_account_of_volc - 公开读取开关状态
+app.get('/api/system-config/information_of_account_of_volc', (req, res) => {
+  const db = getDatabase();
+  const row = db.prepare("SELECT value FROM system_config WHERE key = 'information_of_account_of_volc'").get();
+  res.json({ success: true, enabled: row?.value === '1' });
 });
 
 
@@ -6891,7 +7051,9 @@ app.get('/api/projects/:id/asset-groups', authenticate, async (req, res) => {
       SELECT ag.*,
         (SELECT COUNT(*) FROM project_assets pa WHERE pa.asset_group_id = ag.id AND pa.review_status != 'rejected' AND pa.status = 'active' AND pa.file_url IS NOT NULL) AS asset_count,
         (SELECT COUNT(*) FROM project_assets pa WHERE pa.asset_group_id = ag.id AND pa.review_status = 'pending' AND pa.status = 'active') AS pending_count,
-        (SELECT COALESCE(pa.thumbnail_url, pa.file_url) FROM project_assets pa
+        (SELECT COALESCE(
+           CASE WHEN pa.thumbnail_url LIKE '%aliyuncs.com%' THEN pa.thumbnail_url END,
+           pa.thumbnail_url, pa.file_url) FROM project_assets pa
          WHERE pa.asset_group_id = ag.id AND pa.review_status != 'rejected' AND pa.status = 'active'
          AND (pa.file_url IS NOT NULL OR pa.thumbnail_url IS NOT NULL)
          ORDER BY pa.created_at DESC LIMIT 1) AS preview_url
@@ -6912,7 +7074,9 @@ app.get('/api/projects/:id/asset-groups', authenticate, async (req, res) => {
             SELECT ag.*,
               (SELECT COUNT(*) FROM project_assets pa WHERE pa.asset_group_id = ag.id AND pa.review_status != 'rejected' AND pa.status = 'active' AND pa.file_url IS NOT NULL) AS asset_count,
               (SELECT COUNT(*) FROM project_assets pa WHERE pa.asset_group_id = ag.id AND pa.review_status = 'pending' AND pa.status = 'active') AS pending_count,
-              (SELECT COALESCE(pa.thumbnail_url, pa.file_url) FROM project_assets pa
+              (SELECT COALESCE(
+                 CASE WHEN pa.thumbnail_url LIKE '%aliyuncs.com%' THEN pa.thumbnail_url END,
+                 pa.thumbnail_url, pa.file_url) FROM project_assets pa
                WHERE pa.asset_group_id = ag.id AND pa.review_status != 'rejected' AND pa.status = 'active'
                AND (pa.file_url IS NOT NULL OR pa.thumbnail_url IS NOT NULL)
                ORDER BY pa.created_at DESC LIMIT 1) AS preview_url
@@ -6927,11 +7091,86 @@ app.get('/api/projects/:id/asset-groups', authenticate, async (req, res) => {
       }
     }
 
-    res.json({ success: true, data: groups });
+    // 后台将非 OSS 缩略图转存到 OSS（非阻塞）
+    refreshAssetThumbnailsToOss(projectId).catch(e =>
+      console.warn('[project-asset-groups] 后台缩略图刷新失败:', e.message)
+    );
+
+    // 统计还有多少缩略图需迁移，前端据此决定是否稍后刷新
+    const { thumbPending } = db.prepare(`
+      SELECT COUNT(*) AS thumbPending FROM project_assets pa
+      WHERE pa.project_id = ? AND pa.status != 'deleted'
+        AND pa.volc_asset_id IS NOT NULL
+        AND (pa.thumbnail_url IS NULL OR pa.thumbnail_url NOT LIKE '%aliyuncs.com%')
+    `).get(projectId);
+
+    res.json({ success: true, data: groups, thumbnailsPending: thumbPending || 0 });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
+
+// 防止同一项目重复触发缩略图刷新
+const _thumbRefreshInFlight = new Set();
+
+// 将非 OSS 缩略图从火山引擎下载并转存到 OSS，防止 12h 过期
+async function refreshAssetThumbnailsToOss(projectId) {
+  if (_thumbRefreshInFlight.has(projectId)) return;
+  _thumbRefreshInFlight.add(projectId);
+  try {
+    const db = getDatabase();
+    const assets = db.prepare(`
+      SELECT pa.*, ag.volc_id
+      FROM project_assets pa
+      LEFT JOIN asset_groups ag ON pa.asset_group_id = ag.id
+      WHERE pa.project_id = ?
+        AND pa.volc_asset_id IS NOT NULL
+        AND pa.status != 'deleted'
+        AND (pa.thumbnail_url IS NULL OR pa.thumbnail_url NOT LIKE '%aliyuncs.com%')
+    `).all(projectId);
+
+    if (assets.length === 0) return;
+
+    console.log(`[assets] 后台刷新 ${assets.length} 个非 OSS 缩略图...`);
+    for (const asset of assets) {
+      try {
+        const volcId = asset.volc_id || undefined;
+        const volcAsset = await assetService.getAsset(asset.volc_asset_id, undefined, volcId);
+        const freshUrl = volcAsset?.URL || volcAsset?.Url || volcAsset?.url;
+        if (!freshUrl) continue;
+
+        // 下载火山图片
+        const imageResp = await fetch(freshUrl);
+        if (!imageResp.ok) continue;
+        const buffer = Buffer.from(await imageResp.arrayBuffer());
+
+        // 上传到 OSS
+        const client = createOssClient();
+        const ossKey = `seedance/thumbnails/${asset.project_id}/${asset.volc_asset_id}.jpg`;
+        await client.put(ossKey, buffer, { mime: 'image/jpeg' });
+        const ossUrl = `${OSS_URL_PREFIX}${ossKey}`;
+
+        // 更新 DB：file_url 存火山地址（参考），thumbnail_url 存 OSS 永久地址
+        db.prepare(`
+          UPDATE project_assets
+          SET thumbnail_url = ?, file_url = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `).run(ossUrl, freshUrl, asset.id);
+
+        console.log(`[assets] 缩略图→OSS: ${asset.volc_asset_id}`);
+      } catch (e) {
+        // 火山侧已删除的素材直接跳过
+        if (e.message && e.message.includes('not found')) {
+          console.warn(`[assets] 素材已从火山删除，跳过: ${asset.volc_asset_id}`);
+        } else {
+          console.warn(`[assets] 缩略图转存失败 ${asset.volc_asset_id}:`, e.message);
+        }
+      }
+    }
+  } finally {
+    _thumbRefreshInFlight.delete(projectId);
+  }
+}
 
 // GET /api/projects/:id/assets - 获取项目资产列表（火山为真值实时过滤）
 app.get('/api/projects/:id/assets', authenticate, async (req, res) => {
@@ -6949,6 +7188,11 @@ app.get('/api/projects/:id/assets', authenticate, async (req, res) => {
       status,
       autoInject: autoInject !== undefined ? autoInject === 'true' : undefined,
     });
+    // 后台将非 OSS 缩略图转存到 OSS（非阻塞）
+    refreshAssetThumbnailsToOss(projectId).catch(e =>
+      console.warn('[assets] 后台缩略图刷新失败:', e.message)
+    );
+
     res.json({ success: true, data: result });
   } catch (error) {
     console.error('[assets] 获取资产列表失败:', error);

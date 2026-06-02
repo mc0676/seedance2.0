@@ -100,6 +100,15 @@ export default function ProjectWorkspacePage() {
   const { state, currentUser, loadProjects } = useApp();
   const currentProject = state.currentProject;
   const [tab, setTab] = useState<Tab>('volc');
+  const [showVolcAccount, setShowVolcAccount] = useState(false);
+
+  // 从系统配置读取 information_of_account_of_volc 开关
+  useEffect(() => {
+    fetch('/api/system-config/information_of_account_of_volc')
+      .then(r => r.json())
+      .then(d => { if (d.success) setShowVolcAccount(d.enabled); })
+      .catch(() => {});
+  }, []);
 
   // ── 火山账号状态检查 ─────────────────────────────
   const [multiAccountEnabled, setMultiAccountEnabled] = useState(false);
@@ -466,8 +475,13 @@ export default function ProjectWorkspacePage() {
         <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">项目组</p>
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-bold text-white">{currentProject.name}</h1>
-          {(currentProject as any).volc_name && (
-            <span className="text-sm text-gray-400 bg-gray-800/50 px-2 py-0.5 rounded-lg ml-1">API账户: {(currentProject as any).volc_name}</span>
+          {/* API账户显示（由管理员在 Key组管理 中控制开关） */}
+          {showVolcAccount && (
+            <span className="text-sm text-gray-400 bg-gray-800/50 px-2 py-0.5 rounded-lg">
+              {(currentProject as any).volc_id != null
+                ? `API账户: ${(currentProject as any).volc_name || '未知'}`
+                : '默认账户'}
+            </span>
           )}
           <button
             className="text-gray-500 hover:text-white transition-colors"

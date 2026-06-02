@@ -476,7 +476,10 @@ export async function listProjectAssetsLive(projectId, options = {}) {
       name: local?.name || it.Name || it.Id,
       file_type: fileTypeMap[it.AssetType] || local?.file_type || 'image',
       file_url: it.URL || local?.file_url || null,
-      thumbnail_url: it.URL || local?.thumbnail_url || null,
+      // 缩略图优先用本地 OSS 永久 URL（火山 URL 12h 过期）；无 OSS URL 时回退火山 URL
+      thumbnail_url: (local?.thumbnail_url && local.thumbnail_url.includes('aliyuncs.com'))
+        ? local.thumbnail_url
+        : (it.URL || local?.thumbnail_url || null),
       status: 'active',
       review_status: it.Status === 'Active' ? 'approved' : (local?.review_status || 'pending'),
       auto_inject: local?.auto_inject ?? 0,
@@ -496,10 +499,15 @@ export async function listProjectAssetsLive(projectId, options = {}) {
             'SELECT id FROM project_assets WHERE project_id = ? AND volc_asset_id = ?'
           ).get(a.project_id, a.volc_asset_id);
           if (existing) {
+            // 保留已有的 OSS 缩略图 URL（不会被火山临时 URL 覆盖）
+            const existingAsset = db.prepare('SELECT thumbnail_url FROM project_assets WHERE id = ?').get(existing.id);
+            const keepThumb = existingAsset?.thumbnail_url && existingAsset.thumbnail_url.includes('aliyuncs.com')
+              ? existingAsset.thumbnail_url
+              : a.thumbnail_url;
             db.prepare(`
               UPDATE project_assets SET name=?, file_url=?, thumbnail_url=?, asset_group_id=?, status='active', review_status=?, updated_at=CURRENT_TIMESTAMP
               WHERE id=?
-            `).run(a.name, a.file_url, a.thumbnail_url, a.asset_group_id, a.review_status, existing.id);
+            `).run(a.name, a.file_url, keepThumb, a.asset_group_id, a.review_status, existing.id);
           } else {
             db.prepare(`
               INSERT INTO project_assets (project_id, volc_asset_id, asset_group_id, name, file_type, file_url, thumbnail_url, status, review_status, auto_inject)
