@@ -80,6 +80,12 @@ export default function Sidebar({ currentUser, onLogout, onUserUpdated }: Sideba
       icon: SparkleIcon,
     },
     {
+      id: 'CONSUMPTION_ANALYSIS',
+      label: '消耗分析',
+      path: '/consumption-analysis',
+      icon: SparkleIcon,
+    },
+    {
       id: 'ASSETS',
       label: '项目组与资产',
       path: '/assets',

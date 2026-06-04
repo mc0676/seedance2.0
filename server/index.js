@@ -2491,7 +2491,7 @@ app.get('/api/settings', authenticate, (req, res) => {
 });
 
 // PUT /api/settings - 更新全局设置
-app.put('/api/settings', authenticate, requireAdmin, (req, res) => {
+app.put('/api/settings', authenticate, (req, res) => {
   try {
     const settings = req.body;
     const updated = settingsService.updateSettings(settings);
@@ -3135,7 +3135,7 @@ app.delete('/api/admin/departments/:id', authenticate, requireAdmin, async (req,
 });
 
 // GET /api/admin/departments/:id/members - 获取小组成员列表（消耗分析 autocomplete 用）
-app.get('/api/admin/departments/:id/members', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/departments/:id/members', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const id = Number(req.params.id);
@@ -3275,7 +3275,7 @@ function checkAdminQuota(db, adminId, amount) {
     const todayUsed = db.prepare(`
       SELECT COALESCE(SUM(credits_amount), 0) AS total
       FROM credit_distribution_logs
-      WHERE admin_id = ? AND date(created_at) = date('now')
+      WHERE admin_id = ? AND date(created_at) = date('now', 'localtime')
     `).get(adminId).total;
 
     // 今日创建的激活码剩余可兑额度
@@ -3283,7 +3283,7 @@ function checkAdminQuota(db, adminId, amount) {
       SELECT COALESCE(SUM(credits_value * (max_uses - used_count)), 0) AS total
       FROM activation_codes
       WHERE created_by = ? AND credits_value > 0 AND used_count < max_uses
-        AND date(created_at) = date('now')
+        AND date(created_at) = date('now', 'localtime')
     `).get(adminId).total;
 
     const todayCommitted = todayUsed + todayCodes + amount;
@@ -3356,7 +3356,7 @@ app.get('/api/admin/stats', authenticate, requireAdmin, async (req, res) => {
 // ── 管理员：积分消耗分析面板 ────────────────────────────────────────
 
 // GET /api/admin/credits/daily-trend - 每日积分消耗趋势（读预聚合表，O(30行)）
-app.get('/api/admin/credits/daily-trend', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/credits/daily-trend', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const days = Math.min(90, Math.max(7, parseInt(req.query.days) || 30));
@@ -3376,11 +3376,11 @@ app.get('/api/admin/credits/daily-trend', authenticate, requireAdmin, (req, res)
 });
 
 // GET /api/admin/credits/today-ranking - 当日消耗排行
-app.get('/api/admin/credits/today-ranking', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/credits/today-ranking', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const { departmentId } = req.query;
-    let where = "date(ul.created_at) = date('now') AND ul.status = 'success'";
+    let where = "date(ul.created_at) = date('now', 'localtime') AND ul.status = 'success'";
     const params = [];
     if (departmentId) { where += ' AND u.department_id = ?'; params.push(Number(departmentId)); }
     const rows = db.prepare(`
@@ -3402,7 +3402,7 @@ app.get('/api/admin/credits/today-ranking', authenticate, requireAdmin, (req, re
 });
 
 // GET /api/admin/credits/details - 消耗明细查询
-app.get('/api/admin/credits/details', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/credits/details', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const page = Math.max(1, parseInt(req.query.page) || 1);
@@ -3472,7 +3472,7 @@ app.get('/api/admin/credits/details', authenticate, requireAdmin, (req, res) => 
 });
 
 // GET /api/admin/credits/export - 导出消耗明细（全量，按日期范围筛选）
-app.get('/api/admin/credits/export', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/credits/export', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const { dateFrom, dateTo, departmentId } = req.query;
@@ -3501,7 +3501,7 @@ app.get('/api/admin/credits/export', authenticate, requireAdmin, (req, res) => {
 });
 
 // GET /api/admin/credits/group-summary - 按小组汇总消耗（支持下钻用户明细）
-app.get('/api/admin/credits/group-summary', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/credits/group-summary', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const { group, days, departmentId } = req.query;
@@ -3547,7 +3547,7 @@ app.get('/api/admin/credits/group-summary', authenticate, requireAdmin, (req, re
 });
 
 // GET /api/admin/credits/project-consumption - 项目组资源消耗排行
-app.get('/api/admin/credits/project-consumption', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/credits/project-consumption', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const days = Math.min(90, Math.max(7, parseInt(req.query.days) || 30));
@@ -3581,7 +3581,7 @@ app.get('/api/admin/credits/project-consumption', authenticate, requireAdmin, (r
 });
 
 // GET /api/admin/credits/export-group-summary - 导出用小组汇总（按日期范围）
-app.get('/api/admin/credits/export-group-summary', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/credits/export-group-summary', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const { dateFrom, dateTo, departmentId } = req.query;
@@ -3611,7 +3611,7 @@ app.get('/api/admin/credits/export-group-summary', authenticate, requireAdmin, (
 });
 
 // GET /api/admin/credits/export-project-consumption - 导出用项目组消耗（按日期范围）
-app.get('/api/admin/credits/export-project-consumption', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/credits/export-project-consumption', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const { dateFrom, dateTo, departmentId } = req.query;
@@ -3646,7 +3646,7 @@ app.get('/api/admin/credits/export-project-consumption', authenticate, requireAd
 });
 
 // GET /api/admin/credits/failure-analysis - 失败分析（从源表直接查询）
-app.get('/api/admin/credits/failure-analysis', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/credits/failure-analysis', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const days = parseInt(req.query.days) || 7;
@@ -3734,7 +3734,7 @@ app.get('/api/admin/credits/failure-analysis', authenticate, requireAdmin, (req,
 // ── 管理员：积分发放统计 ────────────────────────────────────────
 
 // GET /api/admin/credit-distributions - 积分发放记录列表
-app.get('/api/admin/credit-distributions', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/credit-distributions', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const page = Math.max(1, parseInt(req.query.page) || 1);
@@ -3805,7 +3805,7 @@ app.get('/api/admin/credit-distributions', authenticate, requireAdmin, (req, res
 });
 
 // GET /api/admin/credit-distributions/summary - 按管理员汇总
-app.get('/api/admin/credit-distributions/summary', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/credit-distributions/summary', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const startDate = req.query.startDate || '';
@@ -3895,12 +3895,12 @@ app.get('/api/admin/admin-quotas', authenticate, requireSuperAdmin, (req, res) =
       // 今日每日额度兑出量
       const todayDailyUsed = db.prepare(`
         SELECT COALESCE(SUM(ac.credits_value * ac.used_count), 0) AS total FROM activation_codes ac
-        WHERE ac.created_by = ? AND ac.is_credit_daily = 1 AND date(ac.updated_at) = date('now')
+        WHERE ac.created_by = ? AND ac.is_credit_daily = 1 AND date(ac.updated_at) = date('now', 'localtime')
       `).get(a.id).total;
       // 今日自费兑出量
       const todaySelfDistributed = db.prepare(`
         SELECT COALESCE(SUM(ac.credits_value * ac.used_count), 0) AS total FROM activation_codes ac
-        WHERE ac.created_by = ? AND ac.is_credit_daily = 0 AND date(ac.updated_at) = date('now')
+        WHERE ac.created_by = ? AND ac.is_credit_daily = 0 AND date(ac.updated_at) = date('now', 'localtime')
       `).get(a.id).total;
 
       return {
@@ -3956,7 +3956,7 @@ app.put('/api/admin/admin-quotas/:adminId', authenticate, requireSuperAdmin, (re
 });
 
 // GET /api/admin/users/activity - 用户活跃度（读预聚合表 + 优化休眠查询）
-app.get('/api/admin/users/activity', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/users/activity', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const days = Math.min(90, Math.max(7, parseInt(req.query.days) || 30));
@@ -3996,7 +3996,7 @@ app.get('/api/admin/users/activity', authenticate, requireAdmin, (req, res) => {
 });
 
 // GET /api/admin/projects - 管理员查看全量项目列表（支持筛选）
-app.get('/api/admin/projects', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/projects', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const page = Math.max(1, parseInt(req.query.page) || 1);
@@ -4034,7 +4034,7 @@ app.get('/api/admin/projects', authenticate, requireAdmin, (req, res) => {
 });
 
 // DELETE /api/admin/projects/:id - 管理员删除项目（资产库有内容则保留资产，转移给管理员）
-app.delete('/api/admin/projects/:id', authenticate, requireAdmin, (req, res) => {
+app.delete('/api/admin/projects/:id', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
@@ -4169,7 +4169,7 @@ app.put('/api/admin/users/:id/password', authenticate, requireAdmin, async (req,
 });
 
 // GET /api/admin/activation-codes - 获取激活码列表
-app.get('/api/admin/activation-codes', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/activation-codes', authenticate, (req, res) => {
   try {
     const codes = jimengSessionService.listActivationCodes();
     res.json({ success: true, data: codes });
@@ -4180,7 +4180,7 @@ app.get('/api/admin/activation-codes', authenticate, requireAdmin, (req, res) =>
 
 // POST /api/admin/activation-codes - 创建激活码
 // 每日额度逻辑：superAdmin 不受限；普通 admin 先走每日免费额度，超出的由管理员个人积分承担
-app.post('/api/admin/activation-codes', authenticate, requireAdmin, (req, res) => {
+app.post('/api/admin/activation-codes', authenticate, (req, res) => {
   try {
     const { creditsValue, maxUses } = req.body;
     const cv = parseInt(creditsValue) || 0;
@@ -4195,13 +4195,13 @@ app.post('/api/admin/activation-codes', authenticate, requireAdmin, (req, res) =
 
       const usedDaily = db.prepare(`
         SELECT COALESCE(SUM(ac.credits_value * ac.used_count), 0) AS total FROM activation_codes ac
-        WHERE ac.created_by = ? AND ac.is_credit_daily = 1 AND date(ac.updated_at) = date('now')
+        WHERE ac.created_by = ? AND ac.is_credit_daily = 1 AND date(ac.updated_at) = date('now', 'localtime')
       `).get(req.user.id).total;
       const pendingDaily = db.prepare(`
         SELECT COALESCE(SUM(credits_value * (max_uses - used_count)), 0) AS total FROM activation_codes
         WHERE created_by = ? AND is_credit_daily = 1 AND credits_value > 0 AND used_count < max_uses
-          AND date(created_at) = date('now')
-          AND (time_of_expiration IS NULL OR datetime(time_of_expiration) > datetime('now'))
+          AND date(created_at) = date('now', 'localtime')
+          AND (time_of_expiration IS NULL OR datetime(time_of_expiration) > datetime('now', 'localtime'))
       `).get(req.user.id).total;
       const remainingDaily = dailyQuota > 0 ? dailyQuota - usedDaily - pendingDaily : 0;
 
@@ -4209,7 +4209,8 @@ app.post('/api/admin/activation-codes', authenticate, requireAdmin, (req, res) =
         req.body.is_credit_daily = 1;
         const endOfDay = new Date();
         endOfDay.setHours(23, 59, 59, 999);
-        req.body.time_of_expiration = endOfDay.toISOString().replace('T', ' ').split('.')[0];
+        const pad2 = (n) => String(n).padStart(2, '0');
+        req.body.time_of_expiration = `${endOfDay.getFullYear()}-${pad2(endOfDay.getMonth() + 1)}-${pad2(endOfDay.getDate())} ${pad2(endOfDay.getHours())}:${pad2(endOfDay.getMinutes())}:${pad2(endOfDay.getSeconds())}`;
       } else {
         if (adminCredits < totalNeed) {
           return res.status(400).json({
@@ -4249,7 +4250,7 @@ app.post('/api/admin/activation-codes', authenticate, requireAdmin, (req, res) =
 });
 
 // PUT /api/admin/activation-codes/:id - 修改激活码
-app.put('/api/admin/activation-codes/:id', authenticate, requireAdmin, (req, res) => {
+app.put('/api/admin/activation-codes/:id', authenticate, (req, res) => {
   try {
     const code = jimengSessionService.updateActivationCode(Number(req.params.id), req.body);
     res.json({ success: true, data: code });
@@ -4262,7 +4263,7 @@ app.put('/api/admin/activation-codes/:id', authenticate, requireAdmin, (req, res
 });
 
 // DELETE /api/admin/activation-codes/:id - 删除激活码
-app.delete('/api/admin/activation-codes/:id', authenticate, requireAdmin, (req, res) => {
+app.delete('/api/admin/activation-codes/:id', authenticate, (req, res) => {
   try {
     jimengSessionService.deleteActivationCode(Number(req.params.id));
     res.json({ success: true });
@@ -4270,8 +4271,171 @@ app.delete('/api/admin/activation-codes/:id', authenticate, requireAdmin, (req, 
     res.status(400).json({ error: error.message });
   }
 });
+
+// GET /api/admin/consumption-analysis - 积分消耗分析（credit_locks 为主，关联各业务表）
+app.get('/api/admin/consumption-analysis', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const { page = 1, pageSize = 20, user, department, project, action, status } = req.query;
+    const limit = Math.min(parseInt(pageSize) || 20, 100);
+    const offset = (parseInt(page) - 1) * limit;
+    const isSuperAdmin = req.user.role === 'super_admin';
+    const isAdmin = req.user.role === 'admin';
+
+    const isUser = !isSuperAdmin && !isAdmin;
+
+    const conditions = [];
+    const params = [];
+
+    // ── 错锁/死锁自动检测与修复 ──
+    const fixLog = [];
+    const lockedRows = db.prepare(`
+      SELECT cl.* FROM credit_locks cl
+      LEFT JOIN users u ON cl.user_id = u.id
+      WHERE cl.status = 'locked'
+      ${isUser ? 'AND cl.user_id = ?' : ''}
+      ${isAdmin ? 'AND u.department_id = ?' : ''}
+    `).all(...(isUser ? [req.user.id] : isAdmin ? [req.user.department_id || -1] : []));
+
+    for (const lock of lockedRows) {
+      let found = false;
+      let taskDone = false;
+      if (lock.task_id) {
+        const t = db.prepare('SELECT status FROM tasks WHERE id = ?').get(lock.task_id);
+        if (t) { found = true; if (t.status === 'done' || t.status === 'error') taskDone = true; }
+      }
+      if (!found && lock.image_record_id) {
+        const ir = db.prepare('SELECT status FROM image_records WHERE id = ?').get(lock.image_record_id);
+        if (ir) { found = true; if (ir.status === 'done' || ir.status === 'error') taskDone = true; }
+      }
+      if (!found && lock.enhancement_id) {
+        const ve = db.prepare('SELECT status FROM video_enhancements WHERE id = ?').get(lock.enhancement_id);
+        if (ve) { found = true; if (ve.status === 'done' || ve.status === 'error') taskDone = true; }
+      }
+      if (!found && lock.task_happyhorse_id) {
+        const th = db.prepare('SELECT status FROM tasks_happyhorse WHERE id = ?').get(lock.task_happyhorse_id);
+        if (th) { found = true; if (th.status === 'done' || th.status === 'error') taskDone = true; }
+      }
+
+      const fixType = (found && taskDone) ? 'wrong' : (!found ? 'dead' : null);
+      if (fixType) {
+        try {
+          if (lock.task_id) creditLockService.release({ taskId: lock.task_id, reason: fixType === 'wrong' ? '错锁已解锁' : '死锁已解锁' });
+          else if (lock.image_record_id) creditLockService.releaseForImage({ imageRecordId: lock.image_record_id, reason: fixType === 'wrong' ? '错锁已解锁' : '死锁已解锁' });
+          else if (lock.enhancement_id) creditLockService.releaseForEnhancement({ enhancementId: lock.enhancement_id, reason: fixType === 'wrong' ? '错锁已解锁' : '死锁已解锁' });
+          else if (lock.task_happyhorse_id) creditLockService.releaseForHappyhorse({ happyhorseTaskId: lock.task_happyhorse_id, reason: fixType === 'wrong' ? '错锁已解锁' : '死锁已解锁' });
+          // 归还积分到用户账户
+          const u2 = db.prepare('SELECT unlimited_credits FROM users WHERE id = ?').get(lock.user_id);
+          if (u2 && !u2.unlimited_credits) {
+            db.prepare('UPDATE users SET credits = credits + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(lock.locked_credits, lock.user_id);
+          }
+          fixLog.push({ id: lock.id, type: fixType, returnedCredits: lock.locked_credits });
+        } catch (e) {
+          console.warn(`[consumption] 自动释放锁 ${lock.id} 失败:`, e.message);
+        }
+      }
+    }
+
+    // 角色权限过滤
+    if (isUser) {
+      conditions.push('cl.user_id = ?');
+      params.push(req.user.id);
+    } else if (isAdmin) {
+      conditions.push('u.department_id = ?');
+      params.push(req.user.department_id || -1);
+    }
+
+    if (user) {
+      conditions.push('(u.name LIKE ? OR u.email LIKE ?)');
+      params.push(`%${user}%`, `%${user}%`);
+    }
+    if (department) {
+      conditions.push('d.name LIKE ?');
+      params.push(`%${department}%`);
+    }
+    if (project) {
+      conditions.push('p.name LIKE ?');
+      params.push(`%${project}%`);
+    }
+    if (action) {
+      switch (action) {
+        case 'image': conditions.push('cl.image_record_id IS NOT NULL'); break;
+        case 'audio': conditions.push("cl.task_id IS NOT NULL AND t_video.task_kind = 'audio_intermediate'"); break;
+        case 'video': conditions.push("((cl.task_id IS NOT NULL AND (t_video.task_kind IS NULL OR t_video.task_kind = 'video')) OR cl.task_happyhorse_id IS NOT NULL)"); break;
+        case 'enhancement': conditions.push('cl.enhancement_id IS NOT NULL'); break;
+      }
+    }
+    if (status) {
+      conditions.push('cl.status = ?');
+      params.push(status);
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const countSql = `SELECT COUNT(*) AS c FROM credit_locks cl
+      LEFT JOIN users u ON cl.user_id = u.id
+      LEFT JOIN departments d ON u.department_id = d.id
+      LEFT JOIN image_records ir ON cl.image_record_id = ir.id
+      LEFT JOIN tasks t_video ON cl.task_id = t_video.id
+      LEFT JOIN tasks_happyhorse th ON cl.task_happyhorse_id = th.id
+      LEFT JOIN video_enhancements ve ON cl.enhancement_id = ve.id
+      LEFT JOIN projects p ON p.id = COALESCE(ir.project_id, t_video.project_id, th.project_id, ve.project_id)
+      ${where}`;
+    const { c: total } = db.prepare(countSql).get(...params);
+
+    const dataSql = `SELECT
+        cl.id, cl.user_id, cl.status AS lock_status, cl.locked_credits, cl.actual_credits,
+        cl.meta, cl.created_at AS cl_created_at,
+        u.name AS user_name, u.email AS user_email, d.name AS department_name,
+        COALESCE(ir.created_at, t_video.created_at, th.created_at, ve.created_at, cl.created_at) AS action_time,
+        p.id AS project_id, p.name AS project_name,
+        CASE
+          WHEN cl.image_record_id IS NOT NULL THEN 'image'
+          WHEN cl.enhancement_id IS NOT NULL THEN 'enhancement'
+          WHEN cl.task_happyhorse_id IS NOT NULL THEN 'video'
+          WHEN cl.task_id IS NOT NULL AND t_video.task_kind = 'audio_intermediate' THEN 'audio'
+          WHEN cl.task_id IS NOT NULL THEN 'video'
+          ELSE 'unknown'
+        END AS action_type,
+        CASE
+          WHEN cl.enhancement_id IS NOT NULL THEN COALESCE(ve.tool_version, json_extract(cl.meta, '$.tool_version'))
+          WHEN cl.task_happyhorse_id IS NOT NULL THEN th.model
+          WHEN cl.image_record_id IS NOT NULL THEN ir.model
+          WHEN cl.task_id IS NOT NULL THEN t_video.model
+          ELSE json_extract(cl.meta, '$.model')
+        END AS model_name
+      FROM credit_locks cl
+      LEFT JOIN users u ON cl.user_id = u.id
+      LEFT JOIN departments d ON u.department_id = d.id
+      LEFT JOIN image_records ir ON cl.image_record_id = ir.id
+      LEFT JOIN tasks t_video ON cl.task_id = t_video.id
+      LEFT JOIN tasks_happyhorse th ON cl.task_happyhorse_id = th.id
+      LEFT JOIN video_enhancements ve ON cl.enhancement_id = ve.id
+      LEFT JOIN projects p ON p.id = COALESCE(ir.project_id, t_video.project_id, th.project_id, ve.project_id)
+      ${where}
+      ORDER BY action_time DESC LIMIT ? OFFSET ?`;
+
+    const rows = db.prepare(dataSql).all(...params, limit, offset);
+
+    const ACTION_LABELS = { image: '图片生成', audio: '音频生成', video: '视频生成', enhancement: '视频增强', unknown: '未知' };
+
+    const data = rows.map(r => ({
+      id: r.id, time: r.action_time,
+      userName: r.user_name || '', userEmail: r.user_email || '',
+      department: r.department_name || '', project: r.project_name || '',
+      action: r.action_type, actionLabel: ACTION_LABELS[r.action_type] || r.action_type,
+      model: r.model_name || '', status: r.lock_status,
+      lockedCredits: r.locked_credits, actualCredits: r.actual_credits,
+    }));
+
+    res.json({ success: true, data: { rows: data, total, fixLog, page: parseInt(page), pageSize: limit } });
+  } catch (e) {
+    console.error('[consumption-analysis]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
 // GET /api/admin/system-config
-app.get('/api/admin/system-config', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/system-config', authenticate, (req, res) => {
   const db = getDatabase();
   const row = db.prepare("SELECT value FROM system_config WHERE key = 'registration_enabled'").get();
   const mRow = db.prepare("SELECT value FROM system_config WHERE key = 'maintenance_mode'").get();
@@ -4289,7 +4453,7 @@ app.get('/api/admin/system-config', authenticate, requireAdmin, (req, res) => {
 });
 
 // PUT /api/admin/system-config
-app.put('/api/admin/system-config', authenticate, requireAdmin, (req, res) => {
+app.put('/api/admin/system-config', authenticate, (req, res) => {
   const db = getDatabase();
   const { registrationEnabled, maintenanceMode, maintenanceMessage, informationOfAccountOfVolc } = req.body;
   if (registrationEnabled !== undefined) {
@@ -4421,7 +4585,7 @@ app.get('/api/usage/stats', authenticate, (req, res) => {
 });
 
 // GET /api/admin/usage/stats - 管理员全量使用量统计（预留：AdminPage 仪表盘未来接入）
-app.get('/api/admin/usage/stats', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/usage/stats', authenticate, (req, res) => {
   try {
     const days = parseInt(req.query.days) || 7;
     const stats = usageService.getSystemUsageStats(days);
@@ -4437,7 +4601,7 @@ app.get('/api/admin/usage/stats', authenticate, requireAdmin, (req, res) => {
 // ============================================================
 
 // PUT /api/admin/users/:id/unlimited - 切换无限积分
-app.put('/api/admin/users/:id/unlimited', authenticate, requireAdmin, (req, res) => {
+app.put('/api/admin/users/:id/unlimited', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const { unlimited } = req.body;
@@ -4455,12 +4619,12 @@ app.put('/api/admin/users/:id/unlimited', authenticate, requireAdmin, (req, res)
 // ============================================================
 
 // GET /api/admin/permissions/features - 已定义的功能键清单
-app.get('/api/admin/permissions/features', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/permissions/features', authenticate, (req, res) => {
   res.json({ success: true, data: permissionService.FEATURE_KEYS });
 });
 
 // GET /api/admin/permissions/defaults - 系统默认权限
-app.get('/api/admin/permissions/defaults', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/permissions/defaults', authenticate, (req, res) => {
   try {
     res.json({ success: true, data: permissionService.getDefaultPermissions() });
   } catch (error) {
@@ -4469,7 +4633,7 @@ app.get('/api/admin/permissions/defaults', authenticate, requireAdmin, (req, res
 });
 
 // PUT /api/admin/permissions/defaults - 更新系统默认权限
-app.put('/api/admin/permissions/defaults', authenticate, requireAdmin, (req, res) => {
+app.put('/api/admin/permissions/defaults', authenticate, (req, res) => {
   try {
     const { permissions } = req.body || {};
     if (!permissions || typeof permissions !== 'object') {
@@ -4483,7 +4647,7 @@ app.put('/api/admin/permissions/defaults', authenticate, requireAdmin, (req, res
 });
 
 // GET /api/admin/users/:id/permissions - 获取指定用户的权限
-app.get('/api/admin/users/:id/permissions', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/users/:id/permissions', authenticate, (req, res) => {
   try {
     const data = permissionService.getUserPermissions(Number(req.params.id));
     res.json({ success: true, data });
@@ -4493,7 +4657,7 @@ app.get('/api/admin/users/:id/permissions', authenticate, requireAdmin, (req, re
 });
 
 // PUT /api/admin/users/:id/permissions - 更新指定用户的某项权限
-app.put('/api/admin/users/:id/permissions', authenticate, requireAdmin, (req, res) => {
+app.put('/api/admin/users/:id/permissions', authenticate, (req, res) => {
   try {
     const { feature_key: featureKey, enabled } = req.body || {};
     if (!featureKey) return res.status(400).json({ error: 'feature_key 不能为空' });
@@ -4525,7 +4689,7 @@ app.put('/api/admin/users/:id/role', authenticate, requireSuperAdmin, (req, res)
 });
 
 // GET /api/admin/tasks/by-account - 按即梦账号查任务
-app.get('/api/admin/tasks/by-account', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/tasks/by-account', authenticate, (req, res) => {
   try {
     const accountId = Number(req.query.accountId);
     if (!accountId) return res.status(400).json({ error: 'accountId 必填' });
@@ -4623,7 +4787,7 @@ app.get('/api/model-pricing', authenticate, (req, res) => {
 });
 
 // GET /api/admin/model-pricing - 管理员看到所有模型
-app.get('/api/admin/model-pricing', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/model-pricing', authenticate, (req, res) => {
   try {
     res.json({ success: true, data: pricingService.listAll() });
   } catch (error) {
@@ -4632,7 +4796,7 @@ app.get('/api/admin/model-pricing', authenticate, requireAdmin, (req, res) => {
 });
 
 // PUT /api/admin/model-pricing/:modelKey - 新增或修改模型计费配置
-app.put('/api/admin/model-pricing/:modelKey', authenticate, requireAdmin, (req, res) => {
+app.put('/api/admin/model-pricing/:modelKey', authenticate, (req, res) => {
   try {
     const row = pricingService.upsert(req.params.modelKey, req.body || {});
     res.json({ success: true, data: row });
@@ -4642,7 +4806,7 @@ app.put('/api/admin/model-pricing/:modelKey', authenticate, requireAdmin, (req, 
 });
 
 // DELETE /api/admin/model-pricing/:modelKey
-app.delete('/api/admin/model-pricing/:modelKey', authenticate, requireAdmin, (req, res) => {
+app.delete('/api/admin/model-pricing/:modelKey', authenticate, (req, res) => {
   try {
     pricingService.remove(req.params.modelKey);
     res.json({ success: true });
@@ -4656,7 +4820,7 @@ app.delete('/api/admin/model-pricing/:modelKey', authenticate, requireAdmin, (re
 // ============================================================
 
 // GET /api/admin/volc-key-groups
-app.get('/api/admin/volc-key-groups', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/volc-key-groups', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const groups = db.prepare(`
@@ -4698,7 +4862,7 @@ function redistributeGroupingWeight(db, excludeId, newWeight) {
 }
 
 // POST /api/admin/volc-key-groups
-app.post('/api/admin/volc-key-groups', authenticate, requireAdmin, (req, res) => {
+app.post('/api/admin/volc-key-groups', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const { name, ark_model_key, volc_access_key = '', volc_secret_key = '', note = '', grouping_weight = 0 } = req.body;
@@ -4716,7 +4880,7 @@ app.post('/api/admin/volc-key-groups', authenticate, requireAdmin, (req, res) =>
 });
 
 // PUT /api/admin/volc-key-groups/:id
-app.put('/api/admin/volc-key-groups/:id', authenticate, requireAdmin, (req, res) => {
+app.put('/api/admin/volc-key-groups/:id', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const id = Number(req.params.id);
@@ -4748,7 +4912,7 @@ app.put('/api/admin/volc-key-groups/:id', authenticate, requireAdmin, (req, res)
 // PUT /api/admin/volc-key-groups/:id/activate - 激活Key组
 // 多账户关闭时：单组模式，激活目标组并停用其他所有组
 // 多账户开启时：多组模式，可同时激活多组（权重总和需保持 100%）
-app.put('/api/admin/volc-key-groups/:id/activate', authenticate, requireAdmin, (req, res) => {
+app.put('/api/admin/volc-key-groups/:id/activate', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const id = Number(req.params.id);
@@ -4798,7 +4962,7 @@ app.put('/api/admin/volc-key-groups/:id/activate', authenticate, requireAdmin, (
 
 // PUT /api/admin/volc-key-groups/:id/deactivate - 停用Key组（仅多账户模式下可用）
 // 停用时自动将停用组的权重平均分配到剩余激活组
-app.put('/api/admin/volc-key-groups/:id/deactivate', authenticate, requireAdmin, (req, res) => {
+app.put('/api/admin/volc-key-groups/:id/deactivate', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const id = Number(req.params.id);
@@ -4862,7 +5026,7 @@ app.put('/api/admin/volc-key-groups/:id/deactivate', authenticate, requireAdmin,
 });
 
 // DELETE /api/admin/volc-key-groups/:id
-app.delete('/api/admin/volc-key-groups/:id', authenticate, requireAdmin, (req, res) => {
+app.delete('/api/admin/volc-key-groups/:id', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const id = Number(req.params.id);
@@ -4881,7 +5045,7 @@ app.delete('/api/admin/volc-key-groups/:id', authenticate, requireAdmin, (req, r
 // ============================================================
 
 // GET /api/admin/wuyin-key
-app.get('/api/admin/wuyin-key', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/wuyin-key', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const row = db.prepare("SELECT value FROM system_config WHERE key = 'wuyin_api_key'").get();
@@ -4892,7 +5056,7 @@ app.get('/api/admin/wuyin-key', authenticate, requireAdmin, (req, res) => {
 });
 
 // GET /api/admin/volc-key-groups/stats - 获取各组绑定的项目组数量
-app.get('/api/admin/volc-key-groups/stats', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/volc-key-groups/stats', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const stats = db.prepare(`
@@ -4908,7 +5072,7 @@ app.get('/api/admin/volc-key-groups/stats', authenticate, requireAdmin, (req, re
 });
 
 // GET /api/admin/multi-account — 获取多账户开关状态
-app.get('/api/admin/multi-account', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/multi-account', authenticate, (req, res) => {
   const db = getDatabase();
   const row = db.prepare("SELECT value FROM system_config WHERE key = 'multi_volc_is_enable'").get();
   res.json({ success: true, data: { enabled: row?.value === '1' || row?.value === 'true' } });
@@ -4924,7 +5088,7 @@ app.get('/api/volc-key-status', authenticate, (req, res) => {
 // PUT /api/admin/multi-account — 切换多账户开关
 // 开启时：将当前激活组的权重设为 100%
 // 关闭时（单账户模式）：若有多组激活，只保留第一组，其余停用
-app.put('/api/admin/multi-account', authenticate, requireAdmin, (req, res) => {
+app.put('/api/admin/multi-account', authenticate, (req, res) => {
   const db = getDatabase();
   const { enabled } = req.body || {};
   db.prepare("INSERT OR REPLACE INTO system_config (key, value) VALUES ('multi_volc_is_enable', ?)").run(enabled ? '1' : '0');
@@ -4948,7 +5112,7 @@ app.put('/api/admin/multi-account', authenticate, requireAdmin, (req, res) => {
 });
 
 // PUT /api/admin/wuyin-key
-app.put('/api/admin/wuyin-key', authenticate, requireAdmin, (req, res) => {
+app.put('/api/admin/wuyin-key', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const { key } = req.body;
@@ -4964,7 +5128,7 @@ app.put('/api/admin/wuyin-key', authenticate, requireAdmin, (req, res) => {
 // 火山 AI MediaKit Key 管理
 // ============================================================
 
-app.get('/api/admin/mediakit-key', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/mediakit-key', authenticate, (req, res) => {
   try {
     const row = getDatabase().prepare("SELECT value FROM system_config WHERE key = 'mediakit_api_key'").get();
     res.json({ success: true, data: { key: row?.value || '' } });
@@ -4973,7 +5137,7 @@ app.get('/api/admin/mediakit-key', authenticate, requireAdmin, (req, res) => {
   }
 });
 
-app.put('/api/admin/mediakit-key', authenticate, requireAdmin, (req, res) => {
+app.put('/api/admin/mediakit-key', authenticate, (req, res) => {
   try {
     const { key } = req.body;
     if (!key) return res.status(400).json({ error: 'key 不能为空' });
@@ -4994,7 +5158,7 @@ const ALLOWED_AUDIO_RATIOS = ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'];
 const ALLOWED_AUDIO_RESOLUTIONS = ['480p', '720p', '1080p'];
 const ALLOWED_AUDIO_DURATIONS = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
-app.get('/api/admin/audio-gen-config', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/audio-gen-config', authenticate, (req, res) => {
   try {
     const cfg = getAudioGenConfig();
     res.json({
@@ -5014,7 +5178,7 @@ app.get('/api/admin/audio-gen-config', authenticate, requireAdmin, (req, res) =>
   }
 });
 
-app.put('/api/admin/audio-gen-config', authenticate, requireAdmin, (req, res) => {
+app.put('/api/admin/audio-gen-config', authenticate, (req, res) => {
   try {
     const { model, ratio, resolution, duration } = req.body || {};
     if (!model || typeof model !== 'string') return res.status(400).json({ error: 'model 不能为空' });
@@ -5038,7 +5202,7 @@ app.put('/api/admin/audio-gen-config', authenticate, requireAdmin, (req, res) =>
 // 画质增强计费配置
 // 画质增强计费配置（admin 读 + 改）
 // 新规则下：16 项系数固定（与 MediaKit 官方计费表一致），admin 只能改基础单价（积分/分钟）。
-app.get('/api/admin/enhancement-pricing', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/enhancement-pricing', authenticate, (req, res) => {
   try {
     res.json({
       success: true,
@@ -5053,7 +5217,7 @@ app.get('/api/admin/enhancement-pricing', authenticate, requireAdmin, (req, res)
   }
 });
 
-app.put('/api/admin/enhancement-pricing', authenticate, requireAdmin, (req, res) => {
+app.put('/api/admin/enhancement-pricing', authenticate, (req, res) => {
   try {
     const { baseCreditsPerMinute } = req.body;
     if (baseCreditsPerMinute == null) {
@@ -5745,7 +5909,7 @@ app.post('/api/happyhorse-tasks/:id/mark-downloaded', authenticate, (req, res) =
 });
 
 // 管理员：HappyHorse API Key 读/写
-app.get('/api/admin/happyhorse-key', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/happyhorse-key', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const row = db.prepare("SELECT value FROM system_config WHERE key = 'happyhorse_api_key'").get();
@@ -5754,7 +5918,7 @@ app.get('/api/admin/happyhorse-key', authenticate, requireAdmin, (req, res) => {
     res.json({ success: true, data: { configured: !!v, masked } });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-app.put('/api/admin/happyhorse-key', authenticate, requireAdmin, (req, res) => {
+app.put('/api/admin/happyhorse-key', authenticate, (req, res) => {
   try {
     const apiKey = String(req.body?.apiKey || '').trim();
     const db = getDatabase();
@@ -5838,12 +6002,12 @@ app.get('/api/admin/volc-balance', authenticate, requireSuperAdmin, async (req, 
 });
 
 // 管理员：HappyHorse 计费读/写
-app.get('/api/admin/happyhorse-pricing', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/happyhorse-pricing', authenticate, (req, res) => {
   try {
     res.json({ success: true, data: { pricing: happyhorsePricingService.getPricingTable() } });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-app.put('/api/admin/happyhorse-pricing', authenticate, requireAdmin, (req, res) => {
+app.put('/api/admin/happyhorse-pricing', authenticate, (req, res) => {
   try {
     const items = Array.isArray(req.body?.pricing) ? req.body.pricing : [];
     for (const it of items) {
@@ -5861,7 +6025,7 @@ app.put('/api/admin/happyhorse-pricing', authenticate, requireAdmin, (req, res) 
 // 模型折扣管理（模型计费 + HappyHorse 共用）
 // ============================================================
 
-app.get('/api/admin/discounts', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/discounts', authenticate, (req, res) => {
   try {
     const discounts = discountService.getDiscounts();
     res.json({ success: true, data: { discounts } });
@@ -6283,7 +6447,7 @@ async function volcArkAssetRequest(action, body, db, keyGroupId = null) {
 }
 
 // GET /api/admin/volc-native/aksk
-app.get('/api/admin/volc-native/aksk', authenticate, requireAdmin, (req, res) => {
+app.get('/api/admin/volc-native/aksk', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const akRow = db.prepare("SELECT value FROM system_config WHERE key = 'volc_access_key_id'").get();
@@ -6295,7 +6459,7 @@ app.get('/api/admin/volc-native/aksk', authenticate, requireAdmin, (req, res) =>
 });
 
 // PUT /api/admin/volc-native/aksk
-app.put('/api/admin/volc-native/aksk', authenticate, requireAdmin, (req, res) => {
+app.put('/api/admin/volc-native/aksk', authenticate, (req, res) => {
   try {
     const db = getDatabase();
     const { access_key_id, secret_access_key } = req.body;
@@ -7394,7 +7558,7 @@ app.put('/api/projects/:id/assets/:assetId', authenticate, (req, res) => {
 });
 
 // PUT /api/projects/:id/assets/:assetId/review - 管理员手动审核（保留兼容，一般不用）
-app.put('/api/projects/:id/assets/:assetId/review', authenticate, requireAdmin, (req, res) => {
+app.put('/api/projects/:id/assets/:assetId/review', authenticate, (req, res) => {
   try {
     const { reviewStatus } = req.body;
     if (!['approved', 'rejected', 'pending'].includes(reviewStatus)) {

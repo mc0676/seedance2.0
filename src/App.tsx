@@ -12,6 +12,7 @@ import SingleTaskPage from './pages/SingleTaskPage';
 import ImageGenPage from './pages/ImageGenPage';
 import AudioGenPage from './pages/AudioGenPage';
 import EnhancementPage from './pages/EnhancementPage';
+import ConsumptionAnalysisPage from './pages/ConsumptionAnalysisPage';
 import HappyHorsePage from './pages/HappyHorsePage';
 import SettingsPage from './pages/Settings';
 import DownloadManagementPage from './pages/DownloadManagement';
@@ -235,6 +236,17 @@ function AppContent() {
             <ProtectedRoute requireAdmin currentUser={currentUser}>
               <MainLayout currentUser={currentUser} onLogout={handleLogout} onUserUpdated={setCurrentUser}>
                 <AdminPage />
+              </MainLayout>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/consumption-analysis"
+          element={
+            <ProtectedRoute currentUser={currentUser}>
+              <MainLayout currentUser={currentUser} onLogout={handleLogout} onUserUpdated={setCurrentUser}>
+                <ConsumptionAnalysisPage />
               </MainLayout>
             </ProtectedRoute>
           }
