@@ -1373,7 +1373,9 @@ export default function AdminPage() {
     const trimmedDept = editUserDepartment.trim();
     const origName = (selectedUser.name || '').trim();
     const origDept = (selectedUser.department || '').trim();
-    const profileChanged = trimmedName !== origName || trimmedDept !== origDept;
+    // 普通管理员不允许修改小组，部门变更仅对系统管理员生效
+    const deptChanged = isSuperAdmin && trimmedDept !== origDept;
+    const profileChanged = trimmedName !== origName || deptChanged;
     const creditsChanged = !!editCredits;
 
     if (!profileChanged && !creditsChanged) {
@@ -1385,7 +1387,7 @@ export default function AdminPage() {
       if (profileChanged) {
         await updateUserProfileByAdmin(selectedUser.id, {
           name: trimmedName === '' ? null : trimmedName,
-          department: trimmedDept === '' ? null : trimmedDept,
+          department: deptChanged ? (trimmedDept === '' ? null : trimmedDept) : undefined,
         });
       }
       if (creditsChanged) {
@@ -1762,8 +1764,10 @@ export default function AdminPage() {
                   </thead>
                   <tbody className="divide-y divide-gray-800">
                     {(isSuperAdmin ? users : users).map((user) => {
-                      // 普通管理员可以编辑普通用户 + 自己；系统管理员可编辑所有人。
-                      const canEdit = isSuperAdmin || user.role === 'user' || user.id === currentUser?.id;
+                      // 普通管理员只能操作自己小组的普通用户 + 自己；系统管理员可编辑所有人。
+                      const adminDeptId = currentUser ? (users.find(u => u.id === currentUser.id) as any)?.department_id : null;
+                      const sameDept = isSuperAdmin || (adminDeptId != null && (user as any).department_id === adminDeptId);
+                      const canEdit = isSuperAdmin || (sameDept && (user.role === 'user' || user.id === currentUser?.id));
                       return (
                       <tr key={user.id} className="hover:bg-[#0f111a]/50">
                         <td className="px-6 py-4 text-sm text-gray-400">#{user.id}</td>
@@ -3143,11 +3147,17 @@ export default function AdminPage() {
                   </div>
                   <div>
                     <label className="block text-[11px] text-gray-400 mb-1">小组（如需新增请到下方「小组管理」）</label>
-                    <DepartmentSelect
-                      value={editUserDepartment}
-                      onChange={setEditUserDepartment}
-                      refreshKey={departmentRefreshKey}
-                    />
+                    {isSuperAdmin ? (
+                      <DepartmentSelect
+                        value={editUserDepartment}
+                        onChange={setEditUserDepartment}
+                        refreshKey={departmentRefreshKey}
+                      />
+                    ) : (
+                      <div className="w-full px-3 py-2 bg-[#0f111a] border border-gray-700 rounded-lg text-sm text-gray-500">
+                        {editUserDepartment || '（未设置）'}
+                      </div>
+                    )}
                   </div>
                   <p className="text-[10px] text-gray-500">点击下方「保存」按钮统一提交姓名、小组、积分等所有改动。</p>
                 </div>

@@ -624,7 +624,7 @@ export async function checkEmailStatus(email) {
 /**
  * 管理员 - 获取用户列表
  */
-export async function getUserList(page = 1, pageSize = 20, filters = {}) {
+export async function getUserList(page = 1, pageSize = 20, filters = {}, caller = null) {
   const db = getDatabase();
 
   const offset = (page - 1) * pageSize;
@@ -647,6 +647,14 @@ export async function getUserList(page = 1, pageSize = 20, filters = {}) {
     params.push(`%${filters.email}%`);
   }
 
+  // 普通管理员：自己部门成员排在前面
+  const orderParams = [];
+  let orderClause = 'u.created_at DESC';
+  if (caller && caller.role === 'admin' && caller.department_id != null) {
+    orderClause = `CASE WHEN u.department_id = ? THEN 0 ELSE 1 END, u.created_at DESC`;
+    orderParams.push(caller.department_id);
+  }
+
   const users = db.prepare(`
     SELECT u.id, u.email, u.role, u.status, u.credits, u.unlimited_credits AS unlimitedCredits, u.name,
            u.department_id, d.name AS department,
@@ -654,9 +662,9 @@ export async function getUserList(page = 1, pageSize = 20, filters = {}) {
     FROM users u
     LEFT JOIN departments d ON d.id = u.department_id
     WHERE ${whereClause}
-    ORDER BY u.created_at DESC
+    ORDER BY ${orderClause}
     LIMIT ? OFFSET ?
-  `).all(...params, pageSize, offset);
+  `).all(...orderParams, ...params, pageSize, offset);
 
   const total = db.prepare(`
     SELECT COUNT(*) as count FROM users u WHERE ${whereClause}
@@ -705,11 +713,21 @@ export async function getUserDetail(userId) {
 /**
  * 管理员 - 更新用户状态
  */
-export async function updateUserStatus(userId, status) {
+export async function updateUserStatus(userId, status, caller = null) {
   const db = getDatabase();
 
   if (!['active', 'disabled'].includes(status)) {
     throw new Error('无效的状态值');
+  }
+
+  // 普通管理员只能禁用自己部门的成员，且不能操作其他管理员
+  if (caller && caller.role === 'admin') {
+    const target = db.prepare('SELECT department_id, role FROM users WHERE id = ?').get(userId);
+    if (!target) throw new Error('用户不存在');
+    if (target.role === 'admin' || target.role === 'super_admin') throw new Error('无权操作其他管理员');
+    if (caller.department_id != null && target.department_id !== caller.department_id) {
+      throw new Error('只能操作自己部门的成员');
+    }
   }
 
   db.prepare(`
@@ -887,10 +905,27 @@ export async function updateOwnProfile(userId, { name, department } = {}) {
  * 与 updateOwnProfile 的区别：管理员可以**强制覆盖**任意非空部门，没有自助限制。
  * department 入参可以是 string（部门名）或 null/'' （清空）。
  */
-export async function updateUserProfileByAdmin(targetUserId, { name, department } = {}) {
+export async function updateUserProfileByAdmin(targetUserId, { name, department } = {}, caller = null) {
   const db = getDatabase();
   const exists = db.prepare(`SELECT id FROM users WHERE id = ?`).get(targetUserId);
   if (!exists) throw new Error('用户不存在');
+
+  // 普通管理员只能修改自己部门的成员，且只能分配到自己的部门
+  if (caller && caller.role === 'admin') {
+    const target = db.prepare('SELECT department_id, role FROM users WHERE id = ?').get(targetUserId);
+    if (target.role === 'admin' || target.role === 'super_admin') throw new Error('无权操作其他管理员');
+    if (caller.department_id != null && target.department_id !== caller.department_id) {
+      throw new Error('只能操作自己部门的成员');
+    }
+    if (department !== undefined && department !== null && String(department).trim() !== '') {
+      const newDept = validateDepartment(department);
+      const { ensureDepartment } = await import('./departmentService.js');
+      const row = ensureDepartment(newDept);
+      if (row.id !== caller.department_id) {
+        throw new Error('只能将用户分配到自己的部门');
+      }
+    }
+  }
 
   const updates = [];
   const params = [];

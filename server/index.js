@@ -3083,7 +3083,7 @@ app.get('/api/departments', authenticate, async (req, res) => {
 app.put('/api/admin/users/:id/profile', authenticate, requireAdmin, async (req, res) => {
   try {
     const { name, department } = req.body || {};
-    await authService.updateUserProfileByAdmin(Number(req.params.id), { name, department });
+    await authService.updateUserProfileByAdmin(Number(req.params.id), { name, department }, req.user);
     res.json({ success: true });
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -4067,7 +4067,8 @@ app.get('/api/admin/users', authenticate, requireAdmin, async (req, res) => {
     const result = await authService.getUserList(
       parseInt(page),
       parseInt(pageSize),
-      { role, status, email }
+      { role, status, email },
+      req.user
     );
     res.json({ success: true, data: result });
   } catch (error) {
@@ -4115,7 +4116,7 @@ app.put('/api/admin/users/:id/status', authenticate, requireAdmin, async (req, r
     const userId = req.params.id;
     const { status } = req.body;
 
-    await authService.updateUserStatus(userId, status);
+    await authService.updateUserStatus(userId, status, req.user);
     res.json({ success: true });
   } catch (error) {
     res.status(400).json({ error: error.message });
