@@ -357,12 +357,16 @@ function resolveApiKey() {
 function resolveProjectApiKey(projectId, forceMulti = false) {
   if (!projectId) return resolveApiKey();
   const db = getDatabase();
-  const row = db.prepare(`
-    SELECT v.ark_model_key FROM volc_key_groups v
-    INNER JOIN projects p ON p.volc_id = v.id
-    WHERE p.id = ?
-  `).get(projectId);
-  return (isMultiAccountEnabled() || forceMulti) ? (row?.ark_model_key || resolveApiKey()) : resolveApiKey();
+
+  if (isMultiAccountEnabled() || forceMulti) {
+    // 多账户模式：项目 volc_id 为 null 时视为 1
+    const project = db.prepare('SELECT volc_id FROM projects WHERE id = ?').get(projectId);
+    const targetVolcId = project?.volc_id ?? 1;
+    const keyGroup = db.prepare('SELECT ark_model_key FROM volc_key_groups WHERE id = ? AND is_active = 1').get(targetVolcId);
+    return keyGroup?.ark_model_key || '';
+  }
+
+  return resolveApiKey();
 }
 
 // 根据项目绑定的 volc_id 取对应的 Key 组（含 id, name, ark_model_key 等）
@@ -6791,7 +6795,7 @@ app.get('/api/volc-native/asset-groups', authenticate, async (req, res) => {
         assetGroupParams.push(`%${name}%`);
       }
       // 先查总数
-      const total = db.prepare(assetGroupQuery.replace('SELECT id, volc_group_id, name, volc_id, thumbnail_oss_url', 'SELECT COUNT(*) AS c')).get(...assetGroupParams).c;
+      const total = db.prepare(assetGroupQuery.replace(/SELECT .+ FROM/, 'SELECT COUNT(*) AS c FROM')).get(...assetGroupParams).c;
       // 分页
       const offset = (Number(pageNumber) - 1) * Number(pageSize);
       assetGroupQuery += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
@@ -6813,10 +6817,19 @@ app.get('/api/volc-native/asset-groups', authenticate, async (req, res) => {
       }
 
       // 非 sync 模式：直接从本地 DB 构建响应，不调 ARK
+      // 预查 volc_key_groups 名称映射
+      const volcNameMap = new Map();
+      const volcIds = [...new Set(boundRows.map(r => r.volc_id).filter(Boolean))];
+      if (volcIds.length > 0) {
+        const phs = volcIds.map(() => '?').join(',');
+        db.prepare(`SELECT id, name FROM volc_key_groups WHERE id IN (${phs})`).all(...volcIds).forEach(v => volcNameMap.set(v.id, v.name));
+      }
+
       const items = boundRows.map(r => ({
         Id: r.volc_group_id,
         Name: r.name,
         Description: r.description || '',
+        volc_name: r.volc_id ? (volcNameMap.get(r.volc_id) || '未知') : '默认账户',
         _localId: r.id,
         thumbnail_oss_url: r.thumbnail_oss_url || null,
       }));
@@ -6872,9 +6885,15 @@ app.get('/api/volc-native/assets', authenticate, async (req, res) => {
 
     // 默认：从本地 project_assets 读
     if (!groupId) return res.json({ success: true, data: { Items: [], TotalCount: 0 } });
-    const ag = db.prepare('SELECT id FROM asset_groups WHERE volc_group_id = ?').get(groupId);
+    const ag = db.prepare('SELECT id, volc_id FROM asset_groups WHERE volc_group_id = ?').get(groupId);
     const agId = ag?.id;
     if (!agId) return res.json({ success: true, data: { Items: [], TotalCount: 0 } });
+    // 查 volc_name
+    let volcName = '默认账户';
+    if (ag.volc_id) {
+      const vg = db.prepare('SELECT name FROM volc_key_groups WHERE id = ?').get(ag.volc_id);
+      if (vg) volcName = vg.name;
+    }
     const offset = (Number(pageNumber) - 1) * Number(pageSize);
     const total = db.prepare(
       'SELECT COUNT(*) AS c FROM project_assets WHERE asset_group_id = ? AND status != \'deleted\''
@@ -6886,6 +6905,7 @@ app.get('/api/volc-native/assets', authenticate, async (req, res) => {
       Id: r.volc_asset_id,
       Name: r.name,
       GroupId: groupId,
+      volc_name: volcName,
       AssetType: r.file_type === 'video' ? 'Video' : r.file_type === 'audio' ? 'Audio' : 'Image',
       Status: r.review_status === 'approved' ? 'Active' : r.review_status === 'rejected' ? 'Failed' : 'Pending',
       URL: r.file_url,

@@ -15,6 +15,7 @@ type Tab = 'volc' | 'members';
 
 interface VolcAssetGroup {
   Id: string; Name: string; Description?: string;
+  volc_name?: string;
   GroupType?: string; ProjectName?: string;
   CreateTime?: string; UpdateTime?: string;
   coverUrl?: string;
@@ -479,7 +480,7 @@ export default function ProjectWorkspacePage() {
           {showVolcAccount && (
             <span className="text-sm text-gray-400 bg-gray-800/50 px-2 py-0.5 rounded-lg">
               {(currentProject as any).volc_id != null
-                ? `API账户: ${(currentProject as any).volc_name || '未知'}`
+                ? `${(currentProject as any).volc_name || '未知'}`
                 : '默认账户'}
             </span>
           )}
@@ -748,17 +749,22 @@ export default function ProjectWorkspacePage() {
                       {/* 信息 + 操作 */}
                       <div className="p-3 flex flex-col gap-1.5 flex-1">
                         <p className="text-white text-sm font-medium truncate" title={g.Name}>{g.Name}</p>
-                        {g.Description
-                          ? <p className="text-gray-500 text-xs truncate" title={g.Description}>{g.Description}</p>
+                        {((g as any).description || g.Description)
+                          ? <p className="text-gray-500 text-xs truncate" title={(g as any).description || g.Description}>{(g as any).description || g.Description}</p>
                           : <p className="text-gray-700 text-xs">—</p>}
-                        <p className="text-gray-600 text-xs font-mono truncate" title={g.Id}>{g.Id}</p>
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="text-gray-600 text-xs font-mono truncate" title={g.Id}>{g.Id}</span>
+                          {showVolcAccount && g.volc_name && (
+                            <span className="text-[10px] text-gray-400 bg-gray-700/50 px-1.5 py-0.5 rounded-full whitespace-nowrap">{g.volc_name}</span>
+                          )}
+                        </div>
                         {g.CreateTime && (
                           <p className="text-gray-600 text-xs">{formatDateTime(g.CreateTime)}</p>
                         )}
                         <div className="mt-auto pt-1 flex items-center justify-between gap-2">
                           <span className="text-xs text-purple-400 group-hover:text-purple-300">查看素材 →</span>
                           <div className="flex items-center gap-1.5">
-                            <button onClick={(e) => { e.stopPropagation(); setRenameGroupTarget(g); setRenameGroupName(g.Name || ''); setRenameGroupDesc(g.Description || ''); }}
+                            <button onClick={(e) => { e.stopPropagation(); setRenameGroupTarget(g); setRenameGroupName(g.Name || ''); setRenameGroupDesc((g as any).description || g.Description || ''); }}
                               className="px-2 py-1 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 rounded-md text-xs transition-colors">编辑</button>
                             <button onClick={(e) => { e.stopPropagation(); setDeleteGroupTarget(g); }}
                               className="px-2 py-1 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded-md text-xs transition-colors">删除</button>
@@ -824,7 +830,12 @@ export default function ProjectWorkspacePage() {
                           {a.AssetType
                             ? <span className="text-xs text-gray-400 bg-gray-700/50 px-1.5 py-0.5 rounded w-fit">{a.AssetType}</span>
                             : <p className="text-gray-700 text-xs">—</p>}
-                          <p className="text-gray-600 text-xs font-mono truncate" title={a.Id}>{a.Id}</p>
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="text-gray-600 text-xs font-mono truncate" title={a.Id}>{a.Id}</span>
+                            {showVolcAccount && (a as any).volc_name && (
+                              <span className="text-[10px] text-gray-400 bg-gray-700/50 px-1.5 py-0.5 rounded-full whitespace-nowrap">{(a as any).volc_name}</span>
+                            )}
+                          </div>
                           <code className="text-xs text-cyan-400 font-mono select-all break-all">asset://{a.Id}</code>
                           {a.CreateTime && (
                             <p className="text-gray-600 text-xs">{formatDateTime(a.CreateTime)}</p>

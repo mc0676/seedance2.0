@@ -10,8 +10,10 @@ import {
   ShieldIcon,
   LogoutIcon,
   SparkleIcon,
+  ChartIcon,
   ImageIcon,
   MicIcon,
+  PackageIcon,
 } from '../components/Icons';
 import type { User } from '../types';
 import { logout } from '../services/authService';
@@ -83,13 +85,13 @@ export default function Sidebar({ currentUser, onLogout, onUserUpdated }: Sideba
       id: 'CONSUMPTION_ANALYSIS',
       label: '消耗分析',
       path: '/consumption-analysis',
-      icon: SparkleIcon,
+      icon: ChartIcon,
     },
     {
       id: 'ASSETS',
       label: '项目组与资产',
       path: '/assets',
-      icon: SparkleIcon,
+      icon: PackageIcon,
     },
     {
       id: 'DOWNLOAD_MANAGEMENT',

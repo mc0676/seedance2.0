@@ -33,7 +33,7 @@ export function getAllProjects(userId = null, isAdmin = false) {
       (SELECT COUNT(*) FROM project_members WHERE project_id = p.id) as member_count
     FROM projects p
     LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
-    LEFT JOIN volc_key_groups v ON v.id = p.volc_id
+    LEFT JOIN volc_key_groups v ON v.id = COALESCE(p.volc_id, 1)
   `;
 
   const params = [userId ?? 0];
@@ -67,7 +67,7 @@ export function getProjectById(id, userId = null, isAdmin = false) {
       (SELECT COUNT(*) FROM project_members WHERE project_id = p.id) as member_count
     FROM projects p
     LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
-    LEFT JOIN volc_key_groups v ON v.id = p.volc_id
+    LEFT JOIN volc_key_groups v ON v.id = COALESCE(p.volc_id, 1)
     WHERE p.id = ?
   `;
 

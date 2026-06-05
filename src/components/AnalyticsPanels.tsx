@@ -93,8 +93,6 @@ function BarChart({ data }: { data: Array<{ day: string; active_users: number }>
 }
 
 export default function AnalyticsPanels() {
-  const { currentUser } = useApp();
-  const [dimension, setDimension] = useState<'all' | 'department'>(currentUser?.role === 'super_admin' ? 'all' : 'department');
   const [tab, setTab] = useState<string>('趋势图');
   const [trendData, setTrendData] = useState<Array<{ day: string; consumed: number; active_users: number; total_calls: number }>>([]);
   const [rankingData, setRankingData] = useState<Array<{ id: number; email: string; name: string | null; department: string; total_credits: number; call_count: number }>>([]);
@@ -173,14 +171,11 @@ export default function AnalyticsPanels() {
     async function doExport(dateFrom: string, dateTo: string, includeTodayRanking: boolean) {
       setExporting(true);
       try {
-        const deptId = dimension === 'department' ? currentUser?.department_id : undefined;
         const sp = new URLSearchParams();
         if (dateFrom) sp.set('dateFrom', dateFrom);
         if (dateTo) sp.set('dateTo', dateTo);
-        if (deptId) sp.set('departmentId', String(deptId));
-
       // 小组工作表名：小组维度时用部门名
-      const groupSheetName = dimension === 'department' && currentUser?.department ? `${currentUser.department} 汇总` : '小组汇总';
+      const groupSheetName = '小组汇总';
 
       // 并行请求所有数据
       const fetches: Promise<[string, unknown[]]>[] = [];
@@ -319,8 +314,7 @@ export default function AnalyticsPanels() {
   }
 
   function fetchTab(key: string) {
-    const deptId = dimension === 'department' ? currentUser?.department_id : undefined;
-    const cacheKey = deptId ? `${key}_dept_${deptId}` : key;
+    const cacheKey = key;
     const cached = cacheGet(cacheKey);
     if (cached) {
       loadedRef.current.add(cacheKey);
@@ -340,49 +334,38 @@ export default function AnalyticsPanels() {
     loadedRef.current.add(cacheKey);
     switch (key) {
       case '趋势图':
-        fetchDailyTrend(30, deptId).then(d => { setTrendData(d); cacheSet(cacheKey, d); }).catch(() => {}).finally(() => setLoadingPanel(''));
+        fetchDailyTrend(30).then(d => { setTrendData(d); cacheSet(cacheKey, d); }).catch(() => {}).finally(() => setLoadingPanel(''));
         break;
       case '当日排行':
-        fetchTodayRanking(deptId).then(d => { setRankingData(d); cacheSet(cacheKey, d); }).catch(() => {}).finally(() => setLoadingPanel(''));
+        fetchTodayRanking().then(d => { setRankingData(d); cacheSet(cacheKey, d); }).catch(() => {}).finally(() => setLoadingPanel(''));
         break;
       case '消耗明细':
-        fetchCreditDetails({ page: detailQuery.page, name: detailQuery.name || undefined, email: detailQuery.email || undefined, date: detailQuery.date || undefined, action: detailQuery.action || undefined, model: detailQuery.model || undefined, departmentId: deptId })
+        fetchCreditDetails({ page: detailQuery.page, name: detailQuery.name || undefined, email: detailQuery.email || undefined, date: detailQuery.date || undefined, action: detailQuery.action || undefined, model: detailQuery.model || undefined })
           .then(d => { setDetailData(d); cacheSet(cacheKey, d); }).catch(() => {}).finally(() => setLoadingPanel(''));
         break;
       case '小组汇总':
-        fetchGroupSummary(groupDays, undefined, deptId).then(d => { setGroupData(d as any[]); cacheSet(cacheKey, d); }).catch(() => {}).finally(() => setLoadingPanel(''));
+        fetchGroupSummary(groupDays).then(d => { setGroupData(d as any[]); cacheSet(cacheKey, d); }).catch(() => {}).finally(() => setLoadingPanel(''));
         break;
       case '项目组消耗':
-        fetchProjectConsumption(30, deptId).then(d => { setProjectData(d); cacheSet(cacheKey, d); }).catch(() => {}).finally(() => setLoadingPanel(''));
+        fetchProjectConsumption(30).then(d => { setProjectData(d); cacheSet(cacheKey, d); }).catch(() => {}).finally(() => setLoadingPanel(''));
         break;
       case '失败分析':
-        fetchFailureAnalysis(failureDays, deptId).then(d => { setFailureData(d); cacheSet(cacheKey, d); }).catch(() => {}).finally(() => setLoadingPanel(''));
+        fetchFailureAnalysis(failureDays).then(d => { setFailureData(d); cacheSet(cacheKey, d); }).catch(() => {}).finally(() => setLoadingPanel(''));
         break;
       case '用户活跃度':
-        fetchUserActivity(30, deptId).then(d => { setActivityData(d); cacheSet(cacheKey, d); }).catch(() => {}).finally(() => setLoadingPanel(''));
+        fetchUserActivity(30).then(d => { setActivityData(d); cacheSet(cacheKey, d); }).catch(() => {}).finally(() => setLoadingPanel(''));
         break;
     }
   }
 
   useEffect(() => {
-    const deptId = dimension === 'department' ? currentUser?.department_id : undefined;
-    const cacheKey = deptId ? `${tab}_dept_${deptId}` : tab;
+    const cacheKey = tab;
     if (!loadedRef.current.has(cacheKey)) {
       fetchTab(tab);
     }
-  }, [tab, dimension]);
+  }, [tab]);
 
-  // 小组维度：加载组成员给 autocomplete
-  useEffect(() => {
-    if (dimension === 'department' && currentUser?.department_id) {
-      fetch(`/api/admin/departments/${currentUser.department_id}/members`, { headers: getAuthHeaders() })
-        .then(r => r.json())
-        .then(d => { if (d.success) setDeptMembers(d.data.members || []); })
-        .catch(() => {});
-    } else {
-      setDeptMembers([]);
-    }
-  }, [dimension, currentUser?.department_id]);
+
 
   function loadDetails(page: number) {
     setDetailQuery(q => ({ ...q, page }));
@@ -451,31 +434,10 @@ export default function AnalyticsPanels() {
           </div>
         </div>
       </div>
-      {/* 维度 Tab 栏 */}
-      <div className="flex flex-wrap items-center px-6 pt-4 border-b border-gray-800 gap-1">
-        {(['all', 'department'] as const).map(d => (
-          <button key={d} onClick={() => {
-            setDimension(d);
-            loadedRef.current.clear();
-            fetchTab(tab);
-          }}
-            className={`px-4 py-2 text-sm rounded-t-lg transition-colors ${
-              dimension === d ? 'bg-[#0f111a] text-purple-400 border-t border-l border-r border-gray-800' : 'text-gray-500 hover:text-gray-300'
-            }`}>
-            {d === 'all' ? '全部维度' : '小组维度'}
-          </button>
-        ))}
-      </div>
-      {/* 小组维度标题 */}
-      {dimension === 'department' && currentUser?.department && (
-        <div className="px-6 pt-3">
-          <h3 className="text-sm font-medium text-purple-400">{currentUser.department} 数据分析</h3>
-        </div>
-      )}
-      {/* 二级 Tab 栏 */}
+      {/* Tab 栏 */}
       <div className="flex flex-wrap items-center justify-between px-6 pt-2 border-b border-gray-800">
         <div className="flex flex-wrap gap-1">
-          {(dimension === 'department' ? ANALYTICS_TABS.filter(t => t !== '小组汇总') : ANALYTICS_TABS).map(t => (
+          {ANALYTICS_TABS.map(t => (
             <button
               key={t}
               onClick={() => {
@@ -493,7 +455,7 @@ export default function AnalyticsPanels() {
           ))}
         </div>
         <button
-          onClick={() => { const deptId = dimension === 'department' ? currentUser?.department_id : undefined; const ck = deptId ? `${tab}_dept_${deptId}` : tab; loadedRef.current.delete(ck); localStorage.removeItem(`analytics_${ck}`); fetchTab(tab); }}
+          onClick={() => { loadedRef.current.delete(tab); localStorage.removeItem(`analytics_${tab}`); fetchTab(tab); }}
           className="px-3 py-1.5 text-xs text-gray-500 hover:text-white hover:bg-gray-700 rounded-lg transition-colors"
           title="刷新当前面板"
         >
@@ -574,37 +536,19 @@ export default function AnalyticsPanels() {
               <div className="relative">
                 <input type="text" placeholder="用户名" value={detailQuery.name}
                   onChange={e => setDetailQuery(q => ({ ...q, name: e.target.value }))}
-                  onFocus={() => dimension === 'department' && setShowNameDropdown(true)}
+                  onFocus={() => {}}
                   onBlur={() => setTimeout(() => setShowNameDropdown(false), 200)}
                   className="w-28 px-3 py-1.5 bg-[#0f111a] border border-gray-700 rounded-lg text-white text-xs focus:outline-none focus:border-purple-500" />
-                {dimension === 'department' && showNameDropdown && deptMembers.length > 0 && (
-                  <div className="absolute z-10 mt-1 w-48 max-h-40 overflow-y-auto bg-[#1c1f2e] border border-gray-700 rounded-lg shadow-lg">
-                    {deptMembers.filter(m => !detailQuery.name || m.name.includes(detailQuery.name)).slice(0, 50).map(m => (
-                      <div key={m.id} className="px-3 py-1.5 text-xs text-gray-300 hover:bg-[#0f111a] hover:text-white cursor-pointer"
-                        onMouseDown={() => { setDetailQuery(q => ({ ...q, name: m.name })); setShowNameDropdown(false); }}>
-                        {m.name}
-                      </div>
-                    ))}
-                  </div>
-                )}
+
               </div>
               {/* 邮箱 autocomplete */}
               <div className="relative">
                 <input type="text" placeholder="邮箱" value={detailQuery.email}
                   onChange={e => setDetailQuery(q => ({ ...q, email: e.target.value }))}
-                  onFocus={() => dimension === 'department' && setShowEmailDropdown(true)}
+                  onFocus={() => {}}
                   onBlur={() => setTimeout(() => setShowEmailDropdown(false), 200)}
                   className="w-36 px-3 py-1.5 bg-[#0f111a] border border-gray-700 rounded-lg text-white text-xs focus:outline-none focus:border-purple-500" />
-                {dimension === 'department' && showEmailDropdown && deptMembers.length > 0 && (
-                  <div className="absolute z-10 mt-1 w-64 max-h-40 overflow-y-auto bg-[#1c1f2e] border border-gray-700 rounded-lg shadow-lg">
-                    {deptMembers.filter(m => !detailQuery.email || m.email.includes(detailQuery.email) || m.name.includes(detailQuery.email)).slice(0, 50).map(m => (
-                      <div key={m.id} className="px-3 py-1.5 text-xs text-gray-300 hover:bg-[#0f111a] hover:text-white cursor-pointer"
-                        onMouseDown={() => { setDetailQuery(q => ({ ...q, email: m.email })); setShowEmailDropdown(false); }}>
-                        {m.name}{m.name ? ' ' : ''}({m.email})
-                      </div>
-                    ))}
-                  </div>
-                )}
+
               </div>
               <input type="date" value={detailQuery.date} onChange={e => setDetailQuery(q => ({ ...q, date: e.target.value }))}
                 className="px-3 py-1.5 bg-[#0f111a] border border-gray-700 rounded-lg text-white text-xs focus:outline-none focus:border-purple-500" />
@@ -784,7 +728,7 @@ export default function AnalyticsPanels() {
           <div>
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-medium text-gray-300">失败任务分析</h3>
-              <select value={failureDays} onChange={e => { const v = Number(e.target.value); setFailureDays(v); setLoadingPanel('失败分析'); fetchFailureAnalysis(v, dimension === 'department' ? currentUser?.department_id : undefined).then(setFailureData).catch(() => {}).finally(() => setLoadingPanel('')); }}
+              <select value={failureDays} onChange={e => { const v = Number(e.target.value); setFailureDays(v); setLoadingPanel('失败分析'); fetchFailureAnalysis(v).then(setFailureData).catch(() => {}).finally(() => setLoadingPanel('')); }}
                 className="px-3 py-1 bg-[#0f111a] border border-gray-700 rounded-lg text-white text-xs">
                 <option value={7}>近7天</option>
                 <option value={30}>近30天</option>

@@ -41,7 +41,6 @@ export default function AudioGenPage() {
   }, []);
   const isVolcKeyDisabled = !!(
     multiAccountEnabled &&
-    currentProject?.volc_id != null &&
     currentProject?.volc_is_active !== 1
   );
 

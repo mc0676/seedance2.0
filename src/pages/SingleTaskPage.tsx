@@ -261,7 +261,6 @@ export default function SingleTaskPage() {
   }, []);
   const isVolcKeyDisabled = !!(
     multiAccountEnabled &&
-    currentProject?.volc_id != null &&
     currentProject?.volc_is_active !== 1
   );
   const [images, setImages] = useState<UploadedFile[]>([]);
@@ -274,11 +273,17 @@ export default function SingleTaskPage() {
   const [ratio, setRatio] = useState<AspectRatio>((settings.ratio as AspectRatio) || '9:16');
   const [duration, setDuration] = useState<Duration>((Number(settings.duration) as Duration) || 4);
   const [resolution, setResolution] = useState<'480p' | '720p' | '1080p'>((settings.resolution as '480p' | '720p' | '1080p') || '720p');
+  // 防止 useCallback 闭包捕获过期的 resolution 值
+  const resolutionRef = useRef(resolution);
+  resolutionRef.current = resolution;
   const [referenceMode, setReferenceMode] = useState<'reference' | 'first_last_frame'>((settings.reference_mode as 'reference' | 'first_last_frame') || 'reference');
   const [generation, setGeneration] = useState<GenerationState>({ status: 'idle' });
   const [uploading, setUploading] = useState(false);
   const [showMention, setShowMention] = useState(false);
   const [estimate, setEstimate] = useState<{ credits: number; lockedCredits: number; tokens: number; warn?: string; discountedCredits?: number; discountedLockedCredits?: number } | null>(null);
+  // 防止 useCallback 闭包捕获过期的 estimate 值
+  const estimateRef = useRef(estimate);
+  estimateRef.current = estimate;
   const [discountExpired, setDiscountExpired] = useState(false);
   const [balance, setBalance] = useState<{ credits: number; unlimited: boolean; locked: number; available: number } | null>(null);
   const [runtimeModels, setRuntimeModels] = useState<RuntimeModelOption[]>([]);
@@ -1488,13 +1493,13 @@ export default function SingleTaskPage() {
     if (comboError) { alert(comboError); return; }
 
     // 折扣过期检查：refresh estimate，若之前有折扣但现在过期则拦截
-    if (estimate?.discountedCredits != null && !discountExpired) {
+    if (estimateRef.current?.discountedCredits != null && !discountExpired) {
       try {
         const fresh = await estimatePricing({
           model,
           outputDurationSec: Number(duration),
           ratio,
-          resolution,
+          resolution: resolutionRef.current,
           hasVideoInput: videos.length > 0,
           hasAudio: audios.length > 0,
           isDraft: false,
@@ -1510,13 +1515,14 @@ export default function SingleTaskPage() {
     }
 
     // 积分余额预检（避免提交后才被后端拒绝）
-    if (balance && !balance.unlimited && estimate && estimate.lockedCredits > 0) {
-      const effLocked = estimate.discountedLockedCredits != null ? estimate.discountedLockedCredits : estimate.lockedCredits;
+    const curEstimate = estimateRef.current;
+    if (balance && !balance.unlimited && curEstimate && curEstimate.lockedCredits > 0) {
+      const effLocked = curEstimate.discountedLockedCredits != null ? curEstimate.discountedLockedCredits : curEstimate.lockedCredits;
       const totalNeeded = effLocked * batchSize;
       if (balance.available < totalNeeded) {
         alert(batchSize > 1
           ? `批量生成 ${batchSize} 个任务积分不足（可用 ${balance.available}，需要 ${totalNeeded}）`
-          : `可用积分不足（可用 ${balance.available}，本次预计需要 ${estimate.lockedCredits}）`);
+          : `可用积分不足（可用 ${balance.available}，本次预计需要 ${curEstimate.lockedCredits}）`);
         return;
       }
     }
@@ -1617,7 +1623,7 @@ export default function SingleTaskPage() {
           model,
           ratio,
           duration,
-          resolution,
+          resolution: resolutionRef.current,
           referenceMode,
           firstFrameProvided: firstFrameImages.length > 0,
           lastFrameProvided: lastFrameImages.length > 0,
