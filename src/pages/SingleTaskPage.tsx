@@ -12,9 +12,10 @@ import { generateVideo } from '../services/videoService';
 import { getAuthHeaders } from '../services/authService';
 import { uploadToOss, FILE_LIMITS, validateMediaCombination } from '../services/ossService';
 import { estimatePricing, getCreditBalance, listEnabledModels, type RuntimeModelOption } from '../services/pricingService';
-import { getDownloadTasks, downloadTaskVideoDirect, makeDownloadFilename } from '../services/downloadService';
+import { getDownloadTasks, makeDownloadFilename } from '../services/downloadService';
 import { getVolcKeyStatus } from '../services/settingsService';
 import { GearIcon, PlusIcon, CloseIcon, SparkleIcon } from '../components/Icons';
+import DownloadButton from '../components/DownloadButton';
 import Layout from '../components/Layout';
 import AssetGrid, { type GridAsset } from '../components/AssetGrid';
 import { useNavigate } from 'react-router-dom';
@@ -223,6 +224,15 @@ const ARK_ERROR_TRANSLATIONS: Record<string, string> = {
 };
 
 function parseArkError(raw: string): string {
+  // 资源未找到（前端兜底翻译）
+  const assetMatch = raw.match(/content\[(\d+)\].*?asset-([\w-]+)\s+is not found/i);
+  if (assetMatch) {
+    return `第 ${parseInt(assetMatch[1], 10) + 1} 个指定的资源 asset-${assetMatch[2]} 没有找到，请重新上传资源后重试`;
+  }
+  // 资产服务未激活
+  if (raw.includes('has not activated the Asset Service')) {
+    return '您的帐户尚未激活资产服务，请联系管理员激活';
+  }
   // 先直接对原始字符串做翻译匹配（覆盖 "视频生成失败: The request..." 格式）
   for (const [en, zh] of Object.entries(ARK_ERROR_TRANSLATIONS)) {
     if (raw.includes(en)) return zh;
@@ -344,6 +354,7 @@ export default function SingleTaskPage() {
   const undoStackRef = useRef<{ text: string; cursor: number }[]>([]);
   const redoStackRef = useRef<{ text: string; cursor: number }[]>([]);
   const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const skipNextInputUndoRef = useRef(false);
   const navigate = useNavigate();
 
   // Toast
@@ -484,7 +495,7 @@ export default function SingleTaskPage() {
     const staleTagSet = new Set(sels.filter(s => !s.volcAssetId).map(s => s.chipTag));
     const escaped = text
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/\n/g, '<br>');
+      .replace(/\n/g, '<div></div>');
     // 除 assetSelections 外，还包含所有可用素材的 chipTag，
     // 确保复制粘贴带 @asset-xxx 的 chip 后也能正确渲染
     const allAvailableAssetTags = availableAssets
@@ -533,7 +544,7 @@ export default function SingleTaskPage() {
   ) {
     const escaped = text
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/\n/g, '<br>');
+      .replace(/\n/g, '<div></div>');
     const allTags = [
       ...imgs.map((_, i) => `@图片${i + 1}`),
       ...firstImgs.map((_, i) => `@首图${i + 1}`),
@@ -561,6 +572,10 @@ export default function SingleTaskPage() {
       });
   }
 
+  function extractTextLen(raw: string): number {
+    return raw.replace(/\u200B/g, "").length;
+  }
+
   function extractText(el: Node): string {
     let t = '';
     const nodes = Array.from(el.childNodes);
@@ -569,6 +584,8 @@ export default function SingleTaskPage() {
       if (n.nodeType === Node.TEXT_NODE) {
         // 跳过零宽空格（chip 前后的光标占位符）
         t += (n.textContent ?? '').replace(/\u200B/g, '');
+      } else if ((n as Element).tagName === 'DIV') {
+        t += '\n';
       } else if ((n as Element).tagName === 'BR') {
         const prev = n.previousSibling as Element | null;
         if (prev?.classList?.contains('mention-chip')) continue;
@@ -597,7 +614,12 @@ export default function SingleTaskPage() {
       const frag = pre.cloneContents();
       const tmp = document.createElement('div');
       tmp.appendChild(frag);
-      return extractText(tmp).length;
+      let len = extractText(tmp).length;
+      const tag = (range.startContainer as Element).tagName;
+      if (range.startOffset === 0 && (tag === "DIV" || tag === "P") && range.startContainer !== root) {
+        len += 1;
+      }
+      return len;
     } catch {
       return 0;
     }
@@ -615,7 +637,12 @@ export default function SingleTaskPage() {
         pre.setEnd(container, off);
         const tmp = document.createElement('div');
         tmp.appendChild(pre.cloneContents());
-        return extractText(tmp).length;
+        let len = extractText(tmp).length;
+        const tag = (container as Element).tagName;
+        if (off === 0 && (tag === "DIV" || tag === "P") && container !== root) {
+          len += 1;
+        }
+        return len;
       } catch { return 0; }
     };
     const a = offsetAt(range.startContainer, range.startOffset);
@@ -630,7 +657,7 @@ export default function SingleTaskPage() {
     const walk = (node: Node): boolean => {
       // chip span 作为原子处理：计入字符数但光标不进入内部
       if ((node as Element).classList?.contains('mention-chip')) {
-        const chipLen = (node.textContent ?? '').replace(/\u200B/g, '').length;
+        const chipLen = ((node as Element).getAttribute('data-tag') ?? node.textContent ?? '').replace(/\u200B/g, '').length;
         if (cur + chipLen >= offset) {
           // 目标落在 chip 内或末尾，光标放到 chip 之后
           const r = document.createRange();
@@ -664,6 +691,31 @@ export default function SingleTaskPage() {
           return true;
         }
         cur += logLen;
+      } else if ((node as Element).tagName === 'DIV') {
+        if (node !== root) {
+          if (cur + 1 >= offset) {
+            const r = document.createRange();
+            r.setStartAfter(node);
+            r.collapse(true);
+            sel.removeAllRanges();
+            sel.addRange(r);
+            return true;
+          }
+          cur += 1;
+        }
+        for (const c of Array.from(node.childNodes)) {
+          if (walk(c)) return true;
+        }
+      } else if ((node as Element).tagName === 'BR') {
+        if (cur + 1 >= offset) {
+          const r = document.createRange();
+          r.setStartAfter(node);
+          r.collapse(true);
+          sel.removeAllRanges();
+          sel.addRange(r);
+          return true;
+        }
+        cur += 1;
       } else {
         for (const c of Array.from(node.childNodes)) {
           if (walk(c)) return true;
@@ -734,6 +786,7 @@ export default function SingleTaskPage() {
     if (pendingEditorHtmlRef.current !== null) {
       const html = pendingEditorHtmlRef.current;
       pendingEditorHtmlRef.current = null;
+      skipNextInputUndoRef.current = true;
       setEditorHtml(html);
     }
   });
@@ -972,6 +1025,10 @@ export default function SingleTaskPage() {
   }, []);
 
   const handleEditorInput = () => {
+    if (skipNextInputUndoRef.current) {
+      skipNextInputUndoRef.current = false;
+      return;
+    }
     if (!editorRef.current) return;
     cleanChipBrs(editorRef.current);
     const text = extractText(editorRef.current);
@@ -1074,6 +1131,7 @@ export default function SingleTaskPage() {
         const currentText = extractText(editorRef.current);
         const currentCursor = getCursorOffset(editorRef.current);
         redoStackRef.current.push({ text: currentText, cursor: currentCursor });
+        skipNextInputUndoRef.current = true;
         setEditorHtml(buildHtml(snap.text));
         setPrompt(snap.text);
         setTimeout(() => { if (editorRef.current) setCursorOffset(editorRef.current, snap.cursor); }, 0);
@@ -1087,6 +1145,7 @@ export default function SingleTaskPage() {
         const currentText = extractText(editorRef.current);
         const currentCursor = getCursorOffset(editorRef.current);
         undoStackRef.current.push({ text: currentText, cursor: currentCursor });
+        skipNextInputUndoRef.current = true;
         setEditorHtml(buildHtml(snap.text));
         setPrompt(snap.text);
         setTimeout(() => { if (editorRef.current) setCursorOffset(editorRef.current, snap.cursor); }, 0);
@@ -1160,11 +1219,15 @@ export default function SingleTaskPage() {
     if (!editorRef.current) return;
     const raw = e.clipboardData.getData('text/plain');
     const converted = raw.replace(/<ref>(@[^<\n]+)<\/ref>/g, '$1');
-    const { start, end } = getSelectionRange(editorRef.current);
-    const currentText = extractText(editorRef.current);
+    let { start, end } = getSelectionRange(editorRef.current);
+    let currentText = extractText(editorRef.current);
     flushUndo(currentText, start);
-    // 关键修复：粘贴前必须删除选区内的字符，否则 Ctrl+A → Ctrl+V 会变成"在选区前面插入"
-    const newText = currentText.slice(0, start) + converted + currentText.slice(end);
+    // 空编辑器直接覆盖 / Enter 后光标推进
+    if (currentText.trim() === "" && currentText.length <= 1) { currentText = ""; start = 0; end = 0; }
+    let adjustedStart = start;
+    if (start === end && start > 0 && start < currentText.length && currentText[start] === String.fromCharCode(10)) adjustedStart = start + 1;
+    skipNextInputUndoRef.current = true;
+    const newText = currentText.slice(0, adjustedStart) + converted + currentText.slice(end);
     setEditorHtml(buildHtml(newText));
     setPrompt(newText);
     // Restore assetSelections for any @asset chips present in the pasted text
@@ -1192,9 +1255,9 @@ export default function SingleTaskPage() {
         return next;
       });
     }
-    const pos = start + converted.length;
+    const posClean = extractTextLen(currentText.slice(0, adjustedStart)) + extractTextLen(converted);
     setTimeout(() => {
-      if (editorRef.current) setCursorOffset(editorRef.current, pos);
+      if (editorRef.current) setCursorOffset(editorRef.current, posClean);
     }, 0);
   };
 
@@ -2287,17 +2350,7 @@ export default function SingleTaskPage() {
                                 )}
                               </div>
                               <div className="flex gap-1 p-1.5 justify-center">
-                                {isSubDone && (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      downloadTaskVideoDirect(sub.video_url!, makeDownloadFilename(sub.prompt, sub.id));
-                                    }}
-                                    className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-all"
-                                  >
-                                    下载
-                                  </button>
-                                )}
+                                <DownloadButton small table="tasks" id={sub.id} url={sub.video_url!} filename={makeDownloadFilename(sub.prompt, sub.id)} generationStatus={sub.status} downloadStatus={(sub.download_status as any) || 'pending'} onStatusChange={() => {}} />
                               </div>
                             </div>
                           );
@@ -2336,22 +2389,13 @@ export default function SingleTaskPage() {
                       <div className="flex gap-2">
                         {/* 批量操作 */}
                         {isGroup && (
-                          <>
-                            <button
-                              onClick={async () => {
-                                const doneItems = allGroupItems.filter((gi) => gi.status === 'done' && gi.video_url);
-                                if (doneItems.length === 0) { alert('没有可下载的产物'); return; }
-                                for (const gi of doneItems) {
-                                  downloadTaskVideoDirect(gi.video_url!, makeDownloadFilename(gi.prompt, gi.id));
-                                }
-                              }}
-                              className="text-[11px] px-2 py-1 rounded-xl border border-blue-500/40 text-blue-400 hover:bg-blue-500/10 transition-all"
-                            >
-                              批量下载({allGroupItems.filter((gi) => gi.status === 'done' && gi.video_url).length})
-                            </button>
-                          </>
+                          <div className="flex flex-wrap gap-1 justify-end">
+                            {allGroupItems.map((gi) => (
+                              <DownloadButton small key={gi.id} table="tasks" id={gi.id} url={gi.video_url!} filename={makeDownloadFilename(gi.prompt, gi.id)} generationStatus={gi.status} downloadStatus={(gi.download_status as any) || 'pending'} onStatusChange={() => {}} />
+                            ))}
+                          </div>
                         )}
-                        {/* 预览（非批量） */}
+                        {/* 预览 & 下载（非批量） */}
                         {!isGroup && playUrl && (
                           <button
                             onClick={() => {
@@ -2361,6 +2405,9 @@ export default function SingleTaskPage() {
                           >
                                                         预览
                           </button>
+                        )}
+                        {!isGroup && (
+                          <DownloadButton table="tasks" id={item.id} url={item.video_url ?? null} filename={makeDownloadFilename(item.prompt, item.id)} generationStatus={item.status} downloadStatus={(item.download_status as any) || 'pending'} onStatusChange={() => {}} />
                         )}
                       <button
                         onClick={async () => {

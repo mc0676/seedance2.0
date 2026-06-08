@@ -1,4 +1,5 @@
 import { getDatabase } from '../database/index.js';
+import * as taskService from './taskService.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -16,10 +17,20 @@ const ARK_ERROR_MAP = [
   { pattern: /AccountOverdueError|account.*overdue/i, zh: '火山服务端临时异常，请稍后重试' },
   { pattern: /InternalServiceError|internal.*error|unexpected internal/i, zh: '火山服务端临时异常，请稍后重试' },
   { pattern: /timeout/i,                              zh: '生成超时，请稍后重试' },
+  { pattern: /has not activated the Asset Service/i,  zh: '您的帐户尚未激活资产服务，请联系管理员激活' },
 ];
 
 function translateArkError(msg) {
   if (!msg) return msg;
+  // 资产未找到：content[N] 中引用的 asset://xxx 在火山平台已失效
+  const assetNotFoundMatch = msg.match(/content\[(\d+)\].*?asset-([\w-]+)\s+is not found/i);
+  if (assetNotFoundMatch) {
+    const idx = parseInt(assetNotFoundMatch[1], 10) + 1;
+    const assetId = assetNotFoundMatch[2];
+    return `第 ${idx} 个指定的资源 asset-${assetId} 没有找到，请重新上传资源后重试`;
+  }
+  // AI 辅助编程：请求过大（prompt+素材总大小超出 API 限制），后续可扩展
+  // 其他已知英文错误
   for (const { pattern, zh } of ARK_ERROR_MAP) {
     if (pattern.test(msg)) return zh;
   }
@@ -262,16 +273,10 @@ async function generateSeedanceVideo(options) {
 }
 
 function updateTaskStatus(taskId, status, videoUrl = null, historyId = null) {
-  const db = getDatabase();
-  const stmt = db.prepare(`
-    UPDATE tasks
-    SET status = ?,
-        video_url = ?,
-        history_id = ?,
-        completed_at = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `);
-  stmt.run(status, videoUrl, historyId, taskId);
+  const extra = {};
+  if (videoUrl) extra.video_url = videoUrl;
+  if (historyId) extra.history_id = historyId;
+  taskService.updateTaskStatus(taskId, status, extra);
 }
 
 export {

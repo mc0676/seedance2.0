@@ -76,6 +76,7 @@ export function listByUser({ userId, isAdmin = false, page = 1, pageSize = 20, p
   const items = db.prepare(`
     SELECT a.id, a.task_id, a.user_id, a.project_id, a.reference_image_url, a.voice_prompt,
            a.status, a.intermediate_video_url, a.credits_used, a.error_message,
+           a.download_status, a.downloaded_at,
            a.created_at, a.finished_at,
            t.status AS task_status, t.video_url AS task_video_url, t.progress AS task_progress
     FROM audio_generations a

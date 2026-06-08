@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
+import DownloadButton from '../components/DownloadButton';
 import { uploadToOss, FILE_LIMITS, probeVideoDuration } from '../services/ossService';
 import { CloseIcon, PlusIcon, SparkleIcon, GearIcon } from '../components/Icons';
 import Layout from '../components/Layout';
@@ -1570,11 +1571,8 @@ export default function HappyHorsePage() {
                                     )}
                                   </div>
                                   <div className="flex gap-1 p-1.5 justify-center">
-                                    {isSubDone && (
-                                      <button
-                                        onClick={(e) => { e.stopPropagation(); handleDownload(sub); }}
-                                        className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-all"
-                                      >下载</button>
+                                    {(
+                                      <DownloadButton small table="tasks_happyhorse" id={sub.id} url={sub.video_url!} filename={`happyhorse_${sub.id}.mp4`} generationStatus={sub.status} downloadStatus={(sub.download_status as any) || 'pending'} onStatusChange={() => {}} />
                                     )}
                                   </div>
                                 </div>
@@ -1618,8 +1616,8 @@ export default function HappyHorsePage() {
                                                                 预览
                               </button>
                             )}
-                            {!isGroup && t.status === 'done' && t.video_url && (
-                              <button onClick={() => handleDownload(t)} className="text-[11px] px-2 py-1 rounded-xl border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition-all">下载</button>
+                            {!isGroup && (
+                              <DownloadButton table="tasks_happyhorse" id={t.id} url={t.video_url} filename={`happyhorse_${t.id}.mp4`} generationStatus={t.status} downloadStatus={(t.download_status as any) || 'pending'} onStatusChange={() => {}} />
                             )}
                             <button onClick={() => handleReuse(t)} className="text-[11px] px-2 py-1 rounded-xl border border-purple-500/40 text-purple-400 hover:bg-purple-500/10 transition-all">复用</button>
                           </div>

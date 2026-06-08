@@ -15,7 +15,6 @@ import EnhancementPage from './pages/EnhancementPage';
 import ConsumptionAnalysisPage from './pages/ConsumptionAnalysisPage';
 import HappyHorsePage from './pages/HappyHorsePage';
 import SettingsPage from './pages/Settings';
-import DownloadManagementPage from './pages/DownloadManagement';
 import ProjectWorkspacePage from './pages/ProjectWorkspacePage';
 import type { User } from './types';
 import { getCurrentUser } from './services/authService';
@@ -206,16 +205,6 @@ function AppContent() {
             <ProtectedRoute currentUser={currentUser}>
               <MainLayout currentUser={currentUser} onLogout={handleLogout} onUserUpdated={setCurrentUser}>
                 <SingleTaskPage />
-              </MainLayout>
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/download"
-          element={
-            <ProtectedRoute currentUser={currentUser}>
-              <MainLayout currentUser={currentUser} onLogout={handleLogout} onUserUpdated={setCurrentUser}>
-                <DownloadManagementPage />
               </MainLayout>
             </ProtectedRoute>
           }

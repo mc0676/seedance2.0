@@ -709,6 +709,7 @@ export interface VolcKeyGroup {
   is_active: number;
   grouping_weight: number;
   note: string;
+  amount_of_taking_back?: number;
   created_at: string;
   updated_at: string;
   bound_count?: number;
@@ -944,8 +945,9 @@ export interface DistributionLogItem {
   admin_id: number | null;
   recipient_id: number;
   credits_amount: number;
-  method: 'activation_code' | 'manual_set' | 'manual_add' | 'checkin';
+  method: 'activation_code' | 'activation_code_daily' | 'manual_set' | 'manual_add' | 'checkin' | 'self_paying' | 'code_refund' | 'recycling';
   note: string;
+  amount_of_taking_back?: number;
   created_at: string;
   admin_email: string;
   admin_name: string;
@@ -1011,6 +1013,12 @@ export interface AdminQuotaItem {
 
 export const fetchAdminQuotas = () =>
   adminFetch<AdminQuotaItem[]>('/admin/admin-quotas');
+
+export const takeBackDistribution = (id: number) =>
+  adminFetch<{ takenBack: number; totalTakenBack: number; status: string }>(`/admin/credit-distribution/${id}/take-back`, { method: 'POST' });
+
+export const recycleTeamCredits = () =>
+  adminFetch<{ recycled: number; returnedToCreator: number; dailyTakenBack: number; total: number }>('/admin/credit-distribution/recycle-team', { method: 'POST' });
 
 export const updateAdminQuota = (adminId: number, payload: { totalQuota?: number; dailyQuota?: number }) =>
   adminFetch<{ success: boolean }>(`/admin/admin-quotas/${adminId}`, {

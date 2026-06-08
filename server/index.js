@@ -42,6 +42,42 @@ enhancementWorker.start();
 // 启动 HappyHorse 后台轮询
 happyhorseWorker.start();
 
+// 启动时恢复音频生成记录：同步 tasks(task_kind='audio_intermediate') 的终态到 audio_generations
+try {
+  const db = getDatabase();
+  const orphanGenerating = db.prepare(`
+    SELECT ag.id, ag.task_id, t.status AS task_status, t.video_url, t.error_message
+    FROM audio_generations ag
+    JOIN tasks t ON t.id = ag.task_id
+    WHERE ag.status = 'generating'
+      AND t.task_kind = 'audio_intermediate'
+      AND t.status IN ('done', 'error')
+  `).all();
+  for (const row of orphanGenerating) {
+    if (row.task_status === 'done') {
+      let credits = 0;
+      try {
+        const lock = db.prepare("SELECT locked_credits FROM credit_locks WHERE task_id = ? AND status = 'settled' LIMIT 1").get(row.task_id);
+        credits = lock?.locked_credits || 0;
+      } catch {}
+      db.prepare(`UPDATE audio_generations SET status='done', intermediate_video_url=?, credits_used=?, finished_at=CURRENT_TIMESTAMP WHERE id=?`)
+        .run(row.video_url || null, credits, row.id);
+      console.log(`[启动] audio_gen=${row.id} task=${row.task_id} 已同步为 done`);
+    } else {
+      db.prepare(`UPDATE audio_generations SET status='error', error_message=?, finished_at=CURRENT_TIMESTAMP WHERE id=?`)
+        .run(row.error_message || '任务失败（恢复）', row.id);
+      console.log(`[启动] audio_gen=${row.id} task=${row.task_id} 已同步为 error`);
+    }
+  }
+  if (orphanGenerating.length > 0) {
+    console.log(`[启动] 音频生成记录恢复：${orphanGenerating.length} 条已同步`);
+  }
+} catch (e) {
+  console.warn('[启动] 音频生成记录恢复失败:', e.message);
+}
+
+
+
 // 启动一次性：把存量同项目同名的素材组改名为 `xxx (2)` 等，确保同一项目组内素材组名唯一
 try {
   const changed = assetService.migrateDeduplicateAssetGroupNames();
@@ -96,9 +132,15 @@ try {
   `).all();
   if (zombies.length > 0) {
     const ids = zombies.map((z) => z.id);
-    _db.prepare(`UPDATE tasks SET status = 'error', error_message = '服务重启时检测到任务超过 30 分钟未更新，自动标记失败', completed_at = CURRENT_TIMESTAMP WHERE id IN (${ids.map(() => '?').join(',')})`).run(...ids);
+    // 用 taskService 更新，确保 audio_generations 同步
+    for (const id of ids) {
+      try {
+        taskService.updateTaskStatus(id, 'error', { error_message: '服务重启时检测到任务超过 30 分钟未更新，自动标记失败' });
+      } catch {}
+    }
     // 释放对应的锁定积分
-    _db.prepare(`UPDATE credit_locks SET status = 'released', release_reason = '启动时僵尸任务清理', settled_at = CURRENT_TIMESTAMP WHERE task_id IN (${ids.map(() => '?').join(',')}) AND status = 'locked'`).run(...ids);
+    const db = getDatabase();
+    db.prepare(`UPDATE credit_locks SET status = 'released', release_reason = '启动时僵尸任务清理', settled_at = CURRENT_TIMESTAMP WHERE task_id IN (${ids.map(() => '?').join(',')}) AND status = 'locked'`).run(...ids);
     console.log(`[启动] 清理僵尸任务 ${zombies.length} 个：${ids.join(',')}`);
   }
 } catch (e) {
@@ -1073,6 +1115,51 @@ app.post('/api/oss/probe-video', authenticate, async (req, res) => {
   }
 });
 
+// 后台异步轮询吴音图片生成结果
+async function pollWuyinResult(db, imageRecordId, wuyinTaskId, imageGenCost) {
+  const POLL_INTERVAL_MS = 3000;
+  const POLL_TIMEOUT_MS = 5 * 60 * 1000;
+  const startedAt = Date.now();
+  try {
+    while (Date.now() - startedAt < POLL_TIMEOUT_MS) {
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+      try {
+        const detailResp = await fetch(
+          `${WUYIN_BASE}/api/async/detail?id=${encodeURIComponent(wuyinTaskId)}&key=${encodeURIComponent(WUYIN_API_KEY)}`,
+          { headers: { 'Authorization': WUYIN_API_KEY } }
+        );
+        const detailData = await detailResp.json();
+        if (!detailResp.ok || detailData?.code !== 200) {
+          const friendly = mapWuyinUpstreamError(detailData?.msg || '查询任务失败') || detailData?.msg || '查询任务失败';
+          creditLockService.releaseForImage({ imageRecordId, reason: friendly });
+          db.prepare(`UPDATE image_records SET status='error', error_message=? WHERE id=?`).run(friendly, imageRecordId);
+          return;
+        }
+        const status = detailData?.data?.status;
+        if (status === 2) {
+          const resultUrls = Array.isArray(detailData.data.result) ? detailData.data.result : [];
+          const userRow = db.prepare('SELECT unlimited_credits FROM users WHERE id = (SELECT user_id FROM image_records WHERE id = ?)').get(imageRecordId);
+          const actualCost = userRow?.unlimited_credits ? 0 : imageGenCost;
+          creditLockService.settleForImage({ imageRecordId, actualCredits: actualCost });
+          db.prepare(`UPDATE image_records SET result_urls=?, credits_used=?, status='done' WHERE id=?`).run(JSON.stringify(resultUrls), actualCost, imageRecordId);
+          return;
+        }
+        if (status === 3) {
+          const friendly = mapWuyinUpstreamError(detailData?.data?.message || '生成失败') || detailData?.data?.message || '生成失败';
+          creditLockService.releaseForImage({ imageRecordId, reason: friendly });
+          db.prepare(`UPDATE image_records SET status='error', error_message=? WHERE id=?`).run(friendly, imageRecordId);
+          return;
+        }
+      } catch {}
+    }
+    creditLockService.releaseForImage({ imageRecordId, reason: '生成超时' });
+    db.prepare(`UPDATE image_records SET status='error', error_message=? WHERE id=?`).run('生成超时', imageRecordId);
+  } catch {
+    creditLockService.releaseForImage({ imageRecordId, reason: '轮询异常' });
+    db.prepare(`UPDATE image_records SET status='error', error_message=? WHERE id=?`).run('轮询异常', imageRecordId);
+  }
+}
+
 // POST /api/generate-image - 使用速创异步API生成图片（Nano Banana 2 / GPT-Image-2）
 // 积分流程与视频一致：先 lockForImage → 生成 → settleForImage / releaseForImage
 //
@@ -1206,75 +1293,17 @@ app.post('/api/generate-image', authenticate, async (req, res) => {
       return res.status(502).json({ error: friendly });
     }
     wuyinTaskId = submitData.data.id;
-    // 立即持久化 wuyin_task_id，防止重启后任务丢失
-    db.prepare(`UPDATE image_records SET wuyin_task_id=? WHERE id=?`).run(wuyinTaskId, imageRecordId);
+    // 立即持久化 wuyin_task_id，防止重启后任务丢失；同时标记为 generating
+    db.prepare(`UPDATE image_records SET wuyin_task_id=?, status='generating' WHERE id=?`).run(wuyinTaskId, imageRecordId);
   } catch (e) {
     creditLockService.releaseForImage({ imageRecordId, reason: e.message });
     db.prepare(`UPDATE image_records SET status='error', error_message=? WHERE id=?`).run(e.message, imageRecordId);
     return res.status(502).json({ error: '提交请求异常：' + e.message });
   }
 
-  // 4) 轮询查询结果
-  const POLL_INTERVAL_MS = 3000;
-  const POLL_TIMEOUT_MS = 5 * 60 * 1000;
-  const startedAt = Date.now();
-  let resultUrls = null;
-  try {
-    while (Date.now() - startedAt < POLL_TIMEOUT_MS) {
-      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-      const detailResp = await fetch(
-        `${WUYIN_BASE}/api/async/detail?id=${encodeURIComponent(wuyinTaskId)}&key=${encodeURIComponent(WUYIN_API_KEY)}`,
-        { headers: { 'Authorization': WUYIN_API_KEY } }
-      );
-      const detailData = await detailResp.json();
-      if (!detailResp.ok || detailData?.code !== 200) {
-        const rawMsg = detailData?.msg || '查询任务失败';
-        const friendly = mapWuyinUpstreamError(rawMsg) || rawMsg;
-        creditLockService.releaseForImage({ imageRecordId, reason: friendly });
-        db.prepare(`UPDATE image_records SET status='error', error_message=? WHERE id=?`).run(friendly, imageRecordId);
-        return res.status(502).json({ error: friendly });
-      }
-      const status = detailData?.data?.status;
-      if (status === 2) {
-        resultUrls = Array.isArray(detailData.data.result) ? detailData.data.result : [];
-        break;
-      }
-      if (status === 3) {
-        const rawMsg = detailData?.data?.message || '生成失败';
-        const friendly = mapWuyinUpstreamError(rawMsg) || rawMsg;
-        creditLockService.releaseForImage({ imageRecordId, reason: friendly });
-        db.prepare(`UPDATE image_records SET status='error', error_message=? WHERE id=?`).run(friendly, imageRecordId);
-        return res.status(502).json({ error: friendly });
-      }
-    }
-  } catch (e) {
-    creditLockService.releaseForImage({ imageRecordId, reason: e.message });
-    db.prepare(`UPDATE image_records SET status='error', error_message=? WHERE id=?`).run(e.message, imageRecordId);
-    return res.status(500).json({ error: '轮询异常：' + e.message });
-  }
-
-  if (!resultUrls) {
-    creditLockService.releaseForImage({ imageRecordId, reason: '生成超时' });
-    db.prepare(`UPDATE image_records SET status='error', error_message=? WHERE id=?`).run('生成超时（轮询超时，超过5分钟未返回结果）', imageRecordId);
-    return res.status(504).json({ error: '生成超时，请稍后再试' });
-  }
-
-  // 5) 生成成功：settle 积分（等同视频 settle，usage_logs 自动写入）
-  const userRow = db.prepare('SELECT unlimited_credits FROM users WHERE id = ?').get(req.user.id);
-  const actualCost = userRow?.unlimited_credits ? 0 : IMAGE_GEN_COST;
-  creditLockService.settleForImage({ imageRecordId, actualCredits: actualCost });
-
-  // 6) 更新 image_record 为完成状态
-  db.prepare(
-    `UPDATE image_records SET result_urls=?, credits_used=?, status='done' WHERE id=?`
-  ).run(JSON.stringify(resultUrls), actualCost, imageRecordId);
-
-  res.json({
-    success: true,
-    taskId: wuyinTaskId,
-    urls: resultUrls,
-    creditsUsed: actualCost,
-  });
+  // 4) 立即返回，后台异步轮询
+  res.json({ success: true, imageRecordId, status: 'generating' });
+  pollWuyinResult(db, imageRecordId, wuyinTaskId, IMAGE_GEN_COST);
 });
 
 // GET /api/image-records - 图片生成历史（按项目组过滤，无限滚动分页）
@@ -1300,9 +1329,9 @@ app.get('/api/image-records', authenticate, async (req, res) => {
     }
     const where = conditions.length ? conditions.join(' AND ') : '1=1';
 
-    // 恢复 pending 记录（重启后通过 wuyin_task_id 轮询结果）
+    // 恢复 pending/generating 记录（重启后通过 wuyin_task_id 轮询结果）
     const pendingRows = db.prepare(
-      `SELECT * FROM image_records WHERE ${where} AND status='pending' AND wuyin_task_id IS NOT NULL`
+      `SELECT * FROM image_records WHERE ${where} AND (status='pending' OR status='generating') AND wuyin_task_id IS NOT NULL`
     ).all(...params);
     for (const row of pendingRows) {
       await recoverImageRecord(db, row);
@@ -1320,8 +1349,8 @@ app.get('/api/image-records', authenticate, async (req, res) => {
       try { creditLockService.releaseForImage({ imageRecordId: r.id, reason: '未获取到上游任务ID' }); } catch {}
     }
 
-    // 历史保留 done/error/pending：pending 是"生成中"持久化状态，切换页面/刷新后还能看到进度条
-    const statusFilter = "status IN ('done','error','pending')";
+    // 历史保留 done/error/pending/generating
+    const statusFilter = "status IN ('done','error','pending','generating')";
     const total = db.prepare(`SELECT COUNT(*) as n FROM image_records WHERE ${where} AND ${statusFilter}`).get(...params).n;
     const rows = db.prepare(`SELECT * FROM image_records WHERE ${where} AND ${statusFilter} ORDER BY created_at DESC LIMIT ? OFFSET ?`).all(...params, limit, offset);
     const records = rows.map((r) => ({
@@ -1336,6 +1365,33 @@ app.get('/api/image-records', authenticate, async (req, res) => {
 });
 
 // POST /api/image-records/:id/mark-downloaded - 标记图片记录已下载（持久化）
+// POST /api/download-status - 统一更新下载状态（5 张表通用）
+app.post('/api/download-status', authenticate, (req, res) => {
+  try {
+    const { table, id, status } = req.body;
+    const allowedTables = ['tasks', 'tasks_happyhorse', 'image_records', 'audio_generations', 'video_enhancements'];
+    const allowedStatuses = ['pending', 'downloading', 'done', 'failed', 'failed_from_expired'];
+    if (!allowedTables.includes(table)) return res.status(400).json({ error: '无效的表名' });
+    if (!allowedStatuses.includes(status)) return res.status(400).json({ error: '无效的下载状态' });
+    const db = getDatabase();
+    const updates = { download_status: status };
+    if (status === 'done') updates.downloaded_at = new Date().toISOString();
+    const setClauses = Object.keys(updates).map(k => `${k} = ?`).join(', ');
+    const values = Object.values(updates);
+    db.prepare(`UPDATE ${table} SET ${setClauses} WHERE id = ?`).run(...values, id);
+    // 音频生成：同步清空关联 tasks 表的 download 字段（下载状态以 audio_generations 为准）
+    if (table === 'audio_generations') {
+      const ag = db.prepare('SELECT task_id FROM audio_generations WHERE id = ?').get(id);
+      if (ag?.task_id) {
+        db.prepare('UPDATE tasks SET download_status = NULL, downloaded_at = NULL WHERE id = ?').run(ag.task_id);
+      }
+    }
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // 与视频 /api/download/tasks/:id/mark-downloaded 行为对齐：仅写时间戳，不校验下载手段
 app.post('/api/image-records/:id/mark-downloaded', authenticate, (req, res) => {
   try {
@@ -1923,7 +1979,8 @@ app.get('/api/task/:taskId', authenticate, async (req, res) => {
           }
 
           if (arkResult.status === 'failed') {
-            const errMsg = arkResult.error?.message || arkResult.error?.code || 'Ark 任务失败';
+            const rawMsg = arkResult.error?.message || arkResult.error?.code || 'Ark 任务失败';
+            const errMsg = translateArkError(rawMsg);
             taskService.updateTask(dbTask.id, { status: 'error', error_message: errMsg, progress: '' });
             try { creditLockService.release({ taskId: dbTask.id, reason: '轮询补结算：' + errMsg }); } catch (e) { console.error('[poll] 补释放失败:', e.message); }
             return res.json({ status: 'error', error: errMsg });
@@ -2622,7 +2679,11 @@ app.get('/api/download/video-by-token', async (req, res) => {
 
     const upstream = await fetch(record.videoUrl, { headers });
     if (!upstream.ok && upstream.status !== 206) {
-      return res.status(502).json({ error: `上游视频请求失败 HTTP ${upstream.status}` });
+      // 403/404 → 资源过期/不存在，转发给前端做过期检测
+      if (upstream.status === 403 || upstream.status === 404) {
+        return res.status(upstream.status).json({ error: '资源不存在或已过期' });
+      }
+      return res.status(502).json({ error: `上游资源请求失败 HTTP ${upstream.status}` });
     }
 
     const contentLength = upstream.headers.get('content-length');
@@ -2637,7 +2698,11 @@ app.get('/api/download/video-by-token', async (req, res) => {
       res.setHeader('Accept-Ranges', 'bytes');
     }
     res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Disposition', `attachment; filename="${record.filename || 'video.mp4'}"`);
+    // 对含中文等非 ASCII 字符的文件名做 RFC 5987 编码，避免 Invalid character in header 错误
+    const rawName = record.filename || 'video.mp4';
+    const asciiName = rawName.replace(/[^\x20-\x7e]/g, '_').replace(/_{2,}/g, '_');
+    const encodedName = encodeURIComponent(rawName);
+    res.setHeader('Content-Disposition', `attachment; filename="${asciiName}"; filename*=UTF-8''${encodedName}`);
     res.setHeader('Cache-Control', 'no-store');
     if (contentLength) res.setHeader('Content-Length', contentLength);
 
@@ -3379,6 +3444,228 @@ app.get('/api/admin/credits/daily-trend', authenticate, (req, res) => {
   }
 });
 
+// GET /api/admin/credits/project-timeline - 项目消耗时间线（折线图数据 + 统计）
+app.get('/api/admin/credits/project-timeline', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const role = req.user.role;
+    const userId = req.user.id;
+
+    // 权限：user 无权访问
+    if (role === 'user') {
+      return res.json({ success: true, data: { projects: [], timeline: [] } });
+    }
+
+    const granularity = req.query.granularity === 'week' ? 'week' : 'day';
+    const dateFormat = granularity === 'week'
+      ? "strftime('%Y-W%W', cl.settled_at)"
+      : "date(cl.settled_at)";
+
+    // 管理员可见范围：admin 只看自己所在组的成员参与的项目
+    let projectFilter = '';
+    const filterParams = [];
+    if (role === 'admin') {
+      // 找到该 admin 的 department_id
+      const admin = db.prepare('SELECT department_id FROM users WHERE id = ?').get(userId);
+      if (admin?.department_id) {
+        projectFilter = `AND p.id IN (
+          SELECT DISTINCT COALESCE(t.project_id, th.project_id, ir.project_id, ve.project_id)
+          FROM credit_locks cl
+          LEFT JOIN tasks t ON t.id = cl.task_id
+          LEFT JOIN tasks_happyhorse th ON th.id = cl.task_happyhorse_id
+          LEFT JOIN image_records ir ON ir.id = cl.image_record_id
+          LEFT JOIN video_enhancements ve ON ve.id = cl.enhancement_id
+          JOIN users u ON u.id = cl.user_id
+          WHERE u.department_id = ?
+        )`;
+        filterParams.push(admin.department_id);
+      } else {
+        projectFilter = `AND p.id IN (SELECT DISTINCT COALESCE(t.project_id, th.project_id, ir.project_id, ve.project_id)
+          FROM credit_locks cl
+          LEFT JOIN tasks t ON t.id = cl.task_id
+          LEFT JOIN tasks_happyhorse th ON th.id = cl.task_happyhorse_id
+          LEFT JOIN image_records ir ON ir.id = cl.image_record_id
+          LEFT JOIN video_enhancements ve ON ve.id = cl.enhancement_id
+          WHERE cl.user_id = ?)`;
+        filterParams.push(userId);
+      }
+    }
+
+    // 每个项目的汇总统计
+    const projects = db.prepare(`
+      SELECT p.id, p.name, p.created_at,
+        COALESCE(stats.participant_count, 0) AS participant_count,
+        COALESCE(stats.task_count, 0) AS task_count,
+        COALESCE(stats.total_credits, 0) AS total_credits
+      FROM projects p
+      LEFT JOIN (
+        SELECT project_id,
+          COUNT(DISTINCT user_id) AS participant_count,
+          COUNT(*) AS task_count,
+          SUM(actual_credits) AS total_credits
+        FROM (
+          SELECT t.project_id, t.user_id, cl.actual_credits
+          FROM tasks t
+          JOIN credit_locks cl ON cl.task_id = t.id AND cl.status = 'settled'
+          WHERE t.status = 'done' AND t.deleted_at IS NULL
+          UNION ALL
+          SELECT th.project_id, th.user_id, cl.actual_credits
+          FROM tasks_happyhorse th
+          JOIN credit_locks cl ON cl.task_happyhorse_id = th.id AND cl.status = 'settled'
+          WHERE th.status = 'done' AND th.deleted_at IS NULL
+          UNION ALL
+          SELECT ir.project_id, ir.user_id, cl.actual_credits
+          FROM image_records ir
+          JOIN credit_locks cl ON cl.image_record_id = ir.id AND cl.status = 'settled'
+          WHERE ir.status = 'done' AND ir.deleted_at IS NULL
+          UNION ALL
+          SELECT ve.project_id, ve.user_id, cl.actual_credits
+          FROM video_enhancements ve
+          JOIN credit_locks cl ON cl.enhancement_id = ve.id AND cl.status = 'settled'
+          WHERE ve.status = 'done' AND ve.deleted_at IS NULL
+        ) combined
+        WHERE combined.project_id IS NOT NULL
+        GROUP BY combined.project_id
+      ) stats ON stats.project_id = p.id
+      WHERE COALESCE(stats.task_count, 0) > 0
+      ${projectFilter}
+      ORDER BY p.name ASC
+    `).all(...filterParams);
+
+    // 时间线：每个项目每天的积分消耗
+    const timeline = db.prepare(`
+      SELECT
+        COALESCE(t.project_id, th.project_id, ir.project_id, ve.project_id) AS project_id,
+        ${dateFormat} AS date_label,
+        SUM(COALESCE(cl.actual_credits, 0)) AS credits
+      FROM credit_locks cl
+      LEFT JOIN tasks t ON t.id = cl.task_id
+      LEFT JOIN tasks_happyhorse th ON th.id = cl.task_happyhorse_id
+      LEFT JOIN image_records ir ON ir.id = cl.image_record_id
+      LEFT JOIN video_enhancements ve ON ve.id = cl.enhancement_id
+      WHERE cl.status = 'settled'
+        AND cl.settled_at IS NOT NULL
+        AND COALESCE(t.project_id, th.project_id, ir.project_id, ve.project_id) IS NOT NULL
+      GROUP BY COALESCE(t.project_id, th.project_id, ir.project_id, ve.project_id), ${dateFormat}
+      ORDER BY 2 ASC
+    `).all();
+
+    res.json({ success: true, data: { projects, timeline } });
+  } catch (error) {
+    console.error('[project-timeline]', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/admin/credits/team-ranking - 团队成员当日消耗排行
+app.get('/api/admin/credits/team-ranking', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const role = req.user.role;
+    const userId = req.user.id;
+    if (role === 'user') return res.json({ success: true, data: { dept: null, ranking: [] } });
+
+    const admin = db.prepare('SELECT department_id FROM users WHERE id = ?').get(userId);
+    const deptId = admin?.department_id;
+    if (!deptId) return res.json({ success: true, data: { dept: null, ranking: [] } });
+
+    const dept = db.prepare('SELECT id, name FROM departments WHERE id = ?').get(deptId);
+    if (!dept) return res.json({ success: true, data: { dept: null, ranking: [] } });
+
+    // 团队总人数（所有成员，不随日期变化）
+    const memberCount = db.prepare('SELECT COUNT(*) AS n FROM users WHERE department_id = ?').get(deptId).n;
+
+    const date = req.query.date || new Date().toISOString().slice(0, 10);
+
+    const ranking = db.prepare(`
+      SELECT u.id, u.name, u.email,
+        COALESCE(SUM(cl.actual_credits), 0) AS total_credits,
+        COUNT(*) AS task_count
+      FROM users u
+      LEFT JOIN credit_locks cl ON cl.user_id = u.id AND cl.status = 'settled'
+      LEFT JOIN tasks t ON t.id = cl.task_id
+      LEFT JOIN tasks_happyhorse th ON th.id = cl.task_happyhorse_id
+      LEFT JOIN image_records ir ON ir.id = cl.image_record_id
+      LEFT JOIN video_enhancements ve ON ve.id = cl.enhancement_id
+      WHERE u.department_id = ?
+        AND u.status = 'active'
+        AND cl.id IS NOT NULL
+        AND date(COALESCE(t.created_at, th.created_at, ir.created_at, ve.created_at, cl.created_at)) = ?
+      GROUP BY u.id
+      ORDER BY total_credits DESC
+    `).all(deptId, date);
+
+    res.json({ success: true, data: { dept: { id: dept.id, name: dept.name, memberCount }, ranking } });
+  } catch (error) {
+    console.error('[team-ranking]', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/admin/credits/team-timeline - 团队成员消耗时间线
+app.get('/api/admin/credits/team-timeline', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const role = req.user.role;
+    const userId = req.user.id;
+    if (role === 'user') return res.json({ success: true, data: { dept: null, members: [], timeline: [] } });
+
+    const admin = db.prepare('SELECT department_id FROM users WHERE id = ?').get(userId);
+    const deptId = admin?.department_id;
+    if (!deptId) return res.json({ success: true, data: { dept: null, members: [], timeline: [] } });
+
+    const dept = db.prepare('SELECT id, name FROM departments WHERE id = ?').get(deptId);
+    if (!dept) return res.json({ success: true, data: { dept: null, members: [], timeline: [] } });
+
+    const members = db.prepare('SELECT id, name, email FROM users WHERE department_id = ? AND status = ?').all(deptId, 'active');
+    const memberCount = members.length;
+
+    const granularity = req.query.granularity === 'week' ? 'week' : 'day';
+    const dateFormat = granularity === 'week'
+      ? "strftime('%Y-W%W', COALESCE(t.created_at, th.created_at, ir.created_at, ve.created_at, cl.created_at))"
+      : "date(COALESCE(t.created_at, th.created_at, ir.created_at, ve.created_at, cl.created_at))";
+
+    const timeline = db.prepare(`
+      SELECT cl.user_id,
+        ${dateFormat} AS date_label,
+        SUM(COALESCE(cl.actual_credits, 0)) AS credits
+      FROM credit_locks cl
+      LEFT JOIN tasks t ON t.id = cl.task_id
+      LEFT JOIN tasks_happyhorse th ON th.id = cl.task_happyhorse_id
+      LEFT JOIN image_records ir ON ir.id = cl.image_record_id
+      LEFT JOIN video_enhancements ve ON ve.id = cl.enhancement_id
+      JOIN users u ON u.id = cl.user_id
+      WHERE cl.status = 'settled'
+        AND u.department_id = ?
+      GROUP BY cl.user_id, date_label
+      ORDER BY date_label ASC
+    `).all(deptId);
+
+    const memberStats = db.prepare(`
+      SELECT cl.user_id,
+        SUM(COALESCE(cl.actual_credits, 0)) AS total_credits,
+        COUNT(*) AS task_count
+      FROM credit_locks cl
+      JOIN users u ON u.id = cl.user_id
+      WHERE cl.status = 'settled'
+        AND u.department_id = ?
+      GROUP BY cl.user_id
+    `).all(deptId);
+
+    const statMap = new Map(memberStats.map(s => [s.user_id, { total_credits: s.total_credits, task_count: s.task_count }]));
+    const enriched = members.map(m => ({
+      ...m,
+      total_credits: statMap.get(m.id)?.total_credits ?? 0,
+      task_count: statMap.get(m.id)?.task_count ?? 0,
+    }));
+
+    res.json({ success: true, data: { dept: { id: dept.id, name: dept.name, memberCount }, members: enriched, timeline } });
+  } catch (error) {
+    console.error('[team-timeline]', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // GET /api/admin/credits/today-ranking - 当日消耗排行
 app.get('/api/admin/credits/today-ranking', authenticate, (req, res) => {
   try {
@@ -3867,6 +4154,156 @@ app.get('/api/admin/credit-distributions/summary', authenticate, (req, res) => {
   }
 });
 
+
+// POST /api/admin/credit-distribution/:id/take-back - 撤回发分记录
+app.post('/api/admin/credit-distribution/:id/take-back', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const id = Number(req.params.id);
+    const log = db.prepare('SELECT * FROM credit_distribution_logs WHERE id = ?').get(id);
+    if (!log) return res.status(404).json({ error: '记录不存在' });
+
+    // recycling / manual_set / manual_add 不涉及撤回概念
+    if (log.method === 'recycling') return res.status(400).json({ error: '回收记录不支持撤回操作' });
+    if (log.method === 'manual_set' || log.method === 'manual_add') return res.status(400).json({ error: '手动发放记录不支持撤回操作' });
+
+    const isSuperAdmin = req.user.role === 'super_admin';
+    if (!isSuperAdmin && log.admin_id !== req.user.id) {
+      return res.status(403).json({ error: '无权操作，只能撤回自己的发放记录' });
+    }
+
+    const recipient = db.prepare('SELECT credits FROM users WHERE id = ?').get(log.recipient_id);
+    if (!recipient) return res.status(404).json({ error: '接收用户不存在' });
+
+    const recipientCredits = recipient.credits;
+    const takenBack = Math.min(log.credits_amount - (log.amount_of_taking_back || 0), recipientCredits);
+    if (takenBack <= 0) return res.json({ success: true, data: { takenBack: 0, totalTakenBack: log.amount_of_taking_back || 0, status: '已全部撤回' } });
+
+    db.transaction(() => {
+      db.prepare('UPDATE users SET credits = MAX(0, credits - ?) WHERE id = ?').run(takenBack, log.recipient_id);
+      db.prepare('UPDATE credit_distribution_logs SET amount_of_taking_back = COALESCE(amount_of_taking_back, 0) + ? WHERE id = ?').run(takenBack, id);
+
+      // 自费发分：撤回后退还给当事人；activation_code 自费码：退还给创建者
+      if (log.method === 'self_paying') {
+        if (log.admin_id) {
+          db.prepare('UPDATE users SET credits = credits + ? WHERE id = ?').run(takenBack, log.admin_id);
+        }
+      } else if (log.method === 'activation_code' && log.admin_id) {
+        db.prepare('UPDATE users SET credits = credits + ? WHERE id = ?').run(takenBack, log.admin_id);
+      }
+    })();
+
+    const updated = db.prepare('SELECT amount_of_taking_back, credits_amount FROM credit_distribution_logs WHERE id = ?').get(id);
+    const totalTakenBack = updated.amount_of_taking_back || 0;
+    const status = totalTakenBack >= updated.credits_amount ? '全部收回' : '部分收回';
+    res.json({ success: true, data: { takenBack, totalTakenBack, status } });
+  } catch (error) {
+    console.error('[take-back]', error.message, error.stack);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/admin/credit-distribution/recycle-team - 回收组员积分
+app.post('/api/admin/credit-distribution/recycle-team', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const role = req.user.role;
+    const userId = req.user.id;
+    if (role === 'user') return res.status(403).json({ error: '无权操作' });
+
+    const admin = db.prepare('SELECT department_id FROM users WHERE id = ?').get(userId);
+    const deptId = admin?.department_id;
+    if (!deptId) return res.status(400).json({ error: '你未分配小组' });
+
+    const dept = db.prepare('SELECT name FROM departments WHERE id = ?').get(deptId);
+    // 所有组员
+    const allMembers = db.prepare("SELECT id, name, credits, role FROM users WHERE department_id = ? AND status = 'active'").all(deptId);
+    // 除点击者外的组员（不收割自己）
+    const others = allMembers.filter(m => m.id !== userId);
+    // 普通用户（role='user'）用于第三步 recycling
+    const userMembers = allMembers.filter(m => m.role === 'user');
+    if (allMembers.length === 0) return res.json({ success: true, recycled: 0, dailyTakenBack: 0, total: 0, message: '小组无成员' });
+
+    let totalRecycledToClicker = 0;
+    let totalReturnedToCreator = 0;
+    let totalDailyTakenBack = 0;
+
+    db.transaction(() => {
+      // 第一步：除点击者外，全员每日积分撤回
+      for (const m of others) {
+        if (m.credits <= 0) continue;
+        const dailyRecords = db.prepare(`
+          SELECT id, credits_amount, COALESCE(amount_of_taking_back, 0) AS taken
+          FROM credit_distribution_logs
+          WHERE recipient_id = ? AND method = 'activation_code_daily'
+            AND COALESCE(amount_of_taking_back, 0) < credits_amount
+          ORDER BY created_at DESC
+        `).all(m.id);
+
+        for (const dr of dailyRecords) {
+          const canTake = dr.credits_amount - dr.taken;
+          const take = Math.min(canTake, m.credits);
+          if (take > 0) {
+            db.prepare('UPDATE credit_distribution_logs SET amount_of_taking_back = COALESCE(amount_of_taking_back, 0) + ? WHERE id = ?').run(take, dr.id);
+            db.prepare('UPDATE users SET credits = MAX(0, credits - ?) WHERE id = ?').run(take, m.id);
+            m.credits -= take;
+            totalDailyTakenBack += take;
+          }
+        }
+      }
+
+      // 第二步：除点击者外，全员自费积分退还给代码创建者（含创建者自己，仅标记 amount_of_taking_back）
+      for (const m of others) {
+        const currentCredits = db.prepare('SELECT credits FROM users WHERE id = ?').get(m.id)?.credits || 0;
+        if (currentCredits <= 0) continue;
+        let remaining = currentCredits;
+
+        const selfPaidRecords = db.prepare(`
+          SELECT id, credits_amount, admin_id, COALESCE(amount_of_taking_back, 0) AS taken
+          FROM credit_distribution_logs
+          WHERE recipient_id = ? AND method = 'activation_code'
+            AND COALESCE(amount_of_taking_back, 0) < credits_amount
+          ORDER BY created_at DESC
+        `).all(m.id);
+
+        for (const sr of selfPaidRecords) {
+          if (remaining <= 0) break;
+          const canTake = sr.credits_amount - sr.taken;
+          const take = Math.min(canTake, remaining);
+          if (take > 0 && sr.admin_id) {
+            db.prepare('UPDATE credit_distribution_logs SET amount_of_taking_back = COALESCE(amount_of_taking_back, 0) + ? WHERE id = ?').run(take, sr.id);
+            if (sr.admin_id !== m.id) {
+              db.prepare('UPDATE users SET credits = MAX(0, credits - ?) WHERE id = ?').run(take, m.id);
+              db.prepare('UPDATE users SET credits = credits + ? WHERE id = ?').run(take, sr.admin_id);
+              remaining -= take;
+            }
+            totalReturnedToCreator += take;
+          }
+        }
+      }
+
+      // 第三步：所有第二步完成后，再统一回收剩余积分（避免先回收后入账的顺序问题）
+      for (const m of others) {
+        const currentCredits = db.prepare('SELECT credits FROM users WHERE id = ?').get(m.id)?.credits || 0;
+        if (currentCredits <= 0) continue;
+        db.prepare('UPDATE users SET credits = 0 WHERE id = ?').run(m.id);
+        db.prepare(`INSERT INTO credit_distribution_logs (admin_id, recipient_id, credits_amount, method, note, amount_of_taking_back)
+          VALUES (?, ?, ?, 'recycling', ?, NULL)`).run(userId, m.id, -currentCredits, `回收 ${dept.name} 组成员积分`);
+        totalRecycledToClicker += currentCredits;
+      }
+      // 只有第三步的积分归点击者
+      if (totalRecycledToClicker > 0) {
+        db.prepare('UPDATE users SET credits = credits + ? WHERE id = ?').run(totalRecycledToClicker, userId);
+      }
+    })();
+
+    const total = totalDailyTakenBack + totalReturnedToCreator + totalRecycledToClicker;
+    res.json({ success: true, data: { recycled: totalRecycledToClicker, returnedToCreator: totalReturnedToCreator, dailyTakenBack: totalDailyTakenBack, total } });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ── 管理员：积分发放额度管理（按管理员单独设置） ─────────────────────
 
 // GET /api/admin/admin-quotas - 获取所有管理员的额度与使用情况（super_admin）
@@ -3886,25 +4323,31 @@ app.get('/api/admin/admin-quotas', authenticate, requireSuperAdmin, (req, res) =
 
     const rows = admins.map((a) => {
       const quota = db.prepare('SELECT total_quota, daily_quota FROM admin_quotas WHERE admin_id = ?').get(a.id);
-      // 累计每日额度已兑出
+      // 累计每日额度已兑出（实际兑换 - 已撤回）
       const totalDailyUsed = db.prepare(`
-        SELECT COALESCE(SUM(ac.credits_value * ac.used_count), 0) AS total FROM activation_codes ac
-        WHERE ac.created_by = ? AND ac.is_credit_daily = 1
+        SELECT COALESCE(SUM(dl.credits_amount), 0) - COALESCE(SUM(dl.amount_of_taking_back), 0) AS total
+        FROM credit_distribution_logs dl
+        WHERE dl.admin_id = ? AND dl.method = 'activation_code_daily'
       `).get(a.id).total;
-      // 累计自费已兑出
+      // 累计自费已兑出（实际兑换 - 已撤回）
       const totalSelfDistributed = db.prepare(`
-        SELECT COALESCE(SUM(ac.credits_value * ac.used_count), 0) AS total FROM activation_codes ac
-        WHERE ac.created_by = ? AND ac.is_credit_daily = 0
+        SELECT COALESCE(SUM(dl.credits_amount), 0) - COALESCE(SUM(dl.amount_of_taking_back), 0) AS total
+        FROM credit_distribution_logs dl
+        WHERE dl.admin_id = ? AND dl.method = 'activation_code'
       `).get(a.id).total;
-      // 今日每日额度兑出量
+      // 今日每日额度兑出量（实际兑换 - 已撤回）
       const todayDailyUsed = db.prepare(`
-        SELECT COALESCE(SUM(ac.credits_value * ac.used_count), 0) AS total FROM activation_codes ac
-        WHERE ac.created_by = ? AND ac.is_credit_daily = 1 AND date(ac.updated_at) = date('now', 'localtime')
+        SELECT COALESCE(SUM(dl.credits_amount), 0) - COALESCE(SUM(dl.amount_of_taking_back), 0) AS total
+        FROM credit_distribution_logs dl
+        WHERE dl.admin_id = ? AND dl.method = 'activation_code_daily'
+          AND date(dl.created_at, 'localtime') = date('now', 'localtime')
       `).get(a.id).total;
-      // 今日自费兑出量
+      // 今日自费兑出量（实际兑换 - 已撤回）
       const todaySelfDistributed = db.prepare(`
-        SELECT COALESCE(SUM(ac.credits_value * ac.used_count), 0) AS total FROM activation_codes ac
-        WHERE ac.created_by = ? AND ac.is_credit_daily = 0 AND date(ac.updated_at) = date('now', 'localtime')
+        SELECT COALESCE(SUM(dl.credits_amount), 0) - COALESCE(SUM(dl.amount_of_taking_back), 0) AS total
+        FROM credit_distribution_logs dl
+        WHERE dl.admin_id = ? AND dl.method = 'activation_code'
+          AND date(dl.created_at, 'localtime') = date('now', 'localtime')
       `).get(a.id).total;
 
       return {
@@ -4197,24 +4640,32 @@ app.post('/api/admin/activation-codes', authenticate, (req, res) => {
       const dailyQuota = quota ? quota.daily_quota : 0;
       const adminCredits = db.prepare('SELECT credits FROM users WHERE id = ?').get(req.user.id)?.credits || 0;
 
-      const usedDaily = db.prepare(`
-        SELECT COALESCE(SUM(ac.credits_value * ac.used_count), 0) AS total FROM activation_codes ac
-        WHERE ac.created_by = ? AND ac.is_credit_daily = 1 AND date(ac.updated_at) = date('now', 'localtime')
+      // 今日每日积分：兑换量
+      const redeemedToday = db.prepare(`
+        SELECT COALESCE(SUM(dl.credits_amount), 0) AS total
+        FROM credit_distribution_logs dl
+        WHERE dl.admin_id = ?
+          AND dl.method = 'activation_code_daily'
+          AND date(dl.created_at, 'localtime') = date('now', 'localtime')
       `).get(req.user.id).total;
+      // 今日每日积分：撤回量（同一批记录的 amount_of_taking_back）
+      const takenBackToday = db.prepare(`
+        SELECT COALESCE(SUM(dl.amount_of_taking_back), 0) AS total
+        FROM credit_distribution_logs dl
+        WHERE dl.admin_id = ?
+          AND dl.method = 'activation_code_daily'
+          AND date(dl.created_at, 'localtime') = date('now', 'localtime')
+      `).get(req.user.id).total;
+      const usedDaily = redeemedToday - takenBackToday;
       const pendingDaily = db.prepare(`
         SELECT COALESCE(SUM(credits_value * (max_uses - used_count)), 0) AS total FROM activation_codes
         WHERE created_by = ? AND is_credit_daily = 1 AND credits_value > 0 AND used_count < max_uses
           AND date(created_at) = date('now', 'localtime')
-          AND (time_of_expiration IS NULL OR datetime(time_of_expiration) > datetime('now', 'localtime'))
       `).get(req.user.id).total;
       const remainingDaily = dailyQuota > 0 ? dailyQuota - usedDaily - pendingDaily : 0;
 
       if (dailyQuota > 0 && totalNeed <= remainingDaily) {
         req.body.is_credit_daily = 1;
-        const endOfDay = new Date();
-        endOfDay.setHours(23, 59, 59, 999);
-        const pad2 = (n) => String(n).padStart(2, '0');
-        req.body.time_of_expiration = `${endOfDay.getFullYear()}-${pad2(endOfDay.getMonth() + 1)}-${pad2(endOfDay.getDate())} ${pad2(endOfDay.getHours())}:${pad2(endOfDay.getMinutes())}:${pad2(endOfDay.getSeconds())}`;
       } else {
         if (adminCredits < totalNeed) {
           return res.status(400).json({
@@ -4238,7 +4689,6 @@ app.post('/api/admin/activation-codes', authenticate, (req, res) => {
         db.prepare(`INSERT INTO credit_distribution_logs (admin_id, recipient_id, credits_amount, method, note) VALUES (?, ?, ?, 'self_paying', ?)`)
           .run(req.user.id, req.user.id, -totalNeed, '管理员自费发分');
         req.body.is_credit_daily = 0;
-        req.body.time_of_expiration = null;
       }
     }
 
@@ -4435,6 +4885,115 @@ app.get('/api/admin/consumption-analysis', authenticate, (req, res) => {
     res.json({ success: true, data: { rows: data, total, fixLog, page: parseInt(page), pageSize: limit } });
   } catch (e) {
     console.error('[consumption-analysis]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/admin/consumption-analysis/export - 导出消耗明细 CSV
+app.get('/api/admin/consumption-analysis/export', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const range = req.query.range || 'today';
+    const tz = req.query.tz || 'Asia/Shanghai';
+    const isSuperAdmin = req.user.role === 'super_admin';
+    const isAdmin = req.user.role === 'admin';
+    const isUser = !isSuperAdmin && !isAdmin;
+
+    const conditions = [];
+    const params = [];
+
+    // 日期范围（用 COALESCE 关联表时间，和页面展示逻辑一致）
+    const COAL_TIME = "COALESCE(ir.created_at, t_video.created_at, th.created_at, ve.created_at, cl.created_at)";
+    if (range === 'today') {
+      conditions.push(`date(${COAL_TIME}, 'localtime') = date('now', 'localtime')`);
+    } else if (range === 'month') {
+      conditions.push(`date(${COAL_TIME}, 'localtime') >= date('now', 'localtime', 'start of month')`);
+    }
+    // 'all' 不加日期条件
+
+    // 角色权限（复用消耗明细的过滤逻辑）
+    if (isUser) {
+      conditions.push('cl.user_id = ?');
+      params.push(req.user.id);
+    } else if (isAdmin) {
+      conditions.push('u.department_id = ?');
+      params.push(req.user.department_id || -1);
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const sql = `SELECT
+        cl.id, cl.status, cl.locked_credits, cl.actual_credits, cl.created_at,
+        u.name AS user_name, u.email AS user_email, d.name AS department_name,
+        COALESCE(ir.created_at, t_video.created_at, th.created_at, ve.created_at, cl.created_at) AS action_time,
+        p.name AS project_name,
+        CASE
+          WHEN cl.image_record_id IS NOT NULL THEN '图片生成'
+          WHEN cl.enhancement_id IS NOT NULL THEN '视频增强'
+          WHEN cl.task_happyhorse_id IS NOT NULL THEN '视频生成'
+          WHEN cl.task_id IS NOT NULL AND t_video.task_kind = 'audio_intermediate' THEN '音频生成'
+          WHEN cl.task_id IS NOT NULL THEN '视频生成'
+          ELSE '未知'
+        END AS action_label,
+        CASE
+          WHEN cl.enhancement_id IS NOT NULL THEN COALESCE(ve.tool_version, json_extract(cl.meta, '$.tool_version'))
+          WHEN cl.task_happyhorse_id IS NOT NULL THEN th.model
+          WHEN cl.image_record_id IS NOT NULL THEN ir.model
+          WHEN cl.task_id IS NOT NULL THEN t_video.model
+          ELSE json_extract(cl.meta, '$.model')
+        END AS model_name,
+        CASE cl.status
+          WHEN 'locked' THEN '已锁定'
+          WHEN 'settled' THEN '已结算'
+          WHEN 'released' THEN '已释放'
+          ELSE cl.status
+        END AS status_label
+      FROM credit_locks cl
+      LEFT JOIN users u ON cl.user_id = u.id
+      LEFT JOIN departments d ON u.department_id = d.id
+      LEFT JOIN image_records ir ON cl.image_record_id = ir.id
+      LEFT JOIN tasks t_video ON cl.task_id = t_video.id
+      LEFT JOIN tasks_happyhorse th ON cl.task_happyhorse_id = th.id
+      LEFT JOIN video_enhancements ve ON cl.enhancement_id = ve.id
+      LEFT JOIN projects p ON p.id = COALESCE(ir.project_id, t_video.project_id, th.project_id, ve.project_id)
+      ${where}
+      ORDER BY action_time DESC`;
+
+    const rows = db.prepare(sql).all(...params);
+
+    // 时区格式化
+    const fmtTime = (v) => {
+      if (!v) return '';
+      try {
+        return new Date(v + 'Z').toLocaleString('zh-CN', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+      } catch { return v; }
+    };
+
+    // BOM + CSV
+    const BOM = '\uFEFF';
+    const header = '时间,用户,小组,项目,行为,模型,状态,锁定积分,实际积分';
+    const lines = [header];
+    for (const r of rows) {
+      const user = r.user_name && r.user_email ? `${r.user_name}(${r.user_email})` : (r.user_name || r.user_email || '');
+      const row = [
+        fmtTime(r.action_time),
+        user,
+        r.department_name || '',
+        r.project_name || '',
+        r.action_label || '',
+        r.model_name || '',
+        r.status_label || '',
+        r.locked_credits != null ? r.locked_credits : '',
+        r.actual_credits != null ? r.actual_credits : '',
+      ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(',');
+      lines.push(row);
+    }
+
+    const filename = `消耗明细_${range === 'today' ? '今天' : range === 'month' ? '本月' : '全部'}_${new Date().toISOString().slice(0, 10)}.csv`;
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
+    res.send(BOM + lines.join('\n'));
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
@@ -6377,6 +6936,14 @@ function volcSign(method, host, path, query, body, accessKeyId, secretAccessKey)
 
 /** 翻译 ARK API 常见错误信息 */
 function translateArkError(msg) {
+  if (!msg) return msg;
+  // 资源未找到：content[N] 中引用的 asset://xxx 在火山平台已失效
+  const assetNotFoundMatch = msg.match(/content\[(\d+)\].*?asset-([\w-]+)\s+is not found/i);
+  if (assetNotFoundMatch) {
+    const idx = parseInt(assetNotFoundMatch[1], 10) + 1;
+    const assetId = assetNotFoundMatch[2];
+    return `第 ${idx} 个指定的资源 asset-${assetId} 没有找到，请重新上传资源后重试`;
+  }
   const map = {
     'Width must be between 300px and 6000px.': '图片宽度必须在 300px 到 6000px 之间',
     'Height must be between 300px and 6000px.': '图片高度必须在 300px 到 6000px 之间',
@@ -6393,6 +6960,7 @@ function translateArkError(msg) {
     'Not Found': '资源不存在',
     'Internal Server Error': '火山引擎内部错误，请稍后重试',
     'Service Unavailable': '火山引擎服务暂时不可用',
+    'has not activated the Asset Service': '您的帐户尚未激活资产服务，请联系管理员激活',
   };
   // 精确匹配
   if (map[msg]) return map[msg];

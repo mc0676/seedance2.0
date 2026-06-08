@@ -226,7 +226,34 @@ export function updateTaskStatus(id, status, extraUpdates = {}) {
     updates.completed_at = new Date().toISOString();
   }
 
-  return updateTask(id, updates);
+  const result = updateTask(id, updates);
+
+  // 同步 audio_generations：音频生成任务终态写回 audio_generations 表
+  if (['done', 'error'].includes(status)) {
+    try {
+      const db = getDatabase();
+      const task = db.prepare("SELECT task_kind, video_url, error_message FROM tasks WHERE id = ?").get(id);
+      if (task?.task_kind === 'audio_intermediate') {
+        const ag = db.prepare("SELECT id, status FROM audio_generations WHERE task_id = ?").get(id);
+        if (ag && ag.status === 'generating') {
+          if (status === 'done') {
+            let credits = 0;
+            try {
+              const lock = db.prepare("SELECT locked_credits FROM credit_locks WHERE task_id = ? AND status = 'settled' LIMIT 1").get(id);
+              credits = lock?.locked_credits || 0;
+            } catch {}
+            db.prepare(`UPDATE audio_generations SET status='done', intermediate_video_url=?, credits_used=?, finished_at=CURRENT_TIMESTAMP WHERE id=?`)
+              .run(task.video_url || null, credits, ag.id);
+          } else {
+            db.prepare(`UPDATE audio_generations SET status='error', error_message=?, finished_at=CURRENT_TIMESTAMP WHERE id=?`)
+              .run(task.error_message || extraUpdates.error_message || '任务失败', ag.id);
+          }
+        }
+      }
+    } catch {}
+  }
+
+  return result;
 }
 
 /**

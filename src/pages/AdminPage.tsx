@@ -1579,9 +1579,11 @@ export default function AdminPage() {
                       </td>
                         <td className="px-6 py-4 text-sm font-mono">
                          {(() => {
-                           const trulyExpired = c.is_credit_daily === 1 && c.time_of_expiration && new Date(c.time_of_expiration) < new Date();
+                           // 每日积分过期：基于 created_at 日期判断（仅当天有效）
+                           const todayStr = new Date().toISOString().slice(0, 10);
+                           const trulyExpired = c.is_credit_daily === 1 && c.created_at?.slice(0, 10) !== todayStr;
                            const usedUp = c.used_count >= c.max_uses;
-                           const showExpiredBadge = trulyExpired && !usedUp;
+                            const showExpiredBadge = trulyExpired;
                            const gray = trulyExpired || usedUp;
                            return (
                              <span className="inline-flex items-center gap-2">
@@ -1637,7 +1639,7 @@ export default function AdminPage() {
                            (() => {
                              const total = c.credits_value * c.max_uses;
                              const consumed = c.credits_value * c.used_count;
-                             const expired = c.time_of_expiration && new Date(c.time_of_expiration) < new Date();
+                             const expired = c.is_credit_daily === 1 && c.created_at?.slice(0, 10) !== new Date().toISOString().slice(0, 10);
                              if (expired || c.used_count >= c.max_uses) return null;
                              if (c.is_credit_daily === 1) return <span className="text-blue-400">今日额度 {total}（{consumed} 已被领取）</span>;
                              if (c.is_credit_daily === 0) return <span className="text-amber-400">自费额度 {total}（{consumed} 已被领取）</span>;

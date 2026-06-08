@@ -1,7 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
+import ProjectConsumptionPanel from '../components/ProjectConsumptionPanel';
+import TeamConsumptionPanel from '../components/TeamConsumptionPanel';
+import { DownloadIcon } from '../components/Icons';
 import { useApp } from '../context/AppContext';
 import { getAuthHeaders } from '../services/authService';
-import { formatDateTime } from '../utils/datetime';
+import { formatDateTime, getUserTimezone } from '../utils/datetime';
 
 interface FixEntry { id: number; type: 'wrong' | 'dead'; returnedCredits: number; }
 
@@ -27,6 +30,13 @@ const STATUS_LABELS: Record<string, { text: string; cls: string }> = {
 };
 
 export default function ConsumptionAnalysisPage() {
+  const [tab, setTab] = useState<'detail' | 'project' | 'team'>('detail');
+
+  useEffect(() => {
+    const titles: Record<string, string> = { detail: '消耗明细', project: '项目消耗', team: '团队消耗' };
+    document.title = titles[tab] || '消耗分析';
+  }, [tab]);
+
   const { currentUser } = useApp();
   const isSuperAdmin = currentUser?.role === 'super_admin';
   const isAdmin = currentUser?.role === 'admin';
@@ -86,6 +96,28 @@ export default function ConsumptionAnalysisPage() {
 
   const totalPages = Math.ceil(total / pageSize);
 
+  const handleExport = async (range: string) => {
+    try {
+      const qs = new URLSearchParams({ range, tz: getUserTimezone() });
+      const res = await fetch(`/api/admin/consumption-analysis/export?${qs}`, { headers: getAuthHeaders() });
+      if (!res.ok) throw new Error('导出失败');
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const now = new Date();
+      const dateStr = now.toISOString().slice(0, 10);
+      const monthStr = dateStr.slice(0, 7);
+      let suffix = range === 'today' ? `_${dateStr}` : range === 'month' ? `_${monthStr}` : '';
+      let prefix = '';
+      if (isUser && currentUser?.name) prefix = `${currentUser.name}_`;
+      else if (isAdmin && currentUser?.department) prefix = `${currentUser.department}_`;
+      a.download = `${prefix}消耗明细${suffix}.csv`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch (e: any) { alert(e.message || '导出失败'); }
+  };
+
   function getStatusDisplay(r: ConsumptionRow) {
     const fix = fixMap.get(r.id);
     if (fix) {
@@ -99,8 +131,27 @@ export default function ConsumptionAnalysisPage() {
 
   return (
     <div className="p-6 max-w-full mx-auto">
-      <h1 className="text-2xl font-bold text-white mb-6">消耗分析</h1>
+      <div className="flex border-b border-gray-700 mb-6">
+        <button onClick={() => setTab('detail')}
+          className={`px-5 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
+            tab === 'detail' ? 'border-purple-500 text-purple-400' : 'border-transparent text-gray-400 hover:text-gray-300 hover:border-gray-500'
+          }`}>消耗明细</button>
+          {!isUser && (
+            <button onClick={() => setTab('project')}
+              className={`px-5 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
+                tab === 'project' ? 'border-purple-500 text-purple-400' : 'border-transparent text-gray-400 hover:text-gray-300 hover:border-gray-500'
+              }`}>项目消耗</button>
+          )}
+          {!isUser && (
+            <button onClick={() => setTab('team')}
+              className={`px-5 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
+                tab === 'team' ? 'border-purple-500 text-purple-400' : 'border-transparent text-gray-400 hover:text-gray-300 hover:border-gray-500'
+              }`}>团队消耗</button>
+          )}
+      </div>
 
+      {tab === 'detail' ? (
+        <>
       {fixBanner && (
         <div className="mb-4 px-4 py-2 bg-amber-500/10 border border-amber-500/30 rounded-lg text-sm text-amber-400 flex items-center gap-2">
           <span className="animate-pulse">●</span> {fixBanner}
@@ -134,6 +185,15 @@ export default function ConsumptionAnalysisPage() {
         </select>
         <button onClick={() => { setPage(1); loadData(1); }}
           className="px-4 py-1.5 bg-purple-600 text-white rounded text-sm hover:bg-purple-500">查询</button>
+        <div className="flex-1" />
+        <span className="text-gray-500 text-xs">导出:</span>
+        {['today','month','all'].map(range => (
+          <button key={range} onClick={() => handleExport(range)}
+            className="inline-flex items-center gap-1 px-3 py-1.5 bg-emerald-600/20 border border-emerald-500/40 hover:bg-emerald-600/30 rounded text-sm text-emerald-400 font-medium transition-all">
+            <DownloadIcon className="w-3.5 h-3.5" />
+            {range === 'today' ? '今天' : range === 'month' ? '本月' : '全部'}
+          </button>
+        ))}
       </div>
 
       <div className="bg-[#1c1f2e] border border-gray-800 rounded-lg overflow-hidden">
@@ -186,6 +246,12 @@ export default function ConsumptionAnalysisPage() {
           <button onClick={() => { const p = page + 1; setPage(p); loadData(p); }} disabled={page >= totalPages}
             className="px-3 py-1 bg-gray-700 text-white rounded text-sm disabled:opacity-50">下一页</button>
         </div>
+      )}
+    </>
+      ) : tab === 'project' ? (
+        <ProjectConsumptionPanel />
+      ) : (
+        <TeamConsumptionPanel />
       )}
     </div>
   );

@@ -11,7 +11,8 @@ import { getVolcKeyStatus } from '../services/settingsService';
 import { videoUrlToMp3Blob, downloadBlob, ExpiredVideoUrlError, isSignedUrlExpired } from '../utils/audioExtractor';
 import { formatDateTime, useUserTimezone } from '../utils/datetime';
 import type { AudioGeneration, ProjectAsset } from '../types';
-import { MicIcon, SpinnerIcon, DownloadIcon, SparkleIcon, GearIcon } from '../components/Icons';
+import { MicIcon, SpinnerIcon, SparkleIcon, GearIcon } from '../components/Icons';
+import DownloadButton, { type DownloadState } from '../components/DownloadButton';
 import Layout from '../components/Layout';
 
 const STATUS_BADGE: Record<AudioGeneration['status'], { text: string; cls: string }> = {
@@ -338,11 +339,10 @@ export default function AudioGenPage() {
       return;
     }
     const videoUrl = it.intermediate_video_url || it.task_video_url;
-    if (!videoUrl) { alert('视频地址不可用'); return; }
+    if (!videoUrl) throw new Error('视频地址不可用');
     // 自动转码阶段已嗅探过过期 URL，命中的不再尝试转码
     if (expiredIds.has(it.id) || isSignedUrlExpired(videoUrl)) {
-      alert('音频源视频链接已过期（火山引擎签名 URL 有效期 48 小时），请重新生成。');
-      return;
+      throw new ExpiredVideoUrlError('音频源视频链接已过期（火山引擎签名 URL 有效期 48 小时），请重新生成。');
     }
     if (inflightConversion.has(it.id)) return; // 正在转码，按钮已显示进度，避免重入
     await convertForPreview(it.id, videoUrl);
@@ -350,9 +350,9 @@ export default function AudioGenPage() {
     if (after) {
       downloadBlob(after.blob, `audio_${it.id}.mp3`);
     } else if (expiredIds.has(it.id)) {
-      alert('音频源视频链接已过期（火山引擎签名 URL 有效期 48 小时），请重新生成。');
+      throw new ExpiredVideoUrlError('音频源视频链接已过期（火山引擎签名 URL 有效期 48 小时），请重新生成。');
     } else {
-      alert('转码失败，请稍后再试');
+      throw new Error('转码失败');
     }
   }
 
@@ -573,7 +573,7 @@ export default function AudioGenPage() {
                       {it.status === 'error' && it.error_message && (
                         <p className="text-xs text-red-400 line-clamp-2">{it.error_message}</p>
                       )}
-                      {it.status === 'done' && hasVideo && (
+                      {(it.status !== 'pending' && it.status !== 'generating') && (
                         <div className="flex gap-2 flex-wrap mt-1">
                           {isExpired ? (
                             <span className="text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-md px-2 py-1">音频源视频链接已过期</span>
@@ -582,14 +582,13 @@ export default function AudioGenPage() {
                           ) : convStage ? (
                             <span className="text-xs text-gray-400 inline-flex items-center gap-1.5"><SpinnerIcon className="w-3.5 h-3.5 animate-spin" />{convStage}</span>
                           ) : null}
-                          <button onClick={() => void handleDownload(it)} disabled={!!convStage}
-                            className="text-[11px] px-2 py-1 rounded-xl border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition-all">
-                            <DownloadIcon className="w-3.5 h-3.5 inline-block align-middle mr-1" />{isExpired ? '下载 MP3（已过期）' : '下载 MP3'}
-                          </button>
-                          <button onClick={() => handleReuse(it)}
-                            className="text-[11px] px-2 py-1 rounded-xl border border-purple-500/40 text-purple-400 hover:bg-purple-500/10 transition-all">
-                            复用
-                          </button>
+                          <div className="flex gap-2 ml-auto">
+                            <DownloadButton table="audio_generations" id={it.id} url={it.intermediate_video_url} filename={`audio_${it.id}.mp3`} generationStatus={it.status} downloadStatus={(it.download_status as DownloadState) || 'pending'} onDownload={() => handleDownload(it)} onStatusChange={() => {}} />
+                            <button onClick={() => handleReuse(it)}
+                              className="text-[11px] px-2 py-1 rounded-xl border border-purple-500/40 text-purple-400 hover:bg-purple-500/10 transition-all">
+                              复用
+                            </button>
+                          </div>
                         </div>
                       )}
                       {it.status === 'error' && (

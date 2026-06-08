@@ -1,6 +1,7 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { getAuthHeaders } from '../services/authService';
 import { SparkleIcon, GearIcon } from '../components/Icons';
+import DownloadButton from '../components/DownloadButton';
 import Layout from '../components/Layout';
 import { useApp } from '../context/AppContext';
 import { formatShortDateTime, useUserTimezone } from '../utils/datetime';
@@ -46,7 +47,7 @@ interface ImageRecord {
   result_urls: string[];
   credits_used: number;
   created_at: string;
-  status?: 'pending' | 'done' | 'error';
+  status?: 'pending' | 'generating' | 'done' | 'error';
   error_message?: string | null;
 }
 
@@ -154,7 +155,7 @@ export default function ImageGenPage() {
 
   // 任意 pending 记录存在时，5 秒一轮拉历史第一页 + 余额，直到所有 pending 完结。
   // pending 由后端 image_records.status='pending' 持久化承载，所以切换菜单/刷新都能恢复"生成中"状态。
-  const hasPending = useMemo(() => records.some((r) => r.status === 'pending'), [records]);
+  const hasPending = useMemo(() => records.some((r) => r.status === 'pending' || r.status === 'generating'), [records]);
   useEffect(() => {
     if (!hasPending) return;
     const t = setInterval(() => {
@@ -659,7 +660,13 @@ export default function ImageGenPage() {
       }
       const res = await fetch('/api/generate-image', { method: 'POST', headers: getAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
       const data = await res.json();
-      if (!res.ok || !data.success) { setError(data.error || '生成失败'); }
+      if (!res.ok || !data.success) {
+        setError(data.error || '生成失败');
+        clearCool();
+        return;
+      }
+      // 提交成功，立即清除 loading 并刷新列表（后端异步轮询中）
+      clearCool();
     } catch (e) {
       clearCool();
       setError(e instanceof Error ? e.message : '生成失败');
@@ -917,7 +924,7 @@ export default function ImageGenPage() {
                   className="w-[25vh] h-[25vh] min-w-[120px] min-h-[120px] flex-shrink-0 rounded-xl overflow-hidden bg-[#0f111a] cursor-pointer relative group"
                   onClick={() => item.result_urls[0] && setPreviewUrl(item.result_urls[0])}
                 >
-                  {item.status === 'pending' ? (
+                   {(item.status === 'pending' || item.status === 'generating') ? (
                     <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-purple-300 text-xs">
                       <span className="animate-spin h-6 w-6 border-2 border-purple-400 border-t-transparent rounded-full" />
                       生成中...
@@ -991,13 +998,9 @@ export default function ImageGenPage() {
                             className="text-[11px] px-2 py-1 rounded-xl border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition-all"
                           >预览</button>
                         )}
-                        {item.result_urls.map((url, i) => (
-                          <button key={i}
-                            onClick={() => downloadImageUrl(url, `image_${item.id}_${i + 1}.png`)}
-                            className="text-[11px] px-2 py-1 rounded-xl border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition-all">
-                            {item.result_urls.length > 1 ? `下载${i + 1}` : '下载'}
-                          </button>
-                        ))}
+                        {((item.status as string) !== 'pending' && (item.status as string) !== 'generating') && (
+                          <DownloadButton table="image_records" id={item.id} url={item.result_urls?.[0] ?? null} filename={`image_${item.id}.png`} generationStatus={item.status || 'done'} downloadStatus={(item as any).download_status || 'pending'} onStatusChange={() => {}} />
+                        )}
                         <button
                           onClick={() => handleReuse(item)}
                           className="text-[11px] px-2 py-1 rounded-xl border border-purple-500/40 text-purple-400 hover:bg-purple-500/10 transition-all"

@@ -434,6 +434,8 @@ export interface AudioGeneration {
   intermediate_video_url: string | null;
   credits_used: number;
   error_message: string | null;
+  download_status?: string;
+  downloaded_at?: string | null;
   created_at: string;
   finished_at: string | null;
   // JOIN 自 tasks 表的辅助字段（仅 list 接口返回）

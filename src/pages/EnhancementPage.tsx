@@ -3,7 +3,8 @@ import { useApp } from '../context/AppContext';
 import { listMyEnhancements } from '../services/enhancementService';
 import { uploadToOss, probeVideoDuration } from '../services/ossService';
 import type { VideoEnhancement, EnhancementPricing, EnhancementResolutionPreset } from '../types';
-import { SparkleIcon, SpinnerIcon, DownloadIcon, CloseIcon, GearIcon } from '../components/Icons';
+import { SparkleIcon, SpinnerIcon, CloseIcon, GearIcon } from '../components/Icons';
+import DownloadButton from '../components/DownloadButton';
 import Layout from '../components/Layout';
 import { formatDateTime, useUserTimezone } from '../utils/datetime';
 import {
@@ -176,7 +177,7 @@ export default function EnhancementPage() {
   const [recordsTotal, setRecordsTotal] = useState(0);
   const RECORDS_PAGE_SIZE = 10;
 
-  async function loadRecords(page = 1) {
+  const loadRecords = async (page = 1) => {
     setRecordsLoading(true);
     try {
       const data = await listMyEnhancements(page, RECORDS_PAGE_SIZE, projectId);
@@ -188,7 +189,7 @@ export default function EnhancementPage() {
     } finally {
       setRecordsLoading(false);
     }
-  }
+  };
 
   useEffect(() => { loadRecords(1); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [projectId]);
 
@@ -425,7 +426,7 @@ export default function EnhancementPage() {
           <div className="flex-1 flex items-center justify-center text-gray-600 text-sm">还没有提交过增强任务</div>
         ) : (
           <div className="px-4 pb-4 space-y-3">
-            {records.map((r) => <RecordRow key={r.id} r={r} />)}
+            {records.map((r) => <RecordRow key={r.id} r={r} onRefresh={() => {}} onReuse={(r) => { setScene(r.scene); setToolVersion(r.tool_version); if (r.target_resolution) { setResolutionMode('preset'); setResolutionPreset(r.target_resolution); } else if (r.resolution_limit) { setResolutionMode('custom'); setResolutionLimit(r.resolution_limit); } if (r.target_fps) { setFpsMode('preset'); setFpsPreset(r.target_fps as 30 | 60 | 120); } if (r.source_video_url) { setVideoUrl(r.source_video_url); } }} />)}
             {recordsTotal > RECORDS_PAGE_SIZE && (
               <div className="flex justify-center pt-2">
                 <Pager page={recordsPage} total={recordsTotal} pageSize={RECORDS_PAGE_SIZE} onChange={(p) => loadRecords(p)} />
@@ -453,7 +454,7 @@ function Pager({ page, total, pageSize, onChange }: { page: number; total: numbe
   );
 }
 
-function RecordRow({ r }: { r: VideoEnhancement }) {
+function RecordRow({ r, onRefresh, onReuse }: { r: VideoEnhancement; onRefresh: () => void; onReuse: (r: VideoEnhancement) => void }) {
   const badge = STATUS_BADGE[r.status];
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   return (
@@ -488,9 +489,11 @@ function RecordRow({ r }: { r: VideoEnhancement }) {
               提交于 {formatDateTime(r.created_at)}{r.duration_seconds ? ` · 时长 ${r.duration_seconds}s` : ''}
             </div>
             {r.status === 'done' && r.credits_used != null && (
-              <span className="self-start text-[11px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20" title="本次实际扣除积分">
-                {r.credits_used > 0 ? `${r.credits_used}积分` : '未计费'}
-              </span>
+              <div className="flex gap-2 flex-wrap items-center">
+                <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20" title="本次实际扣除积分">
+                  {r.credits_used > 0 ? `${r.credits_used}积分` : '未计费'}
+                </span>
+              </div>
             )}
             {r.status === 'error' && r.error_message && <div className="text-[11px] text-red-400 break-all">{r.error_message}</div>}
             {r.status === 'processing' && (
@@ -498,6 +501,18 @@ function RecordRow({ r }: { r: VideoEnhancement }) {
                 <SpinnerIcon className="w-3 h-3 inline-block animate-spin mr-1" />MediaKit 处理中...
               </div>
             )}
+            {/* 操作按钮行：右对齐 */}
+            <div className="flex justify-end gap-2 mt-auto pt-2">
+              {(r.status !== 'pending' && r.status !== 'processing') && (
+                <>
+                  <DownloadButton table="video_enhancements" id={r.id} url={r.enhanced_video_url ?? null} filename={`enhanced_${r.id}.mp4`} generationStatus={r.status} downloadStatus={(r as any).download_status || 'pending'} onStatusChange={() => onRefresh()} />
+                  <button onClick={() => onReuse(r)}
+                    className="text-[11px] px-2 py-1 rounded-xl border border-purple-500/40 text-purple-400 hover:bg-purple-500/10 transition-all">
+                    复用
+                  </button>
+                </>
+              )}
+            </div>
           </div>
           {/* 增强片缩略图 */}
           <div className="w-[25vh] h-[25vh] min-w-[120px] min-h-[120px] flex-shrink-0 rounded-xl overflow-hidden bg-[#0f111a] relative group">
@@ -506,10 +521,6 @@ function RecordRow({ r }: { r: VideoEnhancement }) {
                 <video src={r.enhanced_video_url} muted playsInline preload="metadata"
                   onClick={() => r.enhanced_video_url && setPreviewUrl(r.enhanced_video_url)}
                   className="w-full h-full object-cover cursor-pointer" />
-                <button onClick={() => { const u = r.enhanced_video_url; if (!u) return; const a = document.createElement('a'); a.href = `/api/video-proxy?url=${encodeURIComponent(u)}&download=enhanced_${r.id}.mp4`; a.click(); }}
-                  className="absolute bottom-1 right-1 bg-purple-600 hover:bg-purple-500 text-white rounded-lg p-1.5 opacity-0 group-hover:opacity-100 transition-all z-10" title="下载">
-                  <DownloadIcon className="w-3.5 h-3.5" />
-                </button>
               </>
             ) : (
               <div className="w-full h-full flex items-center justify-center text-gray-600 text-[10px]">

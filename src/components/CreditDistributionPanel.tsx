@@ -6,6 +6,8 @@ import {
   fetchDistributionSummary,
   fetchAdminQuotas,
   updateAdminQuota,
+  takeBackDistribution,
+  recycleTeamCredits,
   type DistributionLogItem,
   type DistributionSummary,
   type AdminQuotaItem,
@@ -13,20 +15,24 @@ import {
 
 const METHOD_LABELS: Record<string, string> = {
   activation_code: '激活码充值',
+  activation_code_daily: '激活码充值',
   manual_set: '后台手动调分',
   manual_add: '后台手动增加',
   checkin: '签到',
   self_paying: '管理员自费发分',
   code_refund: '自费发分退还',
+  recycling: '积分回收',
 };
 
 const METHOD_COLORS: Record<string, string> = {
   activation_code: 'bg-blue-500/20 text-blue-400',
+  activation_code_daily: 'bg-sky-400/20 text-sky-300',
   manual_set: 'bg-amber-500/20 text-amber-400',
   manual_add: 'bg-emerald-500/20 text-emerald-400',
   checkin: 'bg-purple-500/20 text-purple-400',
   self_paying: 'bg-red-500/20 text-red-400',
   code_refund: 'bg-teal-500/20 text-teal-400',
+  recycling: 'bg-orange-500/20 text-orange-400',
 };
 
 const PAGE_SIZE = 10;
@@ -56,6 +62,7 @@ export default function CreditDistributionPanel() {
   // 额度管理
   const { currentUser } = useApp();
   const isSuperAdmin = currentUser?.role === 'super_admin';
+  const isUser = !isSuperAdmin && currentUser?.role !== 'admin';
   const [quotaModalOpen, setQuotaModalOpen] = useState(false);
   const [quotaList, setQuotaList] = useState<AdminQuotaItem[]>([]);
   const [quotaLoading, setQuotaLoading] = useState(false);
@@ -126,6 +133,28 @@ export default function CreditDistributionPanel() {
     setPage(1);
   };
 
+  const handleTakeBack = async (id: number) => {
+    if (!confirm('确认撤回此发放记录？撤回量取决于接收用户当前余额。')) return;
+    try {
+      const res = await takeBackDistribution(id);
+      alert(`撤回成功：${res.takenBack} 积分（${res.status}）`);
+      loadData();
+    } catch (e: any) { console.error('[撤回失败]', e); alert(e.message || '撤回失败'); }
+  };
+
+  const handleRecycleTeam = async () => {
+    if (!confirm('确认回收小组所有成员积分？此操作将清空所有组员积分并转入你的账户。')) return;
+    try {
+      const res = await recycleTeamCredits();
+      const parts = [];
+      if (res.dailyTakenBack > 0) parts.push(`每日额度归还 ${res.dailyTakenBack}`);
+      if (res.returnedToCreator > 0) parts.push(`退还创建者 ${res.returnedToCreator}`);
+      if (res.recycled > 0) parts.push(`回收 ${res.recycled}`);
+      alert(`回收成功：${parts.join('，')}，共 ${res.total} 积分`);
+      loadData();
+    } catch (e: any) { alert(e.message || '回收失败'); }
+  };
+
   return (
     <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl overflow-hidden mb-8">
       <div className="p-6 border-b border-gray-800 flex items-center justify-between">
@@ -168,7 +197,8 @@ export default function CreditDistributionPanel() {
           <option value="">全部</option>
           <option value="manual_add">后台手动增加</option>
           <option value="manual_set">后台手动调分</option>
-          <option value="activation_code">激活码充值</option>
+          <option value="activation_code">激活码充值（非每日）</option>
+          <option value="activation_code_daily">激活码充值（每日）</option>
           <option value="checkin">签到</option>
           <option value="self_paying">管理员自费发分</option>
           <option value="code_refund">自费发分退还</option>
@@ -243,7 +273,17 @@ export default function CreditDistributionPanel() {
 
       {/* 发放记录明细表 */}
       <div className="p-4">
-        <h3 className="text-sm font-semibold text-white mb-3">发放记录明细</h3>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-white">发放记录明细</h3>
+          {!isUser && (
+            <button
+              onClick={handleRecycleTeam}
+              className="px-3 py-1.5 text-xs bg-orange-600/20 border border-orange-500/40 hover:bg-orange-600/30 rounded-lg text-orange-400 font-medium transition-all"
+            >
+              回收 {currentUser?.department || '本组'} 的成员积分
+            </button>
+          )}
+        </div>
         {loading ? (
           <div className="text-center text-gray-400 py-8">加载中...</div>
         ) : rows.length === 0 ? (
@@ -258,8 +298,9 @@ export default function CreditDistributionPanel() {
                     <th className="py-2 pr-3 font-medium">发放管理员</th>
                     <th className="py-2 pr-3 font-medium">接收用户</th>
                     <th className="py-2 pr-3 font-medium text-right">积分数量</th>
-                    <th className="py-2 font-medium">发放方式</th>
-                  </tr>
+                     <th className="py-2 font-medium">发放方式</th>
+                     <th className="py-2 pr-3 font-medium">撤回/操作</th>
+                   </tr>
                 </thead>
                 <tbody>
                   {rows.filter(r => includeSelfPaid || (r.method !== 'self_paying' && r.method !== 'code_refund')).map((r) => (
@@ -277,18 +318,46 @@ export default function CreditDistributionPanel() {
                         )}
                       </td>
                       <td className="py-2.5 pr-3 text-right">
-                        {r.credits_amount >= 0 ? (
+                        {(r.method === 'activation_code' || r.method === 'activation_code_daily') && r.amount_of_taking_back && r.amount_of_taking_back > 0 ? (
+                          r.amount_of_taking_back >= r.credits_amount ? (
+                            <div>
+                              <span className="text-gray-500 font-medium line-through">+{r.credits_amount}</span>
+                              <div className="text-amber-400 text-xs mt-0.5">已全撤回</div>
+                            </div>
+                          ) : (
+                            <div>
+                              <span className="text-emerald-400 font-medium">+{r.credits_amount}</span>
+                              <div className="text-amber-400 text-xs mt-0.5">已撤回 {r.amount_of_taking_back}</div>
+                            </div>
+                          )
+                        ) : r.credits_amount >= 0 ? (
                           <span className="text-emerald-400 font-medium">+{r.credits_amount}</span>
                         ) : (
                           <span className="text-red-400 font-medium">{r.credits_amount}</span>
                         )}
                       </td>
-                      <td className="py-2.5">
-                        <span className={`px-2 py-0.5 rounded-full text-xs ${METHOD_COLORS[r.method] || 'bg-gray-500/20 text-gray-400'}`}>
-                          {METHOD_LABELS[r.method] || r.method}
-                        </span>
-                      </td>
-                    </tr>
+                       <td className="py-2.5">
+                         <span className={`px-2 py-0.5 rounded-full text-xs ${METHOD_COLORS[r.method] || 'bg-gray-500/20 text-gray-400'}`}>
+                           {METHOD_LABELS[r.method] || r.method}
+                         </span>
+                       </td>
+                        <td className="py-2.5">
+                          {r.method === 'activation_code' || r.method === 'activation_code_daily' ? (
+                            r.amount_of_taking_back && r.amount_of_taking_back >= r.credits_amount ? (
+                              <span className="text-xs text-gray-500">—</span>
+                            ) : (
+                              <button
+                                onClick={() => handleTakeBack(r.id)}
+                                className="px-2 py-0.5 text-xs bg-red-500/10 border border-red-500/30 text-red-400 rounded hover:bg-red-500/20 transition-colors"
+                              >{r.amount_of_taking_back && r.amount_of_taking_back > 0 ? '继续撤回' : '撤回'}</button>
+                            )
+                          ) : r.method === 'recycling' ? (
+                            <span className="text-xs text-gray-500">—</span>
+                          ) : (
+                            <span className="text-xs text-gray-500">—</span>
+                          )}
+                        </td>
+                     </tr>
                   ))}
                 </tbody>
               </table>

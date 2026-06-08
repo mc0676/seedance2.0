@@ -550,6 +550,7 @@ CREATE TABLE IF NOT EXISTS video_enhancements (
   result_resolution TEXT,
   result_fps INTEGER,
   credits_used INTEGER DEFAULT 0,
+  download_status TEXT NOT NULL DEFAULT 'pending',
   error_message TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   finished_at DATETIME,
@@ -574,6 +575,7 @@ CREATE TABLE IF NOT EXISTS audio_generations (
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','generating','done','error')),
   intermediate_video_url TEXT,
   credits_used INTEGER DEFAULT 0,
+  download_status TEXT NOT NULL DEFAULT 'pending',
   error_message TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   finished_at DATETIME,
@@ -617,7 +619,8 @@ CREATE TABLE IF NOT EXISTS credit_distribution_logs (
   admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   recipient_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   credits_amount INTEGER NOT NULL,
-  method TEXT NOT NULL CHECK (method IN ('activation_code', 'manual_set', 'manual_add', 'checkin', 'self_paying', 'code_refund')),
+  amount_of_taking_back INTEGER,
+  method TEXT NOT NULL CHECK (method IN ('activation_code', 'activation_code_daily', 'manual_set', 'manual_add', 'checkin', 'self_paying', 'code_refund', 'recycling')),
   note TEXT DEFAULT '',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -677,6 +680,7 @@ CREATE TABLE IF NOT EXISTS image_records (
   result_urls TEXT NOT NULL DEFAULT '[]',
   credits_used INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'done',
+  download_status TEXT NOT NULL DEFAULT 'pending',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   downloaded_at DATETIME,
   deleted_at DATETIME, -- 软删时间戳；NULL = 未删除

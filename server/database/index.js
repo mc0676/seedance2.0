@@ -729,6 +729,71 @@ export function initDatabase() {
     }
   }
 
+  // 增量迁移：credit_distribution_logs 添加 amount_of_taking_back 字段
+  {
+    const cdlCols = db.prepare("PRAGMA table_info(credit_distribution_logs)").all().map((c) => c.name);
+    if (!cdlCols.includes('amount_of_taking_back')) {
+      console.log('[database] 迁移：credit_distribution_logs 添加 amount_of_taking_back 列...');
+      db.exec('ALTER TABLE credit_distribution_logs ADD COLUMN amount_of_taking_back INTEGER DEFAULT 0');
+      // 扩展 method CHECK 约束，加入 recycling
+      db.exec("CREATE TABLE cdl_tmp AS SELECT * FROM credit_distribution_logs");
+      db.exec("DROP TABLE credit_distribution_logs");
+      db.exec(`CREATE TABLE credit_distribution_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL, recipient_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, credits_amount INTEGER NOT NULL, method TEXT NOT NULL CHECK (method IN ('activation_code','activation_code_daily','manual_set','manual_add','checkin','self_paying','code_refund','recycling')), note TEXT DEFAULT '', amount_of_taking_back INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
+      db.exec("INSERT INTO credit_distribution_logs (id, admin_id, recipient_id, credits_amount, method, note, created_at, amount_of_taking_back) SELECT id, admin_id, recipient_id, credits_amount, method, note, created_at, amount_of_taking_back FROM cdl_tmp");
+      db.exec("DROP TABLE cdl_tmp");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_cdl_admin ON credit_distribution_logs(admin_id, created_at DESC)");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_cdl_recipient ON credit_distribution_logs(recipient_id, created_at DESC)");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_cdl_time ON credit_distribution_logs(created_at DESC)");
+      console.log('[database] 迁移完成：credit_distribution_logs.amount_of_taking_back 已添加');
+    }
+  }
+
+  // 修正迁移：修复列顺序错乱导致 amount_of_taking_back 被写入日期值的问题
+  {
+    const cdlCols = db.prepare("PRAGMA table_info(credit_distribution_logs)").all().map((c) => c.name);
+    if (cdlCols.includes('amount_of_taking_back')) {
+      // 检查是否有 amount_of_taking_back 值异常大（日期值 > 1000000）
+      const badRows = db.prepare("SELECT COUNT(*) AS c FROM credit_distribution_logs WHERE amount_of_taking_back > 1000000").get();
+      if (badRows && badRows.c > 0) {
+        console.log(`[database] 修正迁移：检测到 ${badRows.c} 条 amount_of_taking_back 异常数据，正在修复...`);
+        // amount_of_taking_back 里存的是日期（created_at），created_at 里存的是 0
+        // 交换回来：同时修正两列
+        db.prepare("UPDATE credit_distribution_logs SET created_at = amount_of_taking_back, amount_of_taking_back = 0 WHERE amount_of_taking_back > 1000000").run();
+        console.log('[database] 修正迁移完成：列顺序已修复');
+      }
+    }
+  }
+
+  // 增量迁移：credit_distribution_logs.method CHECK 加入 activation_code_daily
+  {
+    const cdlSQL = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='credit_distribution_logs'").get()?.sql || '';
+    if (cdlSQL && !cdlSQL.includes('activation_code_daily')) {
+      console.log('[database] 迁移：credit_distribution_logs.method CHECK 加入 activation_code_daily...');
+      db.exec("CREATE TABLE cdl_tmp2 AS SELECT * FROM credit_distribution_logs");
+      db.exec("DROP TABLE credit_distribution_logs");
+      db.exec(`CREATE TABLE credit_distribution_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL, recipient_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, credits_amount INTEGER NOT NULL, method TEXT NOT NULL CHECK (method IN ('activation_code','activation_code_daily','manual_set','manual_add','checkin','self_paying','code_refund','recycling')), note TEXT DEFAULT '', amount_of_taking_back INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
+      db.exec("INSERT INTO credit_distribution_logs SELECT * FROM cdl_tmp2");
+      db.exec("DROP TABLE cdl_tmp2");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_cdl_admin ON credit_distribution_logs(admin_id, created_at DESC)");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_cdl_recipient ON credit_distribution_logs(recipient_id, created_at DESC)");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_cdl_time ON credit_distribution_logs(created_at DESC)");
+      console.log('[database] 迁移完成：activation_code_daily 已加入 CHECK');
+    }
+  }
+
+  // 增量迁移：为 image_records / audio_generations / video_enhancements 添加 download_status
+  {
+    const tables = ['image_records', 'audio_generations', 'video_enhancements'];
+    for (const tbl of tables) {
+      const cols = db.prepare(`PRAGMA table_info(${tbl})`).all().map((c) => c.name);
+      if (!cols.includes('download_status')) {
+        console.log(`[database] 迁移：${tbl} 添加 download_status 列...`);
+        db.exec(`ALTER TABLE ${tbl} ADD COLUMN download_status TEXT NOT NULL DEFAULT 'pending'`);
+        console.log(`[database] 迁移完成：${tbl}.download_status 已添加`);
+      }
+    }
+  }
+
   console.log(`[database] 数据库初始化成功：${DB_PATH}`);
   return db;
 }

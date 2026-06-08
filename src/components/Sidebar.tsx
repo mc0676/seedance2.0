@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   FilmIcon,
-  DownloadIcon,
   SettingsIcon,
   MenuIcon,
   CloseIcon,
@@ -92,12 +91,6 @@ export default function Sidebar({ currentUser, onLogout, onUserUpdated }: Sideba
       label: '项目组与资产',
       path: '/assets',
       icon: PackageIcon,
-    },
-    {
-      id: 'DOWNLOAD_MANAGEMENT',
-      label: '下载管理',
-      path: '/download',
-      icon: DownloadIcon,
     },
     {
       id: 'SETTINGS',
