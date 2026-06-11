@@ -750,6 +750,14 @@ export const getMediaKitKey = () =>
 export const updateMediaKitKey = (key: string) =>
   adminFetch<unknown>('/admin/mediakit-key', { method: 'PUT', body: JSON.stringify({ key }) });
 
+// ==================== DeepSeek API Key ====================
+
+export const getDeepseekConfig = () =>
+  adminFetch<{ key: string; model: string; reasoning_effort: string }>('/admin/deepseek-key');
+
+export const updateDeepseekConfig = (data: { key?: string; model?: string; reasoning_effort?: string }) =>
+  adminFetch<unknown>('/admin/deepseek-key', { method: 'PUT', body: JSON.stringify(data) });
+
 // ==================== 音频生成中转配置 ====================
 
 export interface AudioGenConfig {

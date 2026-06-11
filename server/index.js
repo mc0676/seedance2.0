@@ -1140,7 +1140,7 @@ async function pollWuyinResult(db, imageRecordId, wuyinTaskId, imageGenCost) {
           const resultUrls = Array.isArray(detailData.data.result) ? detailData.data.result : [];
           const userRow = db.prepare('SELECT unlimited_credits FROM users WHERE id = (SELECT user_id FROM image_records WHERE id = ?)').get(imageRecordId);
           const actualCost = userRow?.unlimited_credits ? 0 : imageGenCost;
-          creditLockService.settleForImage({ imageRecordId, actualCredits: actualCost });
+          try { creditLockService.settleForImage({ imageRecordId, actualCredits: actualCost }); } catch {}
           db.prepare(`UPDATE image_records SET result_urls=?, credits_used=?, status='done' WHERE id=?`).run(JSON.stringify(resultUrls), actualCost, imageRecordId);
           return;
         }
@@ -1155,8 +1155,12 @@ async function pollWuyinResult(db, imageRecordId, wuyinTaskId, imageGenCost) {
     creditLockService.releaseForImage({ imageRecordId, reason: '生成超时' });
     db.prepare(`UPDATE image_records SET status='error', error_message=? WHERE id=?`).run('生成超时', imageRecordId);
   } catch {
-    creditLockService.releaseForImage({ imageRecordId, reason: '轮询异常' });
-    db.prepare(`UPDATE image_records SET status='error', error_message=? WHERE id=?`).run('轮询异常', imageRecordId);
+    // 仅对非终态记录标错，避免覆盖已完成的记录
+    const record = db.prepare("SELECT status FROM image_records WHERE id = ?").get(imageRecordId);
+    if (record && record.status !== 'done' && record.status !== 'error') {
+      creditLockService.releaseForImage({ imageRecordId, reason: '轮询异常' });
+      db.prepare(`UPDATE image_records SET status='error', error_message=? WHERE id=?`).run('轮询异常', imageRecordId);
+    }
   }
 }
 
@@ -8238,6 +8242,226 @@ if (process.env.NODE_ENV === 'production') {
 
 // 本地上传文件托管（Volc 不可用时的降级存储）
 const localUploadsDir = path.join(__dirname, 'data', 'uploads');
+
+// ===================== DeepSeek 文本生成 =====================
+
+function generateDialogueId() { return 'dlg_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,8); }
+
+function resolveDeepseekApiKey() {
+  const db = getDatabase();
+  const row = db.prepare("SELECT value FROM system_config WHERE key = 'deepseek_api_key'").get();
+  return row?.value || process.env.DEEPSEEK_API_KEY || '';
+}
+
+// POST /api/text-gen - 调用 DeepSeek Chat API（支持流式）
+app.post('/api/text-gen', authenticate, async (req, res) => {
+  try {
+    const apiKey = resolveDeepseekApiKey();
+    if (!apiKey) return res.status(500).json({ error: '未配置 DeepSeek API Key' });
+
+    const db = getDatabase();
+    const modelRow = db.prepare("SELECT value FROM system_config WHERE key = 'deepseek_model'").get();
+    const defaultModel = modelRow?.value || 'deepseek-v4-flash'; // 首次启动 schema.sql 保证存在
+    const reasoningRow = db.prepare("SELECT value FROM system_config WHERE key = 'deepseek_reasoning_effort'").get();
+    const reasoningEffort = reasoningRow?.value || null;
+    const { messages, model = defaultModel, projectId, id_of_dialogue, stream = true, temperature, max_tokens } = req.body;
+
+    const body = { model, messages, stream, stream_options: stream ? { include_usage: true } : undefined };
+    if (temperature != null) body.temperature = temperature;
+    if (max_tokens != null) body.max_tokens = max_tokens;
+    // reasoning_effort: 仅对 v4-pro/v4-flash 有效，且仅在数据库有配置时传递
+    if (reasoningEffort && (model === 'deepseek-v4-pro' || model === 'deepseek-v4-flash')) {
+      body.reasoning_effort = reasoningEffort;
+    }
+    if (!messages || !Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({ error: 'messages 不能为空' });
+    }
+
+    // 对话：不存在则创建
+    let did = id_of_dialogue || generateDialogueId();
+    const dlgExists = db.prepare('SELECT id FROM tasks_texts_dialogue WHERE id = ?').get(did);
+    if (!dlgExists) {
+      const firstMsg = messages[0]?.content?.slice(0, 40) || '新对话';
+      db.prepare('INSERT INTO tasks_texts_dialogue (id, user_id, project_id, name) VALUES (?,?,?,?)').run(did, req.user.id, projectId || null, firstMsg);
+    }
+
+    const upstream = await fetch('https://api.deepseek.com/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
+      body: JSON.stringify(body),
+    });
+
+    if (!stream) {
+      const json = await upstream.json();
+      if (!upstream.ok) return res.status(upstream.status).json({ error: json?.error?.message || 'DeepSeek API 调用失败' });
+      const content = json?.choices?.[0]?.message?.content || '';
+      const usage = json?.usage || {};
+      const lastUserMsg = messages[messages.length - 1];
+      const saved = [{ role: lastUserMsg.role, content: lastUserMsg.content }, { role: 'assistant', content }];
+      const ins = db.prepare('INSERT INTO tasks_text (id_of_dialogue, model, messages_in_once, tokens_prompt, tokens_completion, total_tokens) VALUES (?,?,?,?,?,?)')
+        .run(did, body.model, JSON.stringify(saved), usage.prompt_tokens || 0, usage.completion_tokens || 0, usage.total_tokens || 0);
+      return res.json({ success: true, data: { id: ins.lastInsertRowid, content, id_of_dialogue: did, tokens_prompt: usage.prompt_tokens || 0, tokens_completion: usage.completion_tokens || 0 } });
+    }
+
+    if (!upstream.ok) { const errText = await upstream.text(); return res.status(upstream.status).json({ error: errText }); }
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    let fullContent = '', usage = null;
+    const reader = upstream.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const payload = line.slice(6);
+          if (payload === '[DONE]') continue;
+          try {
+            const chunk = JSON.parse(payload);
+            const delta = chunk?.choices?.[0]?.delta?.content || '';
+            if (delta) fullContent += delta;
+            if (chunk?.usage) usage = chunk.usage;
+            res.write('data: ' + JSON.stringify(chunk) + '\n\n');
+          } catch { res.write(line + '\n\n'); }
+        }
+      }
+    } finally {
+      const lastUserMsg = messages[messages.length - 1];
+      const saved = [{ role: lastUserMsg.role, content: lastUserMsg.content }, { role: 'assistant', content: fullContent }];
+      const ins = db.prepare('INSERT INTO tasks_text (id_of_dialogue, model, messages_in_once, tokens_prompt, tokens_completion, total_tokens) VALUES (?,?,?,?,?,?)')
+        .run(did, body.model, JSON.stringify(saved), usage?.prompt_tokens || 0, usage?.completion_tokens || 0, usage?.total_tokens || 0);
+      res.write('data: {"done":true,"id":' + ins.lastInsertRowid + ',"id_of_dialogue":"' + did + '","tokens_prompt":' + (usage?.prompt_tokens||0) + ',"tokens_completion":' + (usage?.completion_tokens||0) + '}\n\n');
+      res.end();
+    }
+  } catch (e) {
+    if (!res.headersSent) res.status(500).json({ error: e.message });
+    else res.end();
+  }
+});
+
+// GET /api/text-gen/history - 查询历史（按对话分组）
+app.get('/api/text-gen/history', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const pageSize = Math.max(1, Math.min(100, parseInt(req.query.pageSize) || 20));
+    const projectId = parseInt(req.query.projectId) || null;
+    const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
+    let where = '';
+    const params = [];
+    if (!isAdmin) { where = 'WHERE d.user_id = ?'; params.push(req.user.id); }
+    if (projectId) { where = (where ? where + ' AND' : 'WHERE') + ' d.project_id = ?'; params.push(projectId); }
+    const total = db.prepare('SELECT COUNT(DISTINCT d.id) AS n FROM tasks_texts_dialogue d ' + where).get(...params).n;
+    const items = db.prepare(`
+      SELECT d.id AS id_of_dialogue, d.name, d.created_at,
+        (SELECT messages_in_once FROM tasks_text WHERE id_of_dialogue = d.id ORDER BY created_at DESC LIMIT 1) AS messages_in_once,
+        (SELECT COUNT(*) FROM tasks_text WHERE id_of_dialogue = d.id) AS msg_count
+      FROM tasks_texts_dialogue d
+      ${where}
+      ORDER BY d.created_at DESC
+      LIMIT ? OFFSET ?
+    `).all(...params, pageSize, (page - 1) * pageSize);
+    res.json({ success: true, data: { items, total, page, pageSize } });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/text-gen/dialogue/:id - 对话完整消息
+app.get('/api/text-gen/dialogue/:id', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const did = req.params.id;
+    // 权限检查
+    const dlg = db.prepare('SELECT user_id FROM tasks_texts_dialogue WHERE id = ?').get(did);
+    if (!dlg) return res.status(404).json({ error: '对话不存在' });
+    if (dlg.user_id !== req.user.id && !['admin','super_admin'].includes(req.user.role)) {
+      return res.status(403).json({ error: '无权访问' });
+    }
+    const rows = db.prepare('SELECT * FROM tasks_text WHERE id_of_dialogue = ? ORDER BY created_at ASC').all(did);
+    res.json({ success: true, data: { rows } });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// PUT /api/text-gen/dialogue/:id/rename - 对话改名
+app.put('/api/text-gen/dialogue/:id/rename', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const did = req.params.id;
+    const dlg = db.prepare('SELECT user_id FROM tasks_texts_dialogue WHERE id = ?').get(did);
+    if (!dlg) return res.status(404).json({ error: '对话不存在' });
+    if (dlg.user_id !== req.user.id) return res.status(403).json({ error: '无权操作' });
+    const { name } = req.body;
+    if (typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: '名称不能为空' });
+    db.prepare('UPDATE tasks_texts_dialogue SET name = ? WHERE id = ?').run(name.trim(), did);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /api/text-gen/message/:id - 删除单条消息
+app.delete('/api/text-gen/message/:id', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const id = parseInt(req.params.id);
+    const msg = db.prepare('SELECT t.id, d.user_id FROM tasks_text t JOIN tasks_texts_dialogue d ON d.id = t.id_of_dialogue WHERE t.id = ?').get(id);
+    if (!msg) return res.status(404).json({ error: '消息不存在' });
+    if (msg.user_id !== req.user.id) return res.status(403).json({ error: '无权操作' });
+    db.prepare('DELETE FROM tasks_text WHERE id = ?').run(id);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /api/text-gen/dialogue/:id - 删除整个对话
+app.delete('/api/text-gen/dialogue/:id', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const did = req.params.id;
+    const dlg = db.prepare('SELECT user_id FROM tasks_texts_dialogue WHERE id = ?').get(did);
+    if (!dlg) return res.status(404).json({ error: '对话不存在' });
+    if (dlg.user_id !== req.user.id) return res.status(403).json({ error: '无权操作' });
+    // CASCADE 自动删除关联的 tasks_text 行（schema 中已定义 ON DELETE CASCADE）
+    db.prepare('DELETE FROM tasks_texts_dialogue WHERE id = ?').run(did);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===================== 管理后台 DeepSeek Key =====================
+
+app.get('/api/admin/deepseek-key', authenticate, (req, res) => {
+  try {
+    if (req.user.role === 'user') return res.status(403).json({ error: '无权访问' });
+    const db = getDatabase();
+    const keyRow = db.prepare("SELECT value FROM system_config WHERE key = 'deepseek_api_key'").get();
+    const modelRow = db.prepare("SELECT value FROM system_config WHERE key = 'deepseek_model'").get();
+    const reasonRow = db.prepare("SELECT value FROM system_config WHERE key = 'deepseek_reasoning_effort'").get();
+    res.json({ success: true, data: { key: keyRow?.value || '', model: modelRow?.value || '', reasoning_effort: reasonRow?.value || '' } });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/admin/deepseek-key', authenticate, (req, res) => {
+  try {
+    if (req.user.role === 'user') return res.status(403).json({ error: '无权访问' });
+    const { key, model } = req.body;
+    const { reasoning_effort } = req.body;
+    const db = getDatabase();
+    if (typeof key === 'string') {
+      db.prepare("UPDATE system_config SET value = ? WHERE key = 'deepseek_api_key'").run(key);
+    }
+    if (typeof model === 'string' && ['deepseek-v4-flash', 'deepseek-v4-pro'].includes(model)) {
+      db.prepare("UPDATE system_config SET value = ? WHERE key = 'deepseek_model'").run(model);
+    }
+    if (typeof reasoning_effort === 'string' && ['low','medium','high','max'].includes(reasoning_effort)) {
+      db.prepare("UPDATE system_config SET value = ? WHERE key = 'deepseek_reasoning_effort'").run(reasoning_effort);
+    }
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 if (!fs.existsSync(localUploadsDir)) fs.mkdirSync(localUploadsDir, { recursive: true });
 app.use('/uploads', express.static(localUploadsDir));
 

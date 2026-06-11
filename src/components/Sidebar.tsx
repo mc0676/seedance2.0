@@ -10,6 +10,7 @@ import {
   LogoutIcon,
   SparkleIcon,
   ChartIcon,
+  ChatIcon,
   ImageIcon,
   MicIcon,
   PackageIcon,
@@ -79,6 +80,12 @@ export default function Sidebar({ currentUser, onLogout, onUserUpdated }: Sideba
       label: '画质增强',
       path: '/enhancement',
       icon: SparkleIcon,
+    },
+    {
+      id: 'TEXT_GEN',
+      label: '文本生成',
+      path: '/text-gen',
+      icon: ChatIcon,
     },
     {
       id: 'CONSUMPTION_ANALYSIS',

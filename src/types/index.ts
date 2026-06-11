@@ -587,6 +587,29 @@ export interface UsageStats {
 /**
  * 项目成员
  */
+/** 文本生成对话 */
+export interface TextDialogue {
+  id_of_dialogue: string;
+  name: string;
+  created_at: string;
+  messages_in_once?: string;   // 最新一条消息预览
+  msg_count?: number;
+}
+
+/** 文本生成消息（DeepSeek） */
+export interface TextTask {
+  id: number;
+  id_of_dialogue: string;
+  model: string;
+  messages_in_once: string;
+  status: 'done' | 'error';
+  tokens_prompt: number;
+  tokens_completion: number;
+  total_tokens: number;
+  error_message: string | null;
+  created_at: string;
+}
+
 export interface ProjectMember {
   id: number;
   project_id: number;

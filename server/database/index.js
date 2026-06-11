@@ -794,6 +794,39 @@ export function initDatabase() {
     }
   }
 
+  // 增量迁移：DeepSeek 对话 + 消息表
+  if (!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='tasks_texts_dialogue'").get()) {
+    db.exec(`CREATE TABLE tasks_texts_dialogue (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+      name TEXT NOT NULL DEFAULT '新对话',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_dialogue_user ON tasks_texts_dialogue(user_id, created_at DESC)');
+    console.log('[database] 迁移：tasks_texts_dialogue 表已创建');
+  }
+  if (!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='tasks_text'").get()) {
+    db.exec(`CREATE TABLE tasks_text (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id_of_dialogue TEXT NOT NULL REFERENCES tasks_texts_dialogue(id) ON DELETE CASCADE,
+      model TEXT NOT NULL DEFAULT 'deepseek-v4-flash',
+      messages_in_once TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'done' CHECK (status IN ('done','error')),
+      tokens_prompt INTEGER DEFAULT 0,
+      tokens_completion INTEGER DEFAULT 0,
+      total_tokens INTEGER DEFAULT 0,
+      error_message TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_text_dialogue ON tasks_text(id_of_dialogue, created_at ASC)');
+    console.log('[database] 迁移：tasks_text 表已创建');
+  }
+  // 确保 DeepSeek 配置项存在（老数据库可能缺少）
+  db.prepare("INSERT OR IGNORE INTO system_config (key, value, description) VALUES ('deepseek_api_key', '', 'DeepSeek Chat API Key')").run();
+  db.prepare("INSERT OR IGNORE INTO system_config (key, value, description) VALUES ('deepseek_model', 'deepseek-v4-flash', 'DeepSeek 默认模型')").run();
+  db.prepare("INSERT OR IGNORE INTO system_config (key, value, description) VALUES ('deepseek_reasoning_effort', 'high', 'DeepSeek 推理深度（low/medium/high/max）')").run();
+
   console.log(`[database] 数据库初始化成功：${DB_PATH}`);
   return db;
 }

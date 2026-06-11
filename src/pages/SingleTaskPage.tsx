@@ -2278,7 +2278,10 @@ export default function SingleTaskPage() {
                       </div>
                     </>
                   ) : item.status === 'generating' ? (
-                    <span className="text-xs text-purple-400 text-center px-1">生成中</span>
+                    <span className="inline-flex items-center gap-1 text-xs text-purple-400">
+                      <span className="animate-spin h-3 w-3 border-2 border-purple-400 border-t-transparent rounded-full" />
+                      生成中
+                    </span>
                   ) : item.status === 'error' ? (
                     <span className="text-xs text-red-400 text-center px-1">失败</span>
                   ) : (
@@ -2342,7 +2345,10 @@ export default function SingleTaskPage() {
                                     </div>
                                   </>
                                 ) : isSubGenerating ? (
-                                  <span className="text-[10px] text-purple-400">生成中</span>
+                                  <span className="inline-flex items-center gap-1 text-[10px] text-purple-400">
+                                    <span className="animate-spin h-2.5 w-2.5 border-2 border-purple-400 border-t-transparent rounded-full" />
+                                    生成中
+                                  </span>
                                 ) : isSubError ? (
                                   <span className="text-[10px] text-red-400">失败</span>
                                 ) : (

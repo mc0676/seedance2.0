@@ -15,6 +15,7 @@ import EnhancementPage from './pages/EnhancementPage';
 import ConsumptionAnalysisPage from './pages/ConsumptionAnalysisPage';
 import HappyHorsePage from './pages/HappyHorsePage';
 import SettingsPage from './pages/Settings';
+import TextGenPage from './pages/TextGenPage';
 import ProjectWorkspacePage from './pages/ProjectWorkspacePage';
 import type { User } from './types';
 import { getCurrentUser } from './services/authService';
@@ -218,6 +219,12 @@ function AppContent() {
               </MainLayout>
             </ProtectedRoute>
           }
+        />
+        <Route
+          path="/text-gen"
+          element={<ProtectedRoute currentUser={currentUser}>
+            <MainLayout currentUser={currentUser} onLogout={handleLogout} onUserUpdated={setCurrentUser}>
+              <TextGenPage /></MainLayout></ProtectedRoute>}
         />
         <Route
           path="/admin"

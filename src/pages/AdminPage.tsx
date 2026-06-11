@@ -29,6 +29,8 @@ import {
   updateWuyinKey,
   getMediaKitKey,
   updateMediaKitKey,
+  getDeepseekConfig,
+  updateDeepseekConfig,
   getEnhancementPricing as fetchEnhancementPricing,
   updateEnhancementBaseRate,
   type AdminEnhancementPricing,
@@ -336,6 +338,12 @@ export default function AdminPage() {
   const [mediaKitKey, setMediaKitKey] = useState('');
   const [mediaKitKeyEditing, setMediaKitKeyEditing] = useState(false);
   const [mediaKitKeyDraft, setMediaKitKeyDraft] = useState('');
+  // DeepSeek
+  const [deepseekKey, setDeepseekKey] = useState('');
+  const [deepseekKeyEditing, setDeepseekKeyEditing] = useState(false);
+  const [deepseekKeyDraft, setDeepseekKeyDraft] = useState('');
+  const [deepseekModel, setDeepseekModel] = useState('deepseek-v4-flash');
+  const [deepseekReasoning, setDeepseekReasoning] = useState('');
   const [enhancementPricing, setEnhancementPricing] = useState<AdminEnhancementPricing | null>(null);
 
   // HappyHorse
@@ -856,6 +864,9 @@ export default function AdminPage() {
       });
       getWuyinKey().then((d) => setWuyinKey(d.key)).catch(() => {});
       getMediaKitKey().then((d) => setMediaKitKey(d.key)).catch(() => {});
+      getDeepseekConfig().then((d) => {
+        setDeepseekKey(d.key); setDeepseekModel(d.model); setDeepseekReasoning(d.reasoning_effort);
+      }).catch(() => {});
       // HappyHorse
       fetch('/api/admin/happyhorse-key', { headers: getAuthHeaders() })
         .then((r) => r.json())
@@ -1104,6 +1115,15 @@ export default function AdminPage() {
       await updateMediaKitKey(mediaKitKeyDraft);
       setMediaKitKey(mediaKitKeyDraft);
       setMediaKitKeyEditing(false);
+    } catch (e) { alert(e instanceof Error ? e.message : '保存失败'); }
+  };
+  
+  // DeepSeek 配置保存
+  const handleSaveDeepseekConfig = async () => {
+    try {
+      await updateDeepseekConfig({ key: deepseekKeyDraft, model: deepseekModel, reasoning_effort: deepseekReasoning });
+      setDeepseekKey(deepseekKeyDraft);
+      setDeepseekKeyEditing(false);
     } catch (e) { alert(e instanceof Error ? e.message : '保存失败'); }
   };
 
@@ -2852,6 +2872,57 @@ export default function AdminPage() {
             <div className="flex items-center gap-3">
               <code className="flex-1 px-3 py-2 bg-[#0f111a] rounded text-gray-300 text-sm font-mono truncate">{wuyinKey || '（未配置）'}</code>
               <button onClick={() => { setWuyinKeyDraft(wuyinKey); setWuyinKeyEditing(true); }} className="btn-edit">修改</button>
+            </div>
+          )}
+        </div>
+
+        {/* DeepSeek API 配置 */}
+        <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
+          <h2 className="text-xl font-semibold text-white mb-2">DeepSeek API</h2>
+          <p className="text-xs text-gray-500 mb-4">用于文本生成（api.deepseek.com）</p>
+          {deepseekKeyEditing ? (
+            <div className="flex flex-col gap-2">
+              <div className="flex gap-2">
+                <input
+                  className="flex-1 px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-white text-sm font-mono focus:outline-none focus:border-purple-500"
+                  value={deepseekKeyDraft}
+                  onChange={(e) => setDeepseekKeyDraft(e.target.value)}
+                  placeholder="sk-..."
+                />
+                <button onClick={handleSaveDeepseekConfig} className="btn-save">保存</button>
+                <button onClick={() => setDeepseekKeyEditing(false)} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-xl text-white text-sm">取消</button>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-sm text-gray-400">默认模型：</span>
+                <select
+                  className="px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-white text-sm focus:outline-none focus:border-purple-500"
+                  value={deepseekModel}
+                  onChange={(e) => setDeepseekModel(e.target.value)}
+                >
+                  <option value="deepseek-v4-flash">deepseek-v4-flash（快速）</option>
+                  <option value="deepseek-v4-pro">deepseek-v4-pro（专业）</option>
+                </select>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-sm text-gray-400">推理深度：</span>
+                <select
+                  className="px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-white text-sm focus:outline-none focus:border-purple-500"
+                  value={deepseekReasoning}
+                  onChange={(e) => setDeepseekReasoning(e.target.value)}
+                >
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high（默认）</option>
+                  <option value="max">max</option>
+                </select>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-3">
+              <code className="flex-1 px-3 py-2 bg-[#0f111a] rounded text-gray-300 text-sm font-mono truncate">{deepseekKey || '（未配置）'}</code>
+              <span className="text-xs text-purple-400 font-mono">{deepseekModel}</span>
+              <span className="text-xs text-gray-500 font-mono">推理:{deepseekReasoning}</span>
+              <button onClick={() => { setDeepseekKeyDraft(deepseekKey); setDeepseekKeyEditing(true); }} className="btn-edit">修改</button>
             </div>
           )}
         </div>

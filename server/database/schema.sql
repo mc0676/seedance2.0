@@ -690,3 +690,37 @@ CREATE TABLE IF NOT EXISTS image_records (
 );
 CREATE INDEX IF NOT EXISTS idx_image_records_user ON image_records(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_image_records_project ON image_records(project_id, created_at DESC);
+
+-- 文本生成对话表（DeepSeek）
+CREATE TABLE IF NOT EXISTS tasks_texts_dialogue (
+  id                  TEXT PRIMARY KEY,
+  user_id             INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  project_id          INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  name                TEXT NOT NULL DEFAULT '新对话',
+  created_at          DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_dialogue_user ON tasks_texts_dialogue(user_id, created_at DESC);
+
+-- 文本生成消息表（DeepSeek）
+CREATE TABLE IF NOT EXISTS tasks_text (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  id_of_dialogue      TEXT NOT NULL REFERENCES tasks_texts_dialogue(id) ON DELETE CASCADE,
+  model               TEXT NOT NULL DEFAULT 'deepseek-v4-flash',
+  messages_in_once    TEXT NOT NULL DEFAULT '[]',
+  status              TEXT NOT NULL DEFAULT 'done' CHECK (status IN ('done','error')),
+  tokens_prompt       INTEGER DEFAULT 0,
+  tokens_completion   INTEGER DEFAULT 0,
+  total_tokens        INTEGER DEFAULT 0,
+  error_message       TEXT,
+  created_at          DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_text_dialogue ON tasks_text(id_of_dialogue, created_at ASC);
+
+INSERT OR IGNORE INTO system_config (key, value, description) VALUES
+  ('deepseek_api_key', '', 'DeepSeek Chat API Key');
+
+INSERT OR IGNORE INTO system_config (key, value, description) VALUES
+  ('deepseek_model', 'deepseek-v4-flash', 'DeepSeek 默认模型（deepseek-v4-flash / deepseek-v4-pro）');
+
+INSERT OR IGNORE INTO system_config (key, value, description) VALUES
+  ('deepseek_reasoning_effort', 'high', 'DeepSeek 推理深度（low/medium/high/max）');
