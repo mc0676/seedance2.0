@@ -366,6 +366,7 @@ export default function SingleTaskPage() {
   }
 
   const isGenerating = generation.status === 'generating';
+  const generatingRef = useRef(false);
 
   // 所有已上传文件（用于 @ 面板）
   const mentionItems = [
@@ -1538,11 +1539,13 @@ export default function SingleTaskPage() {
   }, []);
 
   const handleGenerate = useCallback(async () => {
+    if (generatingRef.current || uploading) return;
+    generatingRef.current = true;
     const frameImages = [...firstFrameImages, ...lastFrameImages];
     const activeImages = referenceMode === 'first_last_frame' ? frameImages : images;
     const hasMedia = activeImages.length > 0 || videos.length > 0 || audios.length > 0;
-    if (!prompt.trim() && !hasMedia) return;
-    if (isGenerating || uploading) return;
+    if (!prompt.trim() && !hasMedia) { generatingRef.current = false; return; }
+    if (isGenerating || uploading) { generatingRef.current = false; return; }
 
     // 检查是否有文件还在上传中
     const allFiles = [...activeImages, ...videos, ...audios];
@@ -1702,6 +1705,7 @@ export default function SingleTaskPage() {
 
       // 批量生成：不轮询，直接刷新历史
       if ('taskIds' in result) {
+        generatingRef.current = false;
         setGeneration({ status: 'success', result: undefined });
         if (state.currentProject) {
           void loadProjectTasks(state.currentProject.id);
@@ -1711,14 +1715,17 @@ export default function SingleTaskPage() {
       }
 
       if (result.data?.[0]?.url) {
+        generatingRef.current = false;
         setGeneration({ status: 'success', result });
         if (state.currentProject) {
           void loadProjectTasks(state.currentProject.id);
         }
       } else {
+        generatingRef.current = false;
         setGeneration({ status: 'error', error: '未获取到视频结果，请重试' });
       }
     } catch (error) {
+      generatingRef.current = false;
       const raw = error instanceof Error ? error.message : '未知错误';
       console.error('[生成失败] 完整错误信息:', raw);
       const userMessage = parseArkError(raw);
