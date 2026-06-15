@@ -1115,18 +1115,6 @@ app.post('/api/oss/probe-video', authenticate, async (req, res) => {
   }
 });
 
-// POST /api/oss/check-url - 检查 OSS URL 是否可访问（复用功能用）
-app.post('/api/oss/check-url', authenticate, async (req, res) => {
-  try {
-    const url = String(req.body?.url || '').trim();
-    if (!url) return res.status(400).json({ error: '缺少 url 参数' });
-    const r = await fetch(url, { method: 'HEAD' });
-    res.json({ success: true, data: { ok: r.ok } });
-  } catch {
-    res.json({ success: true, data: { ok: false } });
-  }
-});
-
 // 后台异步轮询吴音图片生成结果
 async function pollWuyinResult(db, imageRecordId, wuyinTaskId, imageGenCost) {
   const POLL_INTERVAL_MS = 3000;
