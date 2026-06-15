@@ -585,8 +585,6 @@ export default function SingleTaskPage() {
       if (n.nodeType === Node.TEXT_NODE) {
         // 跳过零宽空格（chip 前后的光标占位符）
         t += (n.textContent ?? '').replace(/\u200B/g, '');
-      } else if ((n as Element).tagName === 'DIV') {
-        t += '\n';
       } else if ((n as Element).tagName === 'BR') {
         const prev = n.previousSibling as Element | null;
         if (prev?.classList?.contains('mention-chip')) continue;
@@ -616,10 +614,6 @@ export default function SingleTaskPage() {
       const tmp = document.createElement('div');
       tmp.appendChild(frag);
       let len = extractText(tmp).length;
-      const tag = (range.startContainer as Element).tagName;
-      if (range.startOffset === 0 && (tag === "DIV" || tag === "P") && range.startContainer !== root) {
-        len += 1;
-      }
       return len;
     } catch {
       return 0;
@@ -639,10 +633,6 @@ export default function SingleTaskPage() {
         const tmp = document.createElement('div');
         tmp.appendChild(pre.cloneContents());
         let len = extractText(tmp).length;
-        const tag = (container as Element).tagName;
-        if (off === 0 && (tag === "DIV" || tag === "P") && container !== root) {
-          len += 1;
-        }
         return len;
       } catch { return 0; }
     };
@@ -692,21 +682,6 @@ export default function SingleTaskPage() {
           return true;
         }
         cur += logLen;
-      } else if ((node as Element).tagName === 'DIV') {
-        if (node !== root) {
-          if (cur + 1 >= offset) {
-            const r = document.createRange();
-            r.setStartAfter(node);
-            r.collapse(true);
-            sel.removeAllRanges();
-            sel.addRange(r);
-            return true;
-          }
-          cur += 1;
-        }
-        for (const c of Array.from(node.childNodes)) {
-          if (walk(c)) return true;
-        }
       } else if ((node as Element).tagName === 'BR') {
         if (cur + 1 >= offset) {
           const r = document.createRange();

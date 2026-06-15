@@ -1,0 +1,16 @@
+const D=require('better-sqlite3'),db=new D('/app/server/data/seedance.db');
+const t=db.prepare('SELECT t.*,u.email,u.credits FROM tasks t JOIN users u ON u.id=t.user_id WHERE t.id=12332').get();
+console.log('任务:',t.id);
+console.log('用户:',t.email,'余额:',t.credits);
+console.log('状态:',t.status,'进度:',t.progress);
+console.log('参数:',t.resolution,t.duration+'s',t.ratio);
+console.log('提交ID:',t.submit_id);
+console.log('历史ID:',t.history_id);
+console.log('创建:',t.created_at,'更新:',t.updated_at);
+console.log('开始:',t.started_at,'完成:',t.completed_at);
+console.log('错误:',t.error_message);
+const cl=db.prepare("SELECT * FROM credit_locks WHERE task_id=12332").get();
+console.log('积分锁:',cl?cl.status+':'+cl.locked_credits+'cr':'无');
+const ul=db.prepare('SELECT * FROM usage_logs WHERE task_id=12332').get();
+console.log('消耗记录:',ul?ul.credits_cost+'cr '+ul.status:'无');
+db.close();
