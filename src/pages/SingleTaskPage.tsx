@@ -496,7 +496,7 @@ export default function SingleTaskPage() {
     const staleTagSet = new Set(sels.filter(s => !s.volcAssetId).map(s => s.chipTag));
     const escaped = text
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/\n/g, '<div></div>');
+      .replace(/\n/g, '<br>');
     // 除 assetSelections 外，还包含所有可用素材的 chipTag，
     // 确保复制粘贴带 @asset-xxx 的 chip 后也能正确渲染
     const allAvailableAssetTags = availableAssets
@@ -545,7 +545,7 @@ export default function SingleTaskPage() {
   ) {
     const escaped = text
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/\n/g, '<div></div>');
+      .replace(/\n/g, '<br>');
     const allTags = [
       ...imgs.map((_, i) => `@图片${i + 1}`),
       ...firstImgs.map((_, i) => `@首图${i + 1}`),
