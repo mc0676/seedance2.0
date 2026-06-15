@@ -2418,25 +2418,10 @@ export default function SingleTaskPage() {
                           const ossAudios = assets.filter((a) => a.assetType === 'audio' && !a.uri.startsWith('asset://'));
                           const assetRefs = assets.filter((a) => a.uri.startsWith('asset://'));
 
-                          let ossFailedCount = 0;
-                          // 通过后端代理检查 OSS URL 是否真正失效（避免前端 CORS 误判）
-                          const checkOss = async (url: string) => {
-                            try {
-                              const r = await fetch('/api/oss/check-url', {
-                                method: 'POST',
-                                headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-                                body: JSON.stringify({ url }),
-                              });
-                              const d = await r.json();
-                              return d.success && d.data?.ok;
-                            } catch { return false; }
-                          };
-                          const allOss = [...ossImages, ...ossVideos, ...ossAudios];
-                          const ossResults = await Promise.all(allOss.map(async (a) => ({ ...a, valid: await checkOss(a.uri) })));
-                          const validOssImages = ossResults.filter(a => a.assetType === 'image' && a.valid);
-                          const validOssVideos = ossResults.filter(a => a.assetType === 'video' && a.valid);
-                          const validOssAudios = ossResults.filter(a => a.assetType === 'audio' && a.valid);
-                          ossFailedCount = ossResults.filter(a => !a.valid).length;
+                          // OSS URL 仅作预览，不过期校验（火山签名URL会过期，但asset://才是生成用的永久引用）
+                          const validOssImages = ossImages;
+                          const validOssVideos = ossVideos;
+                          const validOssAudios = ossAudios;
 
                           const makeName = (a: typeof assets[0], ext: string) =>
                             a.originalName || a.uri.split('/').pop()?.split('?')[0] || `file.${ext}`;
@@ -2549,14 +2534,10 @@ export default function SingleTaskPage() {
                           const finalHtml = buildHtmlExplicit(newPrompt, newSelections, restoredImages, restoredVideos, restoredAudios, [], [], assetDisplayMap, staleTags);
                           pendingEditorHtmlRef.current = finalHtml;
 
-                          // 7. 提示已删除/失效素材（先清历史 toast，重新计时）
+                          // 7. 提示已删除素材
                           setToasts([]);
-                          const totalFailed = deletedNames.length + ossFailedCount;
-                          if (totalFailed > 0) {
-                            let msg = `总共 ${totalFailed} 个素材失效。`;
-                            if (deletedNames.length > 0) msg += `${deletedNames.length} 个引用素材已经失效，相关引用已经断开。`;
-                            if (ossFailedCount > 0) msg += `${ossFailedCount} 个参考素材已经失效。`;
-                            showToast(msg.trim());
+                          if (deletedNames.length > 0) {
+                            showToast(`${deletedNames.length} 个引用素材已经失效，相关引用已断开。`);
                           }
 
                           window.scrollTo({ top: 0, behavior: 'smooth' });
