@@ -36,6 +36,7 @@ function resolutionFromSR(sr) {
 }
 
 async function syncOne(row) {
+  const DO_SHOW_STATUS_OF_TASK_OF_HAPPYHORSE = ['1', 'true'].includes((process.env.SHOW_STATUS_OF_TASK_OF_HAPPYHORSE || '').toLowerCase());
   const db = getDatabase();
   const apiKey = getApiKey();
   if (!apiKey) {
@@ -49,7 +50,15 @@ async function syncOne(row) {
 
   let resp;
   try {
+    if (DO_SHOW_STATUS_OF_TASK_OF_HAPPYHORSE) {
+      const ts = new Date().toISOString().replace('Z', '').slice(0, 23);
+      console.log(`[happyhorseWorker.js] ${ts} [video] 轮询任务 hhTaskId=${row.id} dashscope_task_id=${row.dashscope_task_id}`);
+    }
     resp = await getTask({ apiKey, taskId: row.dashscope_task_id });
+    if (DO_SHOW_STATUS_OF_TASK_OF_HAPPYHORSE) {
+      const ts = new Date().toISOString().replace('Z', '').slice(0, 23);
+      console.log(`[happyhorseWorker.js] ${ts} [video] 轮询响应 hhTaskId=${row.id}:`, JSON.stringify(resp, null, 2));
+    }
   } catch (e) {
     console.error(`[happyhorse worker] task=${row.id} 查询异常:`, e.message);
     return;
@@ -99,9 +108,17 @@ async function syncOne(row) {
     } catch (e) {
       console.error(`[happyhorse worker] settle 失败 task=${row.id}:`, e.message);
     }
+    if (DO_SHOW_STATUS_OF_TASK_OF_HAPPYHORSE) {
+      const ts = new Date().toISOString().replace('Z', '').slice(0, 23);
+      console.log(`[happyhorseWorker.js] ${ts} [video] ✅ 任务完成 hhTaskId=${row.id} sec=${billingSeconds} res=${realResolution} 实扣=${actualCredits} url=${resp.video_url}`);
+    }
     console.log(`[happyhorse worker] task=${row.id} 完成 sec=${billingSeconds} res=${realResolution} 实扣=${actualCredits}`);
   } else if (status === 'FAILED' || status === 'CANCELED' || status === 'UNKNOWN') {
     const errMsg = resp.message || resp.code || (status === 'UNKNOWN' ? '任务不存在或已过期' : `HappyHorse 任务${status}`);
+    if (DO_SHOW_STATUS_OF_TASK_OF_HAPPYHORSE) {
+      const ts = new Date().toISOString().replace('Z', '').slice(0, 23);
+      console.log(`[happyhorseWorker.js] ${ts} [video] ❌ 任务失败 hhTaskId=${row.id} status=${status} error=${errMsg}`);
+    }
     db.prepare(
       `UPDATE tasks_happyhorse SET status='error', error_message=?, completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?`
     ).run(errMsg, row.id);

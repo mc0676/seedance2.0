@@ -724,3 +724,90 @@ INSERT OR IGNORE INTO system_config (key, value, description) VALUES
 
 INSERT OR IGNORE INTO system_config (key, value, description) VALUES
   ('deepseek_reasoning_effort', 'high', 'DeepSeek 推理深度（low/medium/high/max）');
+
+-- -------------------------------------------
+-- 无限画布（project "cloth"）
+-- -------------------------------------------
+
+CREATE TABLE IF NOT EXISTS canvas__cloths (
+  id              TEXT PRIMARY KEY,
+  user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  project_id      INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  title           TEXT NOT NULL DEFAULT '未命名画布',
+  viewport        TEXT NOT NULL DEFAULT '{"x":0,"y":0,"k":1}',
+  background_mode TEXT NOT NULL DEFAULT 'lines',
+  show_image_info INTEGER NOT NULL DEFAULT 0,
+  created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_canvas__cloths_user ON canvas__cloths(user_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_canvas__cloths_project ON canvas__cloths(project_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS canvas__clothses_assets (
+  id              TEXT PRIMARY KEY,
+  id_of_cloth     TEXT NOT NULL REFERENCES canvas__cloths(id) ON DELETE CASCADE,
+  type            TEXT NOT NULL CHECK (type IN ('video','image','audio','enhancement','script','imagine_of_volc','config')),
+  subtype         TEXT,
+  id_of_resource  INTEGER,
+  title           TEXT NOT NULL DEFAULT '',
+  pos_x           REAL NOT NULL DEFAULT 0,
+  pos_y           REAL NOT NULL DEFAULT 0,
+  width           REAL NOT NULL DEFAULT 200,
+  height          REAL NOT NULL DEFAULT 120,
+  created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_clothses_assets_cloth ON canvas__clothses_assets(id_of_cloth);
+
+CREATE TABLE IF NOT EXISTS canvas__clothses_connections (
+  id              TEXT PRIMARY KEY,
+  id_of_cloth     TEXT NOT NULL REFERENCES canvas__cloths(id) ON DELETE CASCADE,
+  from_asset_id   TEXT NOT NULL REFERENCES canvas__clothses_assets(id) ON DELETE CASCADE,
+  to_asset_id     TEXT NOT NULL REFERENCES canvas__clothses_assets(id) ON DELETE CASCADE,
+  created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_clothses_conn_cloth ON canvas__clothses_connections(id_of_cloth);
+
+-- 配置卡片数据（prompt / model / generation mode 等），通过 canvas__clothses_assets.id_of_resource 关联
+CREATE TABLE IF NOT EXISTS canvas__configs (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  generation_mode TEXT NOT NULL DEFAULT 'image',
+  model           TEXT,
+  prompt          TEXT NOT NULL DEFAULT '',
+  params          TEXT NOT NULL DEFAULT '{}',
+  assets_of_at    TEXT NOT NULL DEFAULT '[]',
+  created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_canvas__configs_project ON canvas__configs(project_id);
+
+CREATE TABLE IF NOT EXISTS canvas__scripts (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  project_id  INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  title       TEXT,
+  content     TEXT NOT NULL DEFAULT '',
+  created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_canvas__scripts_user ON canvas__scripts(user_id, created_at DESC);
+
+-- 画布全局设置（key-value，仿照 system_config）
+CREATE TABLE IF NOT EXISTS canvas__settings (
+  key         TEXT PRIMARY KEY,
+  value       TEXT,
+  description TEXT,
+  updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_by  INTEGER REFERENCES users(id) ON DELETE SET NULL
+);
+
+-- 默认数据
+INSERT OR IGNORE INTO canvas__settings (key, value, description) VALUES ('image_models', '["nano-banana-2","gpt-image-2"]', '图片模型列表（JSON数组，决定前端排序）');
+INSERT OR IGNORE INTO canvas__settings (key, value, description) VALUES ('image_default', 'nano-banana-2', '默认图片模型');
+INSERT OR IGNORE INTO canvas__settings (key, value, description) VALUES ('video_models', '["seedance-2.0","seedance-2.0-fast","happyhorse-1.0-t2v"]', '视频模型列表（JSON数组，决定前端排序）');
+INSERT OR IGNORE INTO canvas__settings (key, value, description) VALUES ('video_default', 'seedance-2.0', '默认视频模型');
+INSERT OR IGNORE INTO canvas__settings (key, value, description) VALUES ('theme', 'dark', '主题：dark | light');
+
+CREATE INDEX IF NOT EXISTS idx_canvas__scripts_project ON canvas__scripts(project_id, created_at DESC);

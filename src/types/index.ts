@@ -619,3 +619,36 @@ export interface ProjectMember {
   user_role?: string;
   created_at: string;
 }
+
+// ---------- 无限画布 ----------
+
+export interface CanvasCloth {
+  id: string; user_id: number; project_id: number;
+  title: string; viewport: string; background_mode: string;
+  show_image_info: number; created_at: string; updated_at: string;
+}
+
+export interface CanvasClothsAsset {
+  id: string; id_of_cloth: string;
+  type: 'video' | 'image' | 'audio' | 'enhancement' | 'script' | 'imagine_of_volc' | 'config';
+  subtype: string | null; id_of_resource: number | null;
+  title: string; pos_x: number; pos_y: number; width: number; height: number;
+  created_at: string; updated_at: string;
+  // canvas__configs JOIN 字段（仅 type='config' 时有值）
+  generation_mode?: string;
+  config_model?: string | null;
+  config_prompt?: string;
+  config_params?: string;
+  config_assets_of_at?: string;
+}
+
+export interface CanvasClothsConnection {
+  id: string; id_of_cloth: string;
+  from_asset_id: string; to_asset_id: string; created_at: string;
+}
+
+export interface CanvasScript {
+  id: number; user_id: number; project_id: number | null;
+  title: string | null; content: string;
+  created_at: string; updated_at: string;
+}

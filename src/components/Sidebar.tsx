@@ -14,6 +14,7 @@ import {
   ImageIcon,
   MicIcon,
   PackageIcon,
+  CanvasIcon,
 } from '../components/Icons';
 import type { User } from '../types';
 import { logout } from '../services/authService';
@@ -39,7 +40,7 @@ interface MenuItem {
 export default function Sidebar({ currentUser, onLogout, onUserUpdated }: SidebarProps) {
   const location = useLocation();
   const navigate = useNavigate();
-  const [expanded, setExpanded] = useState(true);
+  const expanded = true;
   const [mobileOpen, setMobileOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
 
@@ -86,6 +87,12 @@ export default function Sidebar({ currentUser, onLogout, onUserUpdated }: Sideba
       label: '文本生成',
       path: '/text-gen',
       icon: ChatIcon,
+    },
+    {
+      id: 'CANVAS',
+      label: '无限画布',
+      path: '/cloth',
+      icon: CanvasIcon,
     },
     {
       id: 'CONSUMPTION_ANALYSIS',
@@ -264,21 +271,6 @@ export default function Sidebar({ currentUser, onLogout, onUserUpdated }: Sideba
         <div className="w-10" /> {/* 占位 */}
       </header>
 
-      {/* 展开/收起按钮（桌面端） */}
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="hidden lg:flex fixed top-1/2 -right-3 z-50 w-6 h-12 bg-[#1c1f2e] border border-gray-800 rounded-r-lg items-center justify-center text-gray-400 hover:text-white transition-all"
-      >
-        {expanded ? (
-          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-            <polyline points="15 18 9 12 15 6" />
-          </svg>
-        ) : (
-          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-            <polyline points="9 18 15 12 9 6" />
-          </svg>
-        )}
-      </button>
     </>
   );
 }

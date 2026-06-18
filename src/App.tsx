@@ -16,6 +16,8 @@ import ConsumptionAnalysisPage from './pages/ConsumptionAnalysisPage';
 import HappyHorsePage from './pages/HappyHorsePage';
 import SettingsPage from './pages/Settings';
 import TextGenPage from './pages/TextGenPage';
+import CanvasEditorPage from './pages/cloth/CanvasEditorPage';
+import CanvasPage from './pages/cloth/CanvasPage';
 import ProjectWorkspacePage from './pages/ProjectWorkspacePage';
 import type { User } from './types';
 import { getCurrentUser } from './services/authService';
@@ -225,6 +227,17 @@ function AppContent() {
           element={<ProtectedRoute currentUser={currentUser}>
             <MainLayout currentUser={currentUser} onLogout={handleLogout} onUserUpdated={setCurrentUser}>
               <TextGenPage /></MainLayout></ProtectedRoute>}
+        />
+        <Route
+          path="/cloth"
+          element={<ProtectedRoute currentUser={currentUser}>
+            <MainLayout currentUser={currentUser} onLogout={handleLogout} onUserUpdated={setCurrentUser}>
+              <CanvasPage /></MainLayout></ProtectedRoute>}
+        />
+        <Route
+          path="/cloth/:id"
+          element={<ProtectedRoute currentUser={currentUser}>
+            <CanvasEditorPage /></ProtectedRoute>}
         />
         <Route
           path="/admin"

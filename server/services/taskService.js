@@ -342,6 +342,11 @@ export function getTasksByProjectId(projectId, options = {}) {
     values.push(options.status);
   }
 
+  if (options.taskKind) {
+    whereClauses.push('t.task_kind = ?');
+    values.push(options.taskKind);
+  }
+
   const limit = options.limit ?? 100;
   const offset = options.offset ?? 0;
 

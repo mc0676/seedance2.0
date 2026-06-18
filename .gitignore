@@ -5,11 +5,12 @@ node_modules
 server/data/*.db
 server/data/*.db-shm
 server/data/*.db-wal
-/.idea/
+.idea/
 .ssh/
-/output.log
+output.log
 backups/
-/.deepseek/
+.deepseek/
 dist/
 data/
 *.mjs
+infinite-canvas/

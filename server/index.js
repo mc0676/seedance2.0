@@ -28,6 +28,7 @@ import * as enhancementWorker from './services/enhancementWorker.js';
 import * as enhancementPricingService from './services/enhancementPricingService.js';
 import * as audioGenerationService from './services/audioGenerationService.js';
 import { submitTask as happyhorseSubmitTask, getTask as happyhorseGetTask } from './services/happyhorseService.js';
+import clothRouter from './cloth/controller.js';
 import * as happyhorsePricingService from './services/happyhorsePricingService.js';
 import * as happyhorseWorker from './services/happyhorseWorker.js';
 import * as bssService from './services/bssService.js';
@@ -1118,17 +1119,25 @@ app.post('/api/oss/probe-video', authenticate, async (req, res) => {
 // 后台异步轮询吴音图片生成结果
 async function pollWuyinResult(db, imageRecordId, wuyinTaskId, imageGenCost) {
   const POLL_INTERVAL_MS = 3000;
-  const POLL_TIMEOUT_MS = 5 * 60 * 1000;
-  const startedAt = Date.now();
+  const DO_SHOW_STATUS_OF_TASK_OF_WUYIN = ['1', 'true'].includes((process.env.SHOW_STATUS_OF_TASK_OF_WUYIN || '').toLowerCase());
   try {
-    while (Date.now() - startedAt < POLL_TIMEOUT_MS) {
+    while (true) {
       await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+      if (DO_SHOW_STATUS_OF_TASK_OF_WUYIN) {
+        const ts = new Date().toISOString().replace('Z', '').slice(0, 23);
+        console.log(`[index.js] ${ts} [imagine] 正在通过 ${wuyinTaskId} 查询任务 ${imageRecordId}`);
+      }
       try {
         const detailResp = await fetch(
           `${WUYIN_BASE}/api/async/detail?id=${encodeURIComponent(wuyinTaskId)}&key=${encodeURIComponent(WUYIN_API_KEY)}`,
           { headers: { 'Authorization': WUYIN_API_KEY } }
         );
         const detailData = await detailResp.json();
+        if (DO_SHOW_STATUS_OF_TASK_OF_WUYIN) {
+          const ts2 = new Date().toISOString().replace('Z', '').slice(0, 23);
+          console.log(`[index.js] ${ts2} [imagine] 通过 ${wuyinTaskId} 查询任务 ${imageRecordId} 获得 JSON 回参：`);
+          console.log(JSON.stringify(detailData, null, 2));
+        }
         if (!detailResp.ok || detailData?.code !== 200) {
           const friendly = mapWuyinUpstreamError(detailData?.msg || '查询任务失败') || detailData?.msg || '查询任务失败';
           creditLockService.releaseForImage({ imageRecordId, reason: friendly });
@@ -1150,10 +1159,13 @@ async function pollWuyinResult(db, imageRecordId, wuyinTaskId, imageGenCost) {
           db.prepare(`UPDATE image_records SET status='error', error_message=? WHERE id=?`).run(friendly, imageRecordId);
           return;
         }
-      } catch {}
+      } catch (e) {
+        if (DO_SHOW_STATUS_OF_TASK_OF_WUYIN) {
+          const ts3 = new Date().toISOString().replace('Z', '').slice(0, 23);
+          console.log(`[index.js] ${ts3} [imagine] 查询任务 ${imageRecordId} 失败:`, e?.message || e);
+        }
+      }
     }
-    creditLockService.releaseForImage({ imageRecordId, reason: '生成超时' });
-    db.prepare(`UPDATE image_records SET status='error', error_message=? WHERE id=?`).run('生成超时', imageRecordId);
   } catch {
     // 仅对非终态记录标错，避免覆盖已完成的记录
     const record = db.prepare("SELECT status FROM image_records WHERE id = ?").get(imageRecordId);
@@ -1183,12 +1195,18 @@ async function recoverImageRecord(db, record) {
   const wuyinRow = db.prepare("SELECT value FROM system_config WHERE key = 'wuyin_api_key'").get();
   const WUYIN_API_KEY = wuyinRow?.value || 'H8ZPElPf5BKM1amJrauK6txc73';
   const WUYIN_BASE = 'https://api.wuyinkeji.com';
+  const DO_SHOW_STATUS_OF_TASK_OF_WUYIN = ['1', 'true'].includes((process.env.SHOW_STATUS_OF_TASK_OF_WUYIN || '').toLowerCase());
   try {
     const detailResp = await fetch(
       `${WUYIN_BASE}/api/async/detail?id=${encodeURIComponent(record.wuyin_task_id)}&key=${encodeURIComponent(WUYIN_API_KEY)}`,
       { headers: { 'Authorization': WUYIN_API_KEY } }
     );
     const detailData = await detailResp.json();
+    if (DO_SHOW_STATUS_OF_TASK_OF_WUYIN) {
+      const ts = new Date().toISOString().replace('Z', '').slice(0, 23);
+      console.log(`[index.js] ${ts} [imagine] 通过 ${record.wuyin_task_id} 查询任务 ${record.id} 获得 JSON 回参：`);
+      console.log(JSON.stringify(detailData, null, 2));
+    }
     if (!detailResp.ok || detailData?.code !== 200) return false; // keep pending
     const status = detailData?.data?.status;
     if (status === 2) {
@@ -1207,12 +1225,25 @@ async function recoverImageRecord(db, record) {
       return true;
     }
     return false; // still processing
-  } catch { return false; }
+  } catch (e) {
+    if (DO_SHOW_STATUS_OF_TASK_OF_WUYIN) {
+      const ts2 = new Date().toISOString().replace('Z', '').slice(0, 23);
+      console.log(`[index.js] ${ts2} [imagine] 恢复查询任务 ${record.id} 失败:`, e?.message || e);
+    }
+    return false;
+  }
 }
 
 app.post('/api/generate-image', authenticate, async (req, res) => {
   const db = getDatabase();
   const { prompt, model, size, aspectRatio, urls, projectId: reqProjectId, sizeLabel, refUrls: reqRefUrls } = req.body;
+
+  const DO_SHOW_STATUS_OF_TASK_OF_WUYIN = ['1', 'true'].includes((process.env.SHOW_STATUS_OF_TASK_OF_WUYIN || '').toLowerCase());
+  if (DO_SHOW_STATUS_OF_TASK_OF_WUYIN) {
+    const ts = new Date().toISOString().replace('Z', '').slice(0, 23);
+    console.log(`[index.js] ${ts} [imagine] === 收到生成请求 ===`);
+    console.log(`[index.js] ${ts} [imagine] 入参: model=${model} size=${size} aspectRatio=${aspectRatio} sizeLabel=${sizeLabel} refUrls=${JSON.stringify(reqRefUrls)} prompt="${prompt?.substring(0, 80)}"`);
+  }
 
   if (!prompt) return res.status(400).json({ error: 'prompt 不能为空' });
   if (!['gpt-image-2', 'nano-banana-2'].includes(model)) {
@@ -1281,6 +1312,12 @@ app.post('/api/generate-image', authenticate, async (req, res) => {
   }
   if (Array.isArray(urls) && urls.length > 0) submitBody.urls = urls;
 
+  if (DO_SHOW_STATUS_OF_TASK_OF_WUYIN) {
+    const ts = new Date().toISOString().replace('Z', '').slice(0, 23);
+    console.log(`[index.js] ${ts} [imagine] 提交任务 imageRecordId=${imageRecordId} model=${model}`);
+    console.log(`[index.js] ${ts} [imagine] 提交入参:`, JSON.stringify(submitBody, null, 2));
+  }
+
   let wuyinTaskId;
   try {
     const submitResp = await fetch(`${WUYIN_BASE}/api/async/${endpoint}?key=${encodeURIComponent(WUYIN_API_KEY)}`, {
@@ -1289,12 +1326,19 @@ app.post('/api/generate-image', authenticate, async (req, res) => {
       body: JSON.stringify(submitBody),
     });
     const submitData = await submitResp.json();
+
+    if (DO_SHOW_STATUS_OF_TASK_OF_WUYIN) {
+      const ts2 = new Date().toISOString().replace('Z', '').slice(0, 23);
+      console.log(`[index.js] ${ts2} [imagine] 响应 JSON:`);
+      console.log(JSON.stringify(submitData, null, 2));
+    }
+
     if (!submitResp.ok || submitData?.code !== 200 || !submitData?.data?.id) {
       const rawMsg = submitData?.msg || submitData?.message || '任务提交失败';
       const friendly = mapWuyinUpstreamError(rawMsg) || rawMsg;
       creditLockService.releaseForImage({ imageRecordId, reason: friendly });
       db.prepare(`UPDATE image_records SET status='error', error_message=? WHERE id=?`).run(friendly, imageRecordId);
-      return res.status(502).json({ error: friendly });
+      return res.json({ success: true, imageRecordId, status: 'error', error: friendly });
     }
     wuyinTaskId = submitData.data.id;
     // 立即持久化 wuyin_task_id，防止重启后任务丢失；同时标记为 generating
@@ -1302,7 +1346,7 @@ app.post('/api/generate-image', authenticate, async (req, res) => {
   } catch (e) {
     creditLockService.releaseForImage({ imageRecordId, reason: e.message });
     db.prepare(`UPDATE image_records SET status='error', error_message=? WHERE id=?`).run(e.message, imageRecordId);
-    return res.status(502).json({ error: '提交请求异常：' + e.message });
+    return res.json({ success: true, imageRecordId, status: 'error', error: '提交请求异常：' + e.message });
   }
 
   // 4) 立即返回，后台异步轮询
@@ -1557,6 +1601,7 @@ app.post('/api/generate-video', authenticate, upload.array('files', 5), async (r
 
     // 解析 OSS URL（JSON 数组字符串或逗号分隔）
     let imageUrls = [];
+    let volcImageUrls = [];
     let videoUrl = req.body.videoUrl || null;
     let audioUrl = req.body.audioUrl || null;
     try {
@@ -1564,13 +1609,18 @@ app.post('/api/generate-video', authenticate, upload.array('files', 5), async (r
     } catch {
       imageUrls = (req.body.imageUrls || '').split(',').map(s => s.trim()).filter(Boolean);
     }
-
-    // 要求前端传入 projectId
-    if (!reqProjectId) {
-      return res.status(400).json({ error: '必须指定所属项目组（projectId）' });
+    try {
+      volcImageUrls = JSON.parse(req.body.volcImageUrls || '[]');
+    } catch {
+      volcImageUrls = (req.body.volcImageUrls || '').split(',').map(s => s.trim()).filter(Boolean);
     }
+    const allImageUrls = [...imageUrls, ...volcImageUrls];
 
+    // 校验项目组（画布一定有 projectId）
     const isAdmin = ['admin','super_admin'].includes(req.user.role);
+    if (!reqProjectId) {
+      return res.status(400).json({ error: '缺少项目组 ID' });
+    }
     const targetProject = projectService.getProjectById(Number(reqProjectId), req.user.id, isAdmin);
     if (!targetProject) {
       return res.status(403).json({ error: '项目组不存在或您不是该项目组成员' });
@@ -1699,7 +1749,7 @@ app.post('/api/generate-video', authenticate, upload.array('files', 5), async (r
             if (row) return row.original_name;
             return url.split('/').pop()?.split('?')[0] || 'file';
           };
-          for (const url of imageUrls) {
+          for (const url of allImageUrls) {
             db.prepare(`INSERT INTO task_assets (task_id, asset_type, file_path, image_uri, original_name, sort_order) VALUES (?, 'image', '', ?, ?, ?)`)
               .run(thisDbTaskId, url, getOriginalName(url), sortOrder++);
           }
@@ -1753,9 +1803,9 @@ app.post('/api/generate-video', authenticate, upload.array('files', 5), async (r
 
     // 批量生成返回 taskIds 数组，单次生成保持向后兼容
     if (batchSize > 1) {
-      res.json({ taskIds: dbTaskIds, concurrent_id: concurrentId });
+      res.json({ success: true, taskIds: dbTaskIds, concurrent_id: concurrentId });
     } else {
-      res.json({ taskId: dbTaskIds[0], dbTaskId: dbTaskIds[0] });
+      res.json({ success: true, taskId: dbTaskIds[0], dbTaskId: dbTaskIds[0] });
     }
 
     // 将 prompt 中的 @asset-xxx chip 标签转换为 Ark API 要求的"图片N/视频N/音频N"格式
@@ -1763,7 +1813,7 @@ app.post('/api/generate-video', authenticate, upload.array('files', 5), async (r
     let finalPrompt = prompt || '';
     {
       let imgIdx = 0;
-      for (const url of (imageUrls || [])) {
+      for (const url of (allImageUrls || [])) {
         imgIdx++;
         if (url && url.startsWith('asset://')) {
           const assetId = url.slice('asset://'.length);
@@ -1801,7 +1851,7 @@ app.post('/api/generate-video', authenticate, upload.array('files', 5), async (r
         duration: parseInt(duration) || 4,
         resolution,
         files: files || [],
-        imageUrls: imageUrls || [],
+        imageUrls: allImageUrls || [],
         videoUrl: videoUrl || null,
         audioUrl: audioUrl || null,
         sessionId: apiKey,
@@ -2745,6 +2795,48 @@ app.post('/api/download/tasks/:id/file-token', authenticate, async (req, res) =>
     res.json({ success: true, data: { token } });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/proxy-video - 代理远程视频，解决 CORS/ORB 跨域问题（无需登录，有域名白名单保护）
+app.get('/api/proxy-video', async (req, res) => {
+  try {
+    const url = String(req.query.url || '');
+    if (!url) return res.status(400).json({ error: '缺少 url 参数' });
+
+    // 仅允许白名单域名（OSS 和火山 CDN）
+    const allowedHosts = [
+      'yunyu-oss.oss-cn-shanghai.aliyuncs.com',
+      'ark-acg-cn-beijing.tos-cn-beijing.volces.com',
+    ];
+    let host;
+    try { host = new URL(url).hostname; } catch { return res.status(400).json({ error: '无效的 URL' }); }
+    if (!allowedHosts.includes(host)) return res.status(403).json({ error: '不允许的域名' });
+
+    // 用 Node fetch 拉取视频
+    const upstream = await fetch(url);
+    if (!upstream.ok) return res.status(upstream.status).json({ error: '上游请求失败' });
+
+    const contentLength = upstream.headers.get('content-length');
+    const contentType = upstream.headers.get('content-type') || 'video/mp4';
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Accept-Ranges', 'bytes');
+    if (contentLength) res.setHeader('Content-Length', contentLength);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+
+    // 流式传输
+    const reader = upstream.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      res.write(value);
+    }
+    res.end();
+  } catch (error) {
+    console.error('代理视频失败:', error.message);
+    if (!res.headersSent) res.status(500).json({ error: error.message });
+    else res.end();
   }
 });
 
@@ -6163,6 +6255,9 @@ app.get('/api/happyhorse/pricing', authenticate, (req, res) => {
 // POST /api/happyhorse-tasks - 提交任务
 app.post('/api/happyhorse-tasks', authenticate, async (req, res) => {
   const db = getDatabase();
+
+  const DO_SHOW_STATUS_OF_TASK_OF_HAPPYHORSE = ['1', 'true'].includes((process.env.SHOW_STATUS_OF_TASK_OF_HAPPYHORSE || '').toLowerCase());
+
   try {
     if (!permissionService.hasPermission(req.user.id, 'generate_video_happyhorse')) {
       return res.status(403).json({ error: '当前账号未开通 HappyHorse 视频生成权限，请联系管理员' });
@@ -6280,6 +6375,17 @@ app.post('/api/happyhorse-tasks', authenticate, async (req, res) => {
     }
     const hhConcurrentId = batchSize > 1 ? crypto.randomUUID() : null;
 
+    if (DO_SHOW_STATUS_OF_TASK_OF_HAPPYHORSE) {
+      const ts = new Date().toISOString().replace('Z', '').slice(0, 23);
+      console.log(`[index.js] ${ts} [video] === 收到 HappyHorse 生成请求 ===`);
+      console.log(`[index.js] ${ts} [video] 入参:`, JSON.stringify({
+        mode: m, model: HAPPYHORSE_MODE_MODELS[m], resolution: resolutionUp,
+        ratio: normalizedRatio, duration: normalizedDuration,
+        prompt: promptStr?.substring(0, 200), batchSize,
+        mediaCount: cleaned.length,
+      }, null, 2));
+    }
+
     // API Key
     const apiKeyRow = db.prepare("SELECT value FROM system_config WHERE key = 'happyhorse_api_key'").get();
     const apiKey = apiKeyRow?.value || '';
@@ -6352,12 +6458,21 @@ app.post('/api/happyhorse-tasks', authenticate, async (req, res) => {
       }
       const hhId = hhTaskIds[i];
       try {
+        if (DO_SHOW_STATUS_OF_TASK_OF_HAPPYHORSE) {
+          const ts = new Date().toISOString().replace('Z', '').slice(0, 23);
+          console.log(`[index.js] ${ts} [video] 提交任务 hhTaskId=${hhId} model=${HAPPYHORSE_MODE_MODELS[m]}`);
+          console.log(`[index.js] ${ts} [video] 提交入参:`, JSON.stringify({ input: apiInput, parameters: apiParams }, null, 2));
+        }
         const result = await happyhorseSubmitTask({
           apiKey,
           model: HAPPYHORSE_MODE_MODELS[m],
           input: apiInput,
           parameters: apiParams,
         });
+        if (DO_SHOW_STATUS_OF_TASK_OF_HAPPYHORSE) {
+          const ts = new Date().toISOString().replace('Z', '').slice(0, 23);
+          console.log(`[index.js] ${ts} [video] 提交响应 hhTaskId=${hhId}:`, JSON.stringify(result, null, 2));
+        }
         db.prepare(
           `UPDATE tasks_happyhorse
            SET dashscope_task_id=?, request_id=?, status='processing', submitted_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
@@ -7534,6 +7649,49 @@ app.get('/api/volc-native/asset-groups/check-name', authenticate, (req, res) => 
   }
 });
 
+// GET /api/project-assets?projectId= — 返回项目下所有素材（扁平列表，含 file_type 分类）
+app.get('/api/project-assets', authenticate, async (req, res) => {
+  try {
+    const db = getDatabase();
+    const projectId = Number(req.query.projectId);
+    if (!Number.isFinite(projectId) || projectId <= 0) {
+      return res.status(400).json({ error: 'projectId 必填' });
+    }
+    const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
+    const project = projectService.getProjectById(projectId, req.user.id, isAdmin);
+    if (!project) return res.status(404).json({ error: '项目不存在或无权访问' });
+
+    const rows = db.prepare(
+      'SELECT pa.*, ag.name AS group_name, ag.volc_id AS ag_volc_id FROM project_assets pa LEFT JOIN asset_groups ag ON pa.asset_group_id = ag.id WHERE pa.project_id = ? AND pa.status != \'deleted\' ORDER BY pa.created_at DESC'
+    ).all(projectId);
+
+    // 预查 volc_key_groups 名称映射
+    const volcNameMap = new Map();
+    const volcIds = [...new Set(rows.map(r => r.ag_volc_id || r.volc_id).filter(Boolean))];
+    if (volcIds.length > 0) {
+      const phs = volcIds.map(() => '?').join(',');
+      db.prepare(`SELECT id, name FROM volc_key_groups WHERE id IN (${phs})`).all(...volcIds).forEach(v => volcNameMap.set(v.id, v.name));
+    }
+
+    const items = rows.map(r => ({
+      id: r.id,
+      name: r.name || r.original_name || '未命名',
+      volc_asset_id: r.volc_asset_id || '',
+      file_type: r.file_type || 'image',
+      file_url: r.file_url || '',
+      thumbnail_url: r.thumbnail_url || r.file_url || '',
+      group_name: r.group_name || '',
+      review_status: r.review_status || 'pending',
+      volc_name: volcNameMap.get(r.ag_volc_id || r.volc_id) || '默认账户',
+      created_at: r.created_at,
+    }));
+
+    res.json({ success: true, data: items });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // POST /api/volc-native/asset-groups — CreateAssetGroup（普通用户）
 // 必须传 projectId，创建后会自动绑定到该项目（写入 asset_groups 表）
 app.post('/api/volc-native/asset-groups', authenticate, async (req, res) => {
@@ -8475,6 +8633,77 @@ process.on('SIGINT', () => {
   closeDatabase();
   process.exit(0);
 });
+
+// ===================== 无限画布 API =====================
+// 路由定义在 server/cloth/controller.js，authenticate 在此处统一挂载
+app.use('/api/cloths', authenticate, clothRouter);
+
+// GET /api/canvas/scripts - 当前用户文本块列表（含项目成员共享）
+app.get('/api/canvas/scripts', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const projectId = parseInt(req.query.projectId) || null;
+    // 用户自己的脚本 OR 同项目成员的脚本
+    const conds = ['(s.user_id = ? OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = s.project_id AND pm.user_id = ?))'];
+    const params = [req.user.id, req.user.id];
+    if (projectId) { conds.push('s.project_id = ?'); params.push(projectId); }
+    const items = db.prepare(`SELECT s.* FROM canvas__scripts s WHERE ${conds.join(' AND ')} ORDER BY s.updated_at DESC`).all(...params);
+    res.json({ success: true, data: items });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/canvas/scripts - 新建文本块
+app.post('/api/canvas/scripts', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const { title, content, project_id } = req.body;
+    const ins = db.prepare('INSERT INTO canvas__scripts (user_id, project_id, title, content) VALUES (?,?,?,?)').run(req.user.id, project_id || null, title || null, content || '');
+    res.json({ success: true, data: { id: ins.lastInsertRowid } });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// PUT /api/canvas/scripts/:id - 更新文本块（owner 或项目成员）
+app.put('/api/canvas/scripts/:id', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const scriptId = parseInt(req.params.id);
+    const s = db.prepare('SELECT * FROM canvas__scripts WHERE id = ?').get(scriptId);
+    if (!s) return res.status(404).json({ error: '文本块不存在' });
+    // 权限：owner 或同项目成员
+    if (s.user_id !== req.user.id) {
+      if (!s.project_id) return res.status(403).json({ error: '无权修改此文本块' });
+      const member = db.prepare('SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ?').get(s.project_id, req.user.id);
+      if (!member) return res.status(403).json({ error: '无权修改此文本块' });
+    }
+    const { title, content } = req.body;
+    const updates = { updated_at: new Date().toISOString() };
+    if (title !== undefined) updates.title = title;
+    if (content !== undefined) updates.content = content;
+    const setClauses = Object.keys(updates).map(k => `${k} = ?`).join(', ');
+    db.prepare(`UPDATE canvas__scripts SET ${setClauses} WHERE id = ?`).run(...Object.values(updates), s.id);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /api/canvas/scripts/:id（owner 或项目成员）
+app.delete('/api/canvas/scripts/:id', authenticate, (req, res) => {
+  try {
+    const db = getDatabase();
+    const scriptId = parseInt(req.params.id);
+    const s = db.prepare('SELECT * FROM canvas__scripts WHERE id = ?').get(scriptId);
+    if (!s) return res.status(404).json({ error: '文本块不存在' });
+    // 权限：owner 或同项目成员
+    if (s.user_id !== req.user.id) {
+      if (!s.project_id) return res.status(403).json({ error: '无权删除此文本块' });
+      const member = db.prepare('SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ?').get(s.project_id, req.user.id);
+      if (!member) return res.status(403).json({ error: '无权删除此文本块' });
+    }
+    db.prepare('DELETE FROM canvas__scripts WHERE id = ?').run(scriptId);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===================== 启动服务器 =====================
 
 app.listen(PORT, () => {
   console.log(`\n🚀 服务器已启动: http://localhost:${PORT}`);
