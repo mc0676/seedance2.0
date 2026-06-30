@@ -804,6 +804,73 @@ export function getDownloadTasks(options = {}) {
     };
   }
 
+  // 批量生成分组模式下，先拉取较大批次的原始任务（避免 LIMIT 20 分组后只剩 3 条导致无限滚动失效）
+  // 每页最多查 RAW_BATCH 条原始任务，分组分页后返回 pageSize 组
+  if (groupByConcurrent) {
+    const RAW_BATCH = 500;
+    const rawRows = db.prepare(`${columnSelect} ORDER BY t.created_at DESC LIMIT ${RAW_BATCH}`).all(...params);
+
+    // 批量拉取素材
+    const allRawIds = rawRows.map((t) => t.id);
+    let rawAssetsByTask = {};
+    let rawEnhancementsByTask = {};
+    if (allRawIds.length > 0) {
+      const placeholders = allRawIds.map(() => '?').join(',');
+      const assets = db.prepare(
+        `SELECT task_id, asset_type, image_uri, original_name, sort_order FROM task_assets WHERE task_id IN (${placeholders}) AND image_uri IS NOT NULL AND image_uri != '' ORDER BY sort_order ASC`
+      ).all(...allRawIds);
+      for (const a of assets) {
+        if (!rawAssetsByTask[a.task_id]) rawAssetsByTask[a.task_id] = [];
+        rawAssetsByTask[a.task_id].push({ assetType: a.asset_type, uri: a.image_uri, originalName: a.original_name || null });
+      }
+      const enhancements = db.prepare(
+        `SELECT id, task_id, status, tool_version, scene, target_resolution,
+                enhanced_video_url, error_message, credits_used, duration_seconds,
+                created_at, finished_at
+         FROM video_enhancements WHERE task_id IN (${placeholders}) AND deleted_at IS NULL
+         ORDER BY created_at DESC`
+      ).all(...allRawIds);
+      for (const e of enhancements) {
+        if (!rawEnhancementsByTask[e.task_id]) rawEnhancementsByTask[e.task_id] = [];
+        rawEnhancementsByTask[e.task_id].push(e);
+      }
+    }
+
+    const rawVideoTasks = rawRows.map((task) => ({
+      ...task,
+      hasHistory: !!task.history_id,
+      model_type: 'video',
+      concurrent_id: task.concurrent_id || null,
+      assets: rawAssetsByTask[task.id] || [],
+      enhancements: rawEnhancementsByTask[task.id] || [],
+    }));
+
+    // 按 concurrent_id 分组
+    const groups = new Map();
+    for (const t of rawVideoTasks) {
+      const cid = t.concurrent_id || `__single__${t.id}`;
+      if (!groups.has(cid)) {
+        groups.set(cid, { ...t, concurrent_id: t.concurrent_id || null, concurrent_items: [] });
+      } else if (t.concurrent_id) {
+        groups.get(cid).concurrent_items.push(t);
+      }
+    }
+    const sortedGroups = [...groups.values()].sort((a, b) => {
+      const aMax = a.concurrent_items.length > 0
+        ? Math.max(...a.concurrent_items.map((x) => new Date(x.created_at).getTime()))
+        : new Date(a.created_at).getTime();
+      const bMax = b.concurrent_items.length > 0
+        ? Math.max(...b.concurrent_items.map((x) => new Date(x.created_at).getTime()))
+        : new Date(b.created_at).getTime();
+      return bMax - aMax;
+    });
+
+    const totalGroups = sortedGroups.length;
+    const offset = (page - 1) * pageSize;
+    const pagedGroups = sortedGroups.slice(offset, offset + pageSize);
+    return { tasks: pagedGroups, total: totalGroups, page, pageSize };
+  }
+
   const offset = (page - 1) * pageSize;
   const stmt = db.prepare(`${columnSelect} ORDER BY t.created_at DESC LIMIT ? OFFSET ?`);
   const tasks = stmt.all(...params, pageSize, offset);

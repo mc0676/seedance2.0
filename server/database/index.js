@@ -18,6 +18,7 @@ export function initDatabase() {
 
   db = new Database(DB_PATH);
   db.pragma('foreign_keys = ON');
+  db.pragma('journal_mode = WAL');
 
   const existingTableCount = db.prepare(`
     SELECT COUNT(*) as count
@@ -706,20 +707,37 @@ export function initDatabase() {
       }
       if (!constraintOk) {
         console.log('[database] 迁移：credit_distribution_logs 扩展 method CHECK 约束...');
+        // 检测当前表中是否已有 amount_of_taking_back 列（后续迁移可能已添加）
+        const hasAOTB = db.prepare("PRAGMA table_info(credit_distribution_logs)").all().some(c => c.name === 'amount_of_taking_back');
         db.exec('BEGIN');
-        db.exec(`
-          CREATE TABLE credit_distribution_logs_new (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-            recipient_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            credits_amount INTEGER NOT NULL,
-            method TEXT NOT NULL CHECK (method IN ('activation_code','manual_set','manual_add','checkin','self_paying','code_refund')),
-            note TEXT DEFAULT '',
-            amount_of_taking_back INTEGER DEFAULT 0,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-          )
-        `);
-        db.exec('INSERT INTO credit_distribution_logs_new SELECT * FROM credit_distribution_logs');
+        if (hasAOTB) {
+          db.exec(`
+            CREATE TABLE credit_distribution_logs_new (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+              recipient_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              credits_amount INTEGER NOT NULL,
+              method TEXT NOT NULL CHECK (method IN ('activation_code','manual_set','manual_add','checkin','self_paying','code_refund')),
+              note TEXT DEFAULT '',
+              amount_of_taking_back INTEGER,
+              created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+          `);
+          db.exec('INSERT INTO credit_distribution_logs_new (id, admin_id, recipient_id, credits_amount, method, note, amount_of_taking_back, created_at) SELECT id, admin_id, recipient_id, credits_amount, method, note, amount_of_taking_back, created_at FROM credit_distribution_logs');
+        } else {
+          db.exec(`
+            CREATE TABLE credit_distribution_logs_new (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+              recipient_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              credits_amount INTEGER NOT NULL,
+              method TEXT NOT NULL CHECK (method IN ('activation_code','manual_set','manual_add','checkin','self_paying','code_refund')),
+              note TEXT DEFAULT '',
+              created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+          `);
+          db.exec('INSERT INTO credit_distribution_logs_new SELECT * FROM credit_distribution_logs');
+        }
         db.exec('DROP TABLE credit_distribution_logs');
         db.exec('ALTER TABLE credit_distribution_logs_new RENAME TO credit_distribution_logs');
         db.exec('CREATE INDEX IF NOT EXISTS idx_cdl_admin ON credit_distribution_logs(admin_id, created_at DESC)');

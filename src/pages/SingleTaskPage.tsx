@@ -749,12 +749,33 @@ export default function SingleTaskPage() {
   }
 
 
+  // 挂载或切换项目时从 localStorage 恢复草稿
+  const promptRestoredRef = useRef<number | undefined>(undefined);
   useEffect(() => {
-    if (editorRef.current && editorRef.current.innerHTML === '') {
-      setEditorHtml(buildHtml(prompt));
+    const pid = state.currentProject?.id;
+    if (!pid || !editorRef.current) return;
+    // 同一项目不重复恢复
+    if (promptRestoredRef.current === pid) return;
+    promptRestoredRef.current = pid;
+    const saved = localStorage.getItem(`seedance_prompt_${pid}`) || '';
+    if (saved) {
+      setPrompt(saved);
+      setEditorHtml(buildHtml(saved));
+    } else {
+      setPrompt('');
+      setEditorHtml('');
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [state.currentProject?.id]);
+
+  // prompt 变化时持久化到 localStorage（按项目隔离）
+  useEffect(() => {
+    const pid = state.currentProject?.id;
+    if (!pid) return;
+    const timer = setTimeout(() => {
+      localStorage.setItem(`seedance_prompt_${pid}`, prompt);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [prompt, state.currentProject?.id]);
 
   // 复用时通过 pendingEditorHtmlRef 写入编辑器，useLayoutEffect 在每次 render 后立即执行，
   // 早于 useEffect，不受 projectAssets useEffect 覆盖的影响
@@ -874,7 +895,7 @@ export default function SingleTaskPage() {
       const result = await getDownloadTasks('all', 'video', page, 20, projectId, false, true);
       if (gen !== historyGenRef.current) return; // 工作组已切换，丢弃过期响应
       setHistoryItems((prev) => append ? [...prev, ...result.tasks] : result.tasks);
-      setHistoryHasMore(result.tasks.length === 20 && result.tasks.length + (append ? historyItems.length : 0) < result.total);
+      setHistoryHasMore(result.tasks.length === 20 && (page * 20) < result.total);
       setHistoryPage(page);
     } catch {
       // silent

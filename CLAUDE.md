@@ -243,21 +243,26 @@ ssh -i .ssh/yunyu_server root@47.94.174.146 "
 
 ### 热更新（改了后端 server/*.js）
 
-```bash
-# 1. 上传服务端文件
-scp -i .ssh/yunyu_server server/index.js root@47.94.174.146:/tmp/server_index.js
-scp -i .ssh/yunyu_server server/services/creditLockService.js root@47.94.174.146:/tmp/
-scp -i .ssh/yunyu_server server/database/index.js root@47.94.174.146:/tmp/db_index.js
+**重要：后端文件必须用 `docker cp` 直接写入容器，不能用 overlay UpperDir。Overlay 方式经多次验证不可靠，文件写入磁盘但容器不一定读取。**
 
-# 2. 写入容器 overlay（容器运行时执行）
+```bash
+# 1. 上传服务端文件到宿主机 /tmp
+scp -i .ssh/yunyu_server server/index.js root@47.94.174.146:/tmp/
+scp -i .ssh/yunyu_server server/services/projectService.js root@47.94.174.146:/tmp/
+scp -i .ssh/yunyu_server server/database/index.js root@47.94.174.146:/tmp/
+
+# 2. docker cp 写入容器（数据安全：只覆盖代码文件，不影响 /app/server/data/ 下的数据库）
 ssh -i .ssh/yunyu_server root@47.94.174.146 "
-  UPPER=\$(docker inspect seedance-blue --format '{{.GraphDriver.Data.UpperDir}}')
-  cp /tmp/server_index.js \$UPPER/app/server/index.js
-  cp /tmp/creditLockService.js \$UPPER/app/server/services/creditLockService.js
-  cp /tmp/db_index.js \$UPPER/app/server/database/index.js
-  docker restart seedance-blue
+  docker cp /tmp/index.js seedance-blue:/app/server/index.js
+  docker cp /tmp/projectService.js seedance-blue:/app/server/services/projectService.js
+  docker cp /tmp/db_index.js seedance-blue:/app/server/database/index.js
 "
+
+# 3. 重启容器使新代码生效
+ssh -i .ssh/yunyu_server root@47.94.174.146 "docker restart seedance-blue"
 ```
+
+**数据安全说明：** `docker cp` 替换的是 `/app/server/services/*.js`、`/app/server/index.js` 等代码文件，数据库 `seedance.db` 存储在 Docker volume `seedance-data`（挂载到 `/app/server/data/`），两者路径完全隔离，互不影响。
 
 ### 重启容器
 
