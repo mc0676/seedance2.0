@@ -98,7 +98,17 @@ export async function videoUrlToMp3Blob(videoUrl: string, opts: ConvertOptions =
   const proxied = /^https?:\/\//i.test(videoUrl)
     ? `/api/video-proxy?url=${encodeURIComponent(videoUrl)}`
     : videoUrl;
-  const res = await fetch(proxied);
+  const ctrl = new AbortController();
+  const timeoutId = setTimeout(() => ctrl.abort(), 30_000); // 30s 超时
+  let res: Response;
+  try {
+    res = await fetch(proxied, { signal: ctrl.signal });
+  } catch (e) {
+    clearTimeout(timeoutId);
+    if ((e as Error)?.name === 'AbortError') throw new Error('下载视频超时（30s），请检查网络或重新生成');
+    throw e;
+  }
+  clearTimeout(timeoutId);
   if (!res.ok) {
     // 403/404 大多数是 TOS/OSS 签名已过期或链接已被回收
     if (res.status === 403 || res.status === 404 || res.status === 410) {

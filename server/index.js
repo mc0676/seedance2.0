@@ -2804,14 +2804,16 @@ app.get('/api/proxy-video', async (req, res) => {
     const url = String(req.query.url || '');
     if (!url) return res.status(400).json({ error: '缺少 url 参数' });
 
-    // 仅允许白名单域名（OSS 和火山 CDN）
+    // 仅允许白名单域名（OSS、火山 CDN、DashScope OSS）
     const allowedHosts = [
       'yunyu-oss.oss-cn-shanghai.aliyuncs.com',
       'ark-acg-cn-beijing.tos-cn-beijing.volces.com',
     ];
     let host;
     try { host = new URL(url).hostname; } catch { return res.status(400).json({ error: '无效的 URL' }); }
-    if (!allowedHosts.includes(host)) return res.status(403).json({ error: '不允许的域名' });
+    // DashScope OSS 加速域名也允许
+    const isDashScopeOSS = host.endsWith('.oss-accelerate.aliyuncs.com');
+    if (!allowedHosts.includes(host) && !isDashScopeOSS) return res.status(403).json({ error: '不允许的域名' });
 
     // 用 Node fetch 拉取视频
     const upstream = await fetch(url);
@@ -6378,12 +6380,6 @@ app.post('/api/happyhorse-tasks', authenticate, async (req, res) => {
     if (DO_SHOW_STATUS_OF_TASK_OF_HAPPYHORSE) {
       const ts = new Date().toISOString().replace('Z', '').slice(0, 23);
       console.log(`[index.js] ${ts} [video] === 收到 HappyHorse 生成请求 ===`);
-      console.log(`[index.js] ${ts} [video] 入参:`, JSON.stringify({
-        mode: m, model: HAPPYHORSE_MODE_MODELS[m], resolution: resolutionUp,
-        ratio: normalizedRatio, duration: normalizedDuration,
-        prompt: promptStr?.substring(0, 200), batchSize,
-        mediaCount: cleaned.length,
-      }, null, 2));
     }
 
     // API Key

@@ -66,6 +66,14 @@ export function CanvasSettingsModal({ open, onClose, theme }: Props) {
     try {
       // 1. 浏览器本地配置优先
       let local = loadLocal();
+      // 确保必要字段存在（防止 localStorage 中存储不完整对象导致渲染崩溃）
+      if (local) {
+        if (!Array.isArray(local.image_models)) local.image_models = [...ALL_IMAGE_MODELS];
+        if (!local.image_default || !ALL_IMAGE_MODELS.includes(local.image_default)) local.image_default = ALL_IMAGE_MODELS[0];
+        if (!Array.isArray(local.video_models)) local.video_models = [...ALL_VIDEO_MODELS];
+        if (!local.video_default || !ALL_VIDEO_MODELS.includes(local.video_default)) local.video_default = ALL_VIDEO_MODELS[0];
+        if (!local.theme) local.theme = 'dark';
+      }
       if (!local) {
         // 首次：从服务器拉取作为初始值
         const sRes = await fetch('/api/cloths/settings', { headers: getAuthHeaders() });
@@ -158,14 +166,17 @@ export function CanvasSettingsModal({ open, onClose, theme }: Props) {
 
   if (!open) return null;
 
-  const renderSection = (title: string, section: 'image' | 'video', models: string[], defaultModel: string, labels: Record<string, string>) => (
+  const renderSection = (title: string, section: 'image' | 'video', models: string[] | undefined, defaultModel: string, labels: Record<string, string>) => {
+    const safeModels = Array.isArray(models) ? models : [];
+    const safeDefault = safeModels.includes(defaultModel) ? defaultModel : (safeModels[0] || '');
+    return (
     <div className="mb-5">
       <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider" style={{ color: t.nodeMuted }}>{title}</h4>
       {/* 复刻 Ant Design Segmented：轨道色 + 选中项随主题变化 */}
       <div className="inline-flex flex-col rounded-md p-0.5" style={{
         background: t.nodeText === '#f5f5f4' ? 'rgba(0,0,0,0.25)' : 'rgba(0,0,0,0.04)',
       }}>
-        {models.map((m) => {
+        {safeModels.map((m) => {
           const isDark = t.nodeText === '#f5f5f4';
           const selectedBg = isDark ? 'rgba(255,255,255,0.08)' : '#ffffff';
           const selectedShadow = isDark ? 'none' : '0 1px 2px 0 rgba(0,0,0,0.03), 0 1px 6px -1px rgba(0,0,0,0.02), 0 2px 4px 0 rgba(0,0,0,0.02)';
@@ -177,12 +188,12 @@ export function CanvasSettingsModal({ open, onClose, theme }: Props) {
             onDragOver={onDragOver}
             onDrop={() => onDrop(section, m)}
             onDragEnd={() => setDragKey(null)}
-            onClick={() => settings && defaultModel !== m && update({ ...settings, [section === 'image' ? 'image_default' : 'video_default']: m })}
+            onClick={() => settings && safeDefault !== m && update({ ...settings, [section === 'image' ? 'image_default' : 'video_default']: m })}
             className={`flex items-center gap-1.5 rounded-[4px] px-3 py-1 cursor-pointer select-none transition ${dragKey === m ? 'opacity-40' : ''}`}
             style={{
-              background: defaultModel === m ? selectedBg : 'transparent',
-              boxShadow: defaultModel === m ? selectedShadow : 'none',
-              color: defaultModel === m ? t.nodeText : t.nodeMuted,
+              background: safeDefault === m ? selectedBg : 'transparent',
+              boxShadow: safeDefault === m ? selectedShadow : 'none',
+              color: safeDefault === m ? t.nodeText : t.nodeMuted,
             }}
           >
             <GripVertical className="size-3 shrink-0 opacity-40" style={{ color: 'inherit' }} />
@@ -193,6 +204,7 @@ export function CanvasSettingsModal({ open, onClose, theme }: Props) {
       </div>
     </div>
   );
+  };
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center" onClick={onClose}>
@@ -208,7 +220,10 @@ export function CanvasSettingsModal({ open, onClose, theme }: Props) {
               <p className="mt-0.5 text-xs" style={{ color: t.nodeFaint }}>你的身份是系统超级管理员，修改会同步系统设置</p>
             )}
           </div>
-          <button onClick={onClose} className="rounded-lg p-1 transition hover:bg-white/10" style={{ color: t.nodeMuted }}><X className="size-4" /></button>
+          <button onClick={onClose} className="rounded-lg p-1 transition" style={{ color: t.nodeMuted }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = t.nodeText === '#f5f5f4' ? 'rgba(255,255,255,.1)' : 'rgba(0,0,0,.06)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+          ><X className="size-4" /></button>
         </div>
         <div className="flex-1 overflow-y-auto px-5 py-4">
           {loading ? (

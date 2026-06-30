@@ -85,7 +85,7 @@ export function AudioAssociateModal({ open, projectId, onClose, onSelect, theme 
               <span className="text-sm">暂无音频生成记录</span>
             </div>
           ) : (
-            <div className="grid grid-cols-3 gap-3">
+            <div className="flex flex-col gap-3">
               {records.map((record) => (
                 <button
                   key={record.id}
@@ -93,9 +93,9 @@ export function AudioAssociateModal({ open, projectId, onClose, onSelect, theme 
                   style={{ background: t.nodeFill, borderColor: t.panelBorder }}
                   onClick={() => onSelect({ id: record.id, audio_url: record.intermediate_video_url, voice_prompt: record.voice_prompt })}
                 >
-                  <div className="flex items-center gap-2">
-                    <Music2 className="size-4 shrink-0" style={{ color: t.nodeMuted }} />
-                    <span className="text-[11px] leading-tight truncate" style={{ color: t.nodeText }}>
+                  <div className="flex items-start gap-2">
+                    <Music2 className="size-4 shrink-0 mt-0.5" style={{ color: t.nodeMuted }} />
+                    <span className="text-[11px] leading-relaxed whitespace-pre-wrap break-words" style={{ color: t.nodeText }}>
                       {record.voice_prompt || '(无提示词)'}
                     </span>
                   </div>

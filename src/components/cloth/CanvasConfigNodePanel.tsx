@@ -6,11 +6,12 @@ import { Image, Music2, Play, Settings2, Video, ChevronDown, Loader2, Zap, FileT
 import { getCreditBalance, estimatePricing, type CreditBalance, type PricingEstimate } from '../../services/pricingService';
 import { estimateHappyhorseCredits, getHappyhorsePricing } from '../../services/happyhorseService';
 import type { HappyhorsePricingItem } from '../../types';
+import { getAuthHeaders } from '../../services/authService';
 
 // ── 模型列表 ──
 const IMAGE_MODELS: Record<string, string> = { 'nano-banana-2': 'Nano Banana 2', 'gpt-image-2': 'GPT-Image-2' };
 const VIDEO_MODELS: Record<string, string> = { 'seedance-2.0': 'Seedance 2.0', 'seedance-2.0-fast': 'Seedance 2.0 Fast', 'happyhorse-1.0-t2v': 'HappyHorse 1.0 T2V' };
-const AUDIO_MODELS: Record<string, string> = { 'happyhorse-1.0': 'HappyHorse 1.0' };
+const AUDIO_MODELS: Record<string, string> = { 'seedance-2.0': 'Seedance 2.0', 'seedance-2.0-fast': 'Seedance 2.0 Fast' };
 
 function readCanvasSettings(): { imageModels: string[]; defaultImageModel: string; videoModels: string[]; defaultVideoModel: string; audioModels: string[]; defaultAudioModel: string } {
   try {
@@ -22,8 +23,8 @@ function readCanvasSettings(): { imageModels: string[]; defaultImageModel: strin
         defaultImageModel: s.image_default && IMAGE_MODELS[s.image_default] ? s.image_default : (s.image_models?.[0] || 'nano-banana-2'),
         videoModels: (s.video_models || ['seedance-2.0']).filter((m: string) => VIDEO_MODELS[m]),
         defaultVideoModel: s.video_default && VIDEO_MODELS[s.video_default] ? s.video_default : (s.video_models?.[0] || 'seedance-2.0'),
-        audioModels: (s.audio_models || ['happyhorse-1.0']).filter((m: string) => AUDIO_MODELS[m]),
-        defaultAudioModel: s.audio_default && AUDIO_MODELS[s.audio_default] ? s.audio_default : (s.audio_models?.[0] || 'happyhorse-1.0'),
+        audioModels: (s.audio_models || ['seedance-2.0-fast']).filter((m: string) => AUDIO_MODELS[m]),
+        defaultAudioModel: s.audio_default && AUDIO_MODELS[s.audio_default] ? s.audio_default : (s.audio_models?.[0] || 'seedance-2.0-fast'),
       };
     }
   } catch {}
@@ -33,7 +34,7 @@ function readCanvasSettings(): { imageModels: string[]; defaultImageModel: strin
     videoModels: Object.keys(VIDEO_MODELS),
     defaultVideoModel: 'seedance-2.0',
     audioModels: Object.keys(AUDIO_MODELS),
-    defaultAudioModel: 'happyhorse-1.0',
+    defaultAudioModel: 'seedance-2.0-fast',
   };
 }
 
@@ -118,19 +119,24 @@ function SegmentedSwitch({ value, onChange, theme }: { value: string; onChange: 
     { value: 'video', icon: <Video className="size-3.5" />, label: '视频' },
     { value: 'audio', icon: <Music2 className="size-3.5" />, label: '音频' },
   ];
+  // 根据文字明暗判断主题：暗色文字(#2...)→浅色背景，亮色文字(#f...)→深色背景
+  const isLight = theme.text < '#888';
+  const trackBg = isLight ? '#f5f5f5' : '#000';
+  const activeBg = isLight ? '#ffffff' : '#1f1f1f';
+  const activeText = isLight ? 'rgba(0,0,0,.88)' : 'rgba(255,255,255,.85)';
+  const inactiveText = isLight ? 'rgba(0,0,0,.65)' : 'rgba(255,255,255,.65)';
   return (
-    <div className="flex rounded-md p-0.5" style={{ background: '#000' }}>
+    <div className="flex rounded-md p-0.5" style={{ background: trackBg }}>
       {items.map((item) => {
         const active = value === item.value;
         return (
           <button key={item.value} type="button"
             className="inline-flex h-[22px] w-[60px] items-center justify-center gap-1 rounded-[5px] px-[7px] text-[11px] font-normal transition"
             style={{
-              background: active ? '#1f1f1f' : 'transparent',
-              color: active ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.65)',
+              background: active ? activeBg : 'transparent',
+              color: active ? activeText : inactiveText,
             }}
-            onMouseDown={(e) => e.stopPropagation()} onClick={() => onChange(item.value)}
-            disabled={item.value === 'audio'}>
+            onMouseDown={(e) => e.stopPropagation()} onClick={() => onChange(item.value)}>
             {item.icon}{item.label}
           </button>
         );
@@ -317,9 +323,10 @@ function SettingsPopover({ open, btnRect, mode, model, size, quality, count, rat
 // @ 引用菜单 + DOM 辅助函数
 // ══════════════════════════════════════════════
 
-function MentionMenu({ refs, activeIndex, theme, disabledKinds, onSelect }: {
+function MentionMenu({ refs, activeIndex, theme, disabledKinds, disabledNodeIds, onSelect }: {
   refs: CanvasResourceReference[]; activeIndex: number; theme: ConfigPanelTheme;
   disabledKinds?: Set<CanvasResourceKind>;
+  disabledNodeIds?: Set<string>;
   onSelect: (ref: CanvasResourceReference) => void;
 }) {
   const selectedRef = useRef(false);
@@ -355,12 +362,12 @@ function MentionMenu({ refs, activeIndex, theme, disabledKinds, onSelect }: {
   return (
     <div ref={menuRef} data-mention-menu="true"
       className="absolute left-2 z-[90] max-h-56 w-64 overflow-y-auto rounded-xl border p-1 shadow-2xl"
-      style={{ top: 'calc(100% + 6px)', background: 'rgba(31,29,26,.96)', borderColor: theme.stroke, color: theme.text }}
+      style={{ top: 'calc(100% + 6px)', background: theme.text < '#888' ? 'rgba(251,250,247,.96)' : 'rgba(31,29,26,.96)', borderColor: theme.stroke, color: theme.text }}
       onMouseDown={(e) => e.stopPropagation()}
       onPointerDownCapture={(e) => e.stopPropagation()}
     >
       {refs.map((ref, i) => {
-        const isDisabled = disabledKinds?.has(ref.kind);
+        const isDisabled = disabledKinds?.has(ref.kind) || disabledNodeIds?.has(ref.nodeId);
         return (
         <button key={ref.nodeId} type="button" disabled={isDisabled}
           className="flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition"
@@ -390,6 +397,7 @@ function createReferenceChip(ref: CanvasResourceReference, refIdx: number, theme
   chip.dataset.referenceIdx = String(refIdx);
   chip.dataset.referenceNodeId = ref.nodeId;
   if (ref.idOfResource) chip.dataset.referenceAssetId = String(ref.idOfResource);
+  if (ref.isVolcano) chip.dataset.isVolcano = 'true';
   const baseStyle = {
     background: theme.fill,
     borderColor: theme.stroke,
@@ -516,6 +524,15 @@ function rebuildEditorContent(
   sel?.addRange(range);
 }
 
+// ── 删除 chip 及其后的空格 ──
+function removeChipWithTrailingSpace(chip: HTMLElement) {
+  const next = chip.nextSibling;
+  if (next && next.nodeType === Node.TEXT_NODE && (next.textContent || '').trim() === '') {
+    next.remove();
+  }
+  chip.remove();
+}
+
 // ── Backspace/Delete 时删除相邻 @ 引用 Chip ──
 function deleteAdjacentReference(key: string): boolean {
   const selection = window.getSelection();
@@ -572,6 +589,24 @@ export function CanvasConfigNodePanel({
   const [model, setModelState] = useState<string>(initialModel || resolveDefaultModel(initialMode));
   const [modelOpen, setModelOpen] = useState(false);
   const modelBtnRef = useRef<HTMLButtonElement>(null);
+
+  // 音频模式：模型+参数从服务端 /api/audio-generations/config 拉取，确保与音频面板一致
+  const [serverAudioConfig, setServerAudioConfig] = useState<{ model: string; ratio: string; resolution: string; duration: number } | null>(null);
+  useEffect(() => {
+    if (mode !== 'audio') return;
+    let alive = true;
+    fetch('/api/audio-generations/config', { headers: getAuthHeaders() })
+      .then(r => r.json())
+      .then(d => {
+        if (alive && d.success && d.data?.model) {
+          setServerAudioConfig(d.data);
+          setModelState(d.data.model);
+          onConfigChange(nodeId, { generationMode: 'audio', model: d.data.model });
+        }
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [mode, nodeId]);
 
   // ── 参数 ──
   const [gptAspect, setGptAspect] = useState<string>('1:1');
@@ -635,17 +670,110 @@ export function CanvasConfigNodePanel({
     return s;
   }, [refsList]);
 
+  // ── 音频模式切换：自动清除非火山 @ chip 和多余火山 @ chip ──
+  const prevModeRef = useRef(mode);
+  useEffect(() => {
+    const prev = prevModeRef.current;
+    prevModeRef.current = mode;
+    if (prev === mode) return;
+    if (mode !== 'audio') return;
+
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    // 1) 清除非火山素材 chip
+    const allChips = editor.querySelectorAll('[data-reference-idx]');
+    allChips.forEach((chip) => {
+      const nodeId = (chip as HTMLElement).dataset.referenceNodeId;
+      const ref = refsList.find(r => r.nodeId === nodeId);
+      if (ref && ref.kind !== 'text' && !ref.isVolcano) {
+        removeChipWithTrailingSpace(chip as HTMLElement);
+      }
+    });
+
+    // 2) 火山 chip 只保留第 1 个
+    let volcCount = 0;
+    editor.querySelectorAll('[data-reference-idx][data-is-volcano="true"]').forEach((chip) => {
+      volcCount++;
+      if (volcCount > 1) removeChipWithTrailingSpace(chip as HTMLElement);
+    });
+  }, [mode, refsList]);
+
+  // ── 音频模式：输入框 @ 输入时自动清除非火山 @（不等待菜单选择）──
+  const handleComposerInputAudio = useCallback(() => {
+    if (mode !== 'audio') return;
+    const editor = editorRef.current;
+    if (!editor) return;
+    // 延迟执行，让浏览器先完成输入
+    requestAnimationFrame(() => {
+      const sel = window.getSelection();
+      const range = sel?.rangeCount ? sel.getRangeAt(0) : null;
+      // 扫描非火山 chips 并清除
+      const allChips = editor.querySelectorAll('[data-reference-idx]');
+      allChips.forEach((chip) => {
+        const nodeId = (chip as HTMLElement).dataset.referenceNodeId;
+        const ref = refsList.find(r => r.nodeId === nodeId);
+        if (ref && ref.kind !== 'text' && !ref.isVolcano) {
+          removeChipWithTrailingSpace(chip as HTMLElement);
+        }
+      });
+      // 火山 chip 只保留 1 个
+      let volcCount = 0;
+      editor.querySelectorAll('[data-reference-idx][data-is-volcano="true"]').forEach((chip) => {
+        volcCount++;
+        if (volcCount > 1) removeChipWithTrailingSpace(chip as HTMLElement);
+      });
+    });
+  }, [mode, refsList]);
+
   // ── 积分 ──
   const [balance, setBalance] = useState<CreditBalance | null>(null);
   const refreshBalance = useCallback(async () => { try { setBalance(await getCreditBalance()); } catch {} }, []);
   useEffect(() => { refreshBalance(); }, [refreshBalance]);
+  // 生成中实时轮询余额（锁定积分会随生成进度变化）
+  const prevRunningRef = useRef(isRunning);
+  useEffect(() => {
+    const wasRunning = prevRunningRef.current;
+    prevRunningRef.current = isRunning;
+    if (isRunning) {
+      refreshBalance(); // 开始生成时立即刷新
+      const timer = setInterval(() => { refreshBalance(); }, 5000);
+      return () => clearInterval(timer);
+    }
+    // 生成刚结束时也刷新一次（积分已结算）
+    if (wasRunning && !isRunning) {
+      refreshBalance();
+    }
+  }, [isRunning, refreshBalance]);
 
   const [estimate, setEstimate] = useState<PricingEstimate | null>(null);
   const [hhPricing, setHhPricing] = useState<HappyhorsePricingItem[] | null>(null);
   useEffect(() => { getHappyhorsePricing().then(setHhPricing).catch(() => setHhPricing([])); }, []);
   const isHHModel = model?.startsWith('happyhorse');
   useEffect(() => {
-    if (mode !== 'video' || !model) { setEstimate(null); return; }
+    // 图片模式无需实时估价
+    if (mode === 'image') { setEstimate(null); return; }
+    // 音频模式：使用 serverAudioConfig 参数估算
+    if (mode === 'audio') {
+      if (!serverAudioConfig?.model) { setEstimate(null); return; }
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => {
+        estimatePricing({
+          model: serverAudioConfig.model,
+          outputDurationSec: serverAudioConfig.duration || 4,
+          ratio: serverAudioConfig.ratio || '1:1',
+          resolution: serverAudioConfig.resolution || '480p',
+          isDraft: false,
+        }).then((r) => {
+          if (!ctrl.signal.aborted) setEstimate(r);
+        }).catch(() => {
+          if (!ctrl.signal.aborted) setEstimate(null);
+        });
+      }, 200);
+      return () => { ctrl.abort(); clearTimeout(timer); };
+    }
+    // 视频模式
+    if (!model) { setEstimate(null); return; }
     if (isHHModel) {
       const dur = parseInt(videoSecs) || 5;
       const result = estimateHappyhorseCredits('t2v', videoRes as '720P' | '1080P', dur, hhPricing);
@@ -671,7 +799,7 @@ export function CanvasConfigNodePanel({
       });
     }, 200);
     return () => { ctrl.abort(); clearTimeout(timer); };
-  }, [mode, model, videoRes, videoRatio, videoSecs, isHHModel, hhPricing]);
+  }, [mode, model, videoRes, videoRatio, videoSecs, isHHModel, hhPricing, serverAudioConfig]);
 
   // ── 点击卡片空白处切换 composer（click 事件，不影响拖拽）──
   const panelRef = useRef<HTMLDivElement>(null);
@@ -735,14 +863,18 @@ export function CanvasConfigNodePanel({
   // ── 模型数据 ──
   const allModels = { ...IMAGE_MODELS, ...VIDEO_MODELS, ...AUDIO_MODELS };
   const currentModels = mode === 'video' ? settings.videoModels : mode === 'audio' ? settings.audioModels : settings.imageModels;
-  const displayModel = allModels[model] || model;
+  const displayModel = mode === 'audio' && serverAudioConfig
+    ? `${allModels[serverAudioConfig.model] || serverAudioConfig.model} · ${serverAudioConfig.ratio} · ${serverAudioConfig.resolution} · ${serverAudioConfig.duration}s`
+    : allModels[model] || model;
 
   // ── 设置按钮显示文本 ──
   const settingsLabel = mode === 'image'
     ? (model === 'gpt-image-2'
       ? gptAspect
       : `${nanoSize} · ${nanoAspect}`)
-    : `${videoRes} · ${videoRatio} · ${videoSecs}s`;
+    : mode === 'audio'
+      ? ''
+      : `${videoRes} · ${videoRatio} · ${videoSecs}s`;
 
   // ── 积分（图片固定10，视频用实时估价）──
   const cost = mode === 'image' ? 10 : (estimate?.lockedCredits ?? 0);
@@ -766,8 +898,8 @@ export function CanvasConfigNodePanel({
     writeModelParams(nodeId, saved);
 
     setMode(newMode as ConfigGenerationMode);
-    const newDefaultModel = newMode === 'video' ? settings.defaultVideoModel : newMode === 'audio' ? settings.defaultAudioModel : settings.defaultImageModel;
-    setModelState(newDefaultModel || '');
+    const newDefaultModel = newMode === 'audio' ? model : (newMode === 'video' ? settings.defaultVideoModel : settings.defaultImageModel);
+    if (newMode !== 'audio') setModelState(newDefaultModel || '');
 
     // 恢复目标模式+模型的参数（有保存值则用保存值，否则默认）
     const targetSaved = saved[newDefaultModel] || {};
@@ -862,7 +994,7 @@ export function CanvasConfigNodePanel({
     onConfigChange(nodeId, { ...patch });
   };
 
-  const handleGenerate = () => { if (!canGenerate || isRunning) return; onBlur?.(); onGenerate(nodeId, mode, model, prompt.trim(), settingsLabel); };
+  const handleGenerate = () => { if (!canGenerate || isRunning) return; onBlur?.(); onGenerate(nodeId, mode, model, prompt.trim(), settingsLabel); refreshBalance(); };
 
   // ── @ 引用候选过滤 ──
   const mentionCandidates = (() => {
@@ -875,9 +1007,15 @@ export function CanvasConfigNodePanel({
   // 当前模式下禁用的引用类型
   const disabledKinds = useMemo(() => {
     const kinds = new Set<CanvasResourceKind>();
-    if (mode === 'image') kinds.add('video');  // 图片模式不能 @视频
+    if (mode === 'image') kinds.add('video');
     return kinds;
   }, [mode]);
+
+  // 音频模式下禁用的节点 ID（非火山素材，不显示在下拉但仍在 prompt 中可被清除）
+  const audioDisabledNodeIds = useMemo(() => {
+    if (mode !== 'audio') return new Set<string>();
+    return new Set(refsList.filter(r => r.kind !== 'text' && !r.isVolcano).map(r => r.nodeId));
+  }, [mode, refsList]);
 
   // ── 关闭 @ 菜单 ──
   const closeMention = useCallback(() => { setMentionOpen(false); setMentionQuery(''); setMentionActiveIdx(0); }, []);
@@ -896,9 +1034,25 @@ export function CanvasConfigNodePanel({
 
   // ── 插入引用 Chip ──
   const insertReferenceChip = useCallback((ref: CanvasResourceReference) => {
-    if (disabledKinds.has(ref.kind)) return; // 当前模式不支持的引用类型
+    // 音频模式：非火山素材不可 @（提示词库按钮走火山资产选择器）
+    if (mode === 'audio' && ref.kind !== 'text' && !ref.isVolcano) return;
+    if (disabledKinds.has(ref.kind)) return;
     const editor = editorRef.current;
     if (!editor) return;
+
+    // 音频模式：火山资产限 @ 1 个，插入前清除已有火山 chip
+    if (mode === 'audio' && ref.isVolcano && editor) {
+      const existingVolcChips = editor.querySelectorAll('[data-reference-idx][data-is-volcano="true"]');
+      existingVolcChips.forEach((chip) => {
+        // 删除 chip 后的空格
+        const next = chip.nextSibling;
+        if (next && next.nodeType === Node.TEXT_NODE && (next.textContent || '').trim() === '') {
+          next.remove();
+        }
+        chip.remove();
+      });
+    }
+
     // 计算新 chip 的 idx（当前最大 idx + 1）
     let maxIdx = 0;
     editor.querySelectorAll('[data-reference-idx]').forEach((el) => {
@@ -987,9 +1141,15 @@ export function CanvasConfigNodePanel({
       </div>
 
       {/* ── 模型 + 参数设置 ── */}
-      <div className="mb-2 grid min-w-0 cursor-default items-center gap-2 grid-cols-[minmax(0,1fr)_148px]" onMouseDown={(e) => e.stopPropagation()}>
-        {/* 模型选择器 */}
-        <button ref={modelBtnRef} type="button"
+      <div className={`mb-2 grid min-w-0 cursor-default items-center gap-2 ${mode === 'audio' ? 'grid-cols-1' : 'grid-cols-[minmax(0,1fr)_148px]'}`} onMouseDown={(e) => e.stopPropagation()}>
+        {/* 模型：音频模式只读标签，其他模式可下拉选择 */}
+        {mode === 'audio' ? (
+          <span className="inline-flex h-8 w-fit min-w-[9rem] max-w-full items-center gap-2 rounded-full border bg-transparent px-3 text-sm font-normal"
+            style={{ borderColor: t.stroke, color: t.text }}>
+            <span className="min-w-0 flex-1 truncate text-left">{displayModel}</span>
+          </span>
+        ) : (
+          <button ref={modelBtnRef} type="button"
             className="flex h-8 w-full min-w-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-sm font-normal transition shadow-[0_1px_2px_-1px_rgba(0,0,0,.1),0_1px_3px_0_rgba(0,0,0,.1)]"
             style={{ background: 'rgba(255,255,255,.045)', borderColor: modelOpen ? 'rgba(255,255,255,.25)' : 'rgba(255,255,255,.15)', color: t.text }}
             onMouseDown={(e) => e.stopPropagation()}
@@ -997,7 +1157,8 @@ export function CanvasConfigNodePanel({
             <span className="min-w-0 flex-1 truncate text-left">{displayModel}</span>
             <ChevronDown className={`size-4 shrink-0 opacity-50 transition-transform ${modelOpen ? 'rotate-180' : ''}`} />
           </button>
-          {modelOpen && createPortal(
+        )}
+          {mode !== 'audio' && modelOpen && createPortal(
             <div data-model-dropdown="true"
               className="fixed z-[9999] min-w-[200px] rounded-xl border py-1 shadow-[0_6px_16px_rgba(0,0,0,.3)]"
               style={{ background: t.fill, borderColor: t.stroke, color: t.text,
@@ -1012,7 +1173,8 @@ export function CanvasConfigNodePanel({
               ))}
             </div>, document.body)}
 
-        {/* 参数设置按钮 */}
+        {/* 参数设置按钮 — 音频模式由服务端统一配置，不显示 */}
+        {mode !== 'audio' && (
         <span ref={settingsBtnRef as any} className="inline-flex min-w-0">
           <button type="button"
             className="flex h-10 w-full items-center gap-2 whitespace-nowrap px-2 text-xs font-normal transition hover:opacity-80"
@@ -1023,6 +1185,7 @@ export function CanvasConfigNodePanel({
             <span className="truncate">{settingsLabel}</span>
           </button>
         </span>
+        )}
       </div>
 
       {/* ── 参数弹出框 ── */}
@@ -1031,15 +1194,19 @@ export function CanvasConfigNodePanel({
       {/* ── 开始生成按钮 ── */}
       <button type="button"
         className="mt-auto flex h-9 w-full shrink-0 cursor-pointer items-center justify-between gap-2 whitespace-nowrap px-[15px] text-sm font-normal transition hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
-        style={{ background: '#d8d8d8', color: '#171717', borderRadius: '10px' }}
-        disabled={isRunning || !canGenerate || !canAfford || (mode === 'video' && !estimate)}
+        style={{
+          background: t.text < '#888' ? '#171717' : '#d8d8d8',
+          color: t.text < '#888' ? '#fff' : '#171717',
+          borderRadius: '10px',
+        }}
+        disabled={isRunning || !canGenerate || !canAfford || ((mode === 'video' || mode === 'audio') && !estimate)}
         onMouseDown={(e) => e.stopPropagation()} onClick={handleGenerate}>
         {isRunning ? (
           <Loader2 className="size-4 animate-spin" />
         ) : (
           <>
             {/* 左：余额 */}
-            <span className="text-[10px] leading-tight whitespace-nowrap" style={{ color: '#555' }}>
+            <span className="text-[10px] leading-tight whitespace-nowrap" style={{ color: t.text < '#888' ? '#999' : '#555' }}>
               余额 {balance?.unlimited ? '无限' : (balance?.available ?? 0).toLocaleString()}<br />
               (锁定 {balance?.locked?.toLocaleString() || '0'})
             </span>
@@ -1047,8 +1214,8 @@ export function CanvasConfigNodePanel({
             <span className="flex items-center gap-2">
               <Zap className="size-3.5 fill-current" strokeWidth={2.4} />
               <span className="text-[10px] leading-tight text-center">
-                <span className="tabular-nums">{mode === 'video' && !estimate ? '--' : (estimate?.credits ?? cost).toLocaleString()}</span><br />
-                <span>(锁定 {mode === 'video' && !estimate ? '--' : (estimate?.lockedCredits ?? cost).toLocaleString()})</span>
+                <span className="tabular-nums">{((mode === 'video' || mode === 'audio') && !estimate) ? '--' : (estimate?.discountedCredits != null && estimate.discountedCredits !== estimate.credits ? estimate.discountedCredits : (estimate?.credits ?? cost)).toLocaleString()}</span><br />
+                <span>(锁定 {((mode === 'video' || mode === 'audio') && !estimate) ? '--' : (estimate?.discountedLockedCredits != null && estimate.discountedLockedCredits !== estimate.lockedCredits ? estimate.discountedLockedCredits : (estimate?.lockedCredits ?? cost)).toLocaleString()})</span>
               </span>
               <Play className="size-4" />
               <span>开始生成</span>
@@ -1065,7 +1232,10 @@ export function CanvasConfigNodePanel({
         onWheel={(e) => e.stopPropagation()}
       >
         <div className="rounded-2xl border p-3 shadow-2xl backdrop-blur"
-          style={{ background: 'rgba(31,29,26,.96)', borderColor: t.stroke, color: t.text }}>
+          style={{
+            background: t.text < '#888' ? 'rgba(251,250,247,.96)' : 'rgba(31,29,26,.96)',
+            borderColor: t.stroke, color: t.text,
+          }}>
           {/* 标题行 */}
           <div className="mb-2 flex items-center justify-between gap-2">
             <div className="flex min-w-0 items-baseline gap-2">
@@ -1088,6 +1258,7 @@ export function CanvasConfigNodePanel({
               style={{ color: t.text }}
               onInput={() => {
                 if (composingRef.current) return;
+                handleComposerInputAudio();
                 const editor = editorRef.current;
                 if (editor) {
                   const result = serializeEditor(editor, refsList);
@@ -1162,7 +1333,7 @@ export function CanvasConfigNodePanel({
               }}
             />
             {mentionOpen && mentionCandidates.length > 0 && editorRef.current ? (
-              <MentionMenu refs={mentionCandidates} activeIndex={Math.min(mentionActiveIdx, mentionCandidates.length - 1)} theme={t} disabledKinds={disabledKinds} onSelect={insertReferenceChip} />
+              <MentionMenu refs={mentionCandidates} activeIndex={Math.min(mentionActiveIdx, mentionCandidates.length - 1)} theme={t} disabledKinds={disabledKinds} disabledNodeIds={audioDisabledNodeIds} onSelect={insertReferenceChip} />
             ) : null}
           </div>
         </div>

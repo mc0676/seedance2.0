@@ -15,6 +15,7 @@ import {
   type EdgeProps,
   type NodeTypes,
   type EdgeTypes,
+  useStore,
   Handle,
   Position,
   type NodeProps,
@@ -44,6 +45,10 @@ import { ThemeToggler } from '../../components/cloth/ThemeToggler';
 import type { CanvasCloth, CanvasClothsAsset, CanvasClothsConnection, CanvasScript } from '../../types';
 import { nanoid } from 'nanoid';
 import { useUserTimezone } from '../../utils/datetime';
+import { videoUrlToMp3Blob, downloadBlob } from '../../utils/audioExtractor';
+
+// 音频 mp3 转码缓存（跨渲染持久化，存 Blob 对象避免 fetch blob URL 的兼容问题）
+const mp3BlobCache = new Map<string, { blob: Blob; url: string }>();
 
 // ── 原项目 canvas-theme dark 配色 ──
 const C_DARK = {
@@ -284,6 +289,8 @@ function CanvasNodeImpl({ id: nodeId, data, selected, width: rfWidth, height: rf
       videoFittedRef.current = null;
     }
   }, [isVideo, d.content]);
+
+  // ── 音频 mp4→mp3 转码缓存（仅下载时按需使用，存 Blob 对象）──
 
   // 原项目：边框 div 使用 ReactFlow 传入的实际渲染尺寸（即 getNodeDimensions 返回值）
   const nodeW = rfWidth ?? (d.width || 260);
@@ -567,6 +574,10 @@ function CanvasNodeImpl({ id: nodeId, data, selected, width: rfWidth, height: rf
                 const v = e.currentTarget as HTMLVideoElement;
                 const vw = v.videoWidth, vh = v.videoHeight;
                 if (!vw || !vh) return;
+                // 节点已有非默认尺寸（来自 DB 持久化或用户手动拖拽），跳过自动适配
+                const curW = (d as any)?.width || 260;
+                const curH = (d as any)?.height || 160;
+                if (curW !== 260 || curH !== 160) return;
                 // 每个节点同一视频源只自动适配一次（对齐 infinite-canvas fitNodeSize）
                 if (videoFittedRef.current === d.content) return;
                 videoFittedRef.current = d.content || null;
@@ -586,7 +597,9 @@ function CanvasNodeImpl({ id: nodeId, data, selected, width: rfWidth, height: rf
                     data: { ...n.data, width: nw, height: nh },
                   };
                 }));
+                // 标记脏节点 + 立即保存尺寸到 DB（不等 1s 延迟同步）
                 (dataRef.current as any)?.onNodeDirty?.(nodeId);
+                (dataRef.current as any)?.onVideoResized?.(nodeId, nw, nh);
               }}
             />
           ) : (
@@ -616,9 +629,10 @@ function CanvasNodeImpl({ id: nodeId, data, selected, width: rfWidth, height: rf
             <div className="flex h-full w-full flex-col justify-center gap-3 px-4" style={{ background: C.nodeFill, color: C.nodeText }}>
               <div className="flex min-w-0 items-center gap-2 text-sm opacity-70">
                 <Music2Svg />
-                <span className="truncate">{d.label || '音频'}</span>
+                <span className="truncate">音频</span>
               </div>
-              <audio src={d.content} controls className="w-full" onDragStart={(e) => e.preventDefault()} />
+              {d.label && <p className="text-[11px] leading-relaxed opacity-50 line-clamp-2">{d.label}</p>}
+              <audio src={d.content} controls className="w-full" style={{ colorScheme: C.nodeText < '#888' ? 'light' : 'dark' }} onDragStart={(e) => e.preventDefault()} />
             </div>
           ) : (
             <div className="flex h-full w-full flex-col items-center justify-center gap-3" style={{ color: C.nodePlaceholder }}>
@@ -798,6 +812,26 @@ function CanvasEdge({ id, source, target, selected, data }: EdgeProps) {
   const to = nodes.find((n) => n.id === target);
   const active = selected || !!(data as any)?.highlighted;
 
+  // ── 音频模式边线染色（从 edge data 读取，由 sync effect 注入）──
+  const isAudio = !!(data as any)?.isAudio;
+  const isNonVolcImage = isAudio && from && ((from?.data as any)?.dbType === 'image' || from?.type === 'image') && from?.type !== 'imagine_of_volc' && (from?.data as any)?.dbType !== 'imagine_of_volc';
+  const isVolcImage = isAudio && from && ((from?.data as any)?.dbType === 'imagine_of_volc' || from?.type === 'imagine_of_volc');
+  // @ 引用检测：用 useStore 直接读目标节点的 configAssetsOfAt（不依赖边线 data 同步）──
+  const configAssetsOfAt = useStore((s) => {
+    const nd = s.nodeLookup?.get(target);
+    return (nd?.data as any)?.assetsOfAt || (nd?.data as any)?.configAssetsOfAt || '[]';
+  });
+  const volcHasAt = (() => {
+    if (!isVolcImage) return false;
+    const srcResId = (from?.data as any)?.id_of_resource;
+    if (!srcResId) return false;
+    try { return JSON.parse(configAssetsOfAt).some((a: any) => a.id_of_clothes_asset === srcResId); } catch { return false; }
+  })();
+  const volcDash = isVolcImage && !volcHasAt;
+  const edgeColor = isNonVolcImage ? C.nodeFill : (active ? C.selectionStroke : C.nodeMuted);
+  const highlightColor = isNonVolcImage ? C.grid : C.selectionStroke;
+  const strokeDasharray = volcDash ? '6 4' : 'none';
+
   // 原项目公式：从源节点右边缘 → 目标节点左边缘
   const sx = from ? from.position.x + (from.width ?? 260) : 0;
   const sy = from ? from.position.y + (from.height ?? 160) / 2 : 0;
@@ -825,7 +859,6 @@ function CanvasEdge({ id, source, target, selected, data }: EdgeProps) {
         onContextMenu={(event) => {
           event.preventDefault();
           event.stopPropagation();
-          // 原项目：右键同时选中该连线，取消所有节点选中
           setNodes((nds) => nds.map((n) => ({ ...n, selected: false })));
           setEdges((eds) => eds.map((e) => ({ ...e, selected: e.id === id })));
           onEdgeContextMenu?.(id, event.clientX, event.clientY);
@@ -833,11 +866,12 @@ function CanvasEdge({ id, source, target, selected, data }: EdgeProps) {
       />
       <path
         d={pathD}
-        stroke={active ? C.selectionStroke : C.nodeMuted}
+        stroke={active ? highlightColor : edgeColor}
         strokeWidth={active ? 3 : 2}
         strokeOpacity={active ? 1 : 0.82}
+        strokeDasharray={strokeDasharray}
         fill="none"
-        style={{ filter: active ? `drop-shadow(0 0 8px ${C.selectionStroke}66)` : undefined, pointerEvents: 'none' }}
+        style={{ filter: active ? `drop-shadow(0 0 8px ${highlightColor}66)` : undefined, pointerEvents: 'none' }}
       />
     </g>
   );
@@ -970,17 +1004,38 @@ export default function CanvasEditorPage() {
     return { nodeIds, edgeIds };
   })();
 
-  // 同步 highlighted 标记到 edges 和 nodes，供 CanvasEdge / CanvasNodeImpl 读取
+  // 同步 highlighted 标记到 edges 和 nodes
+  const prevAudioNodesRef = useRef('');
   useEffect(() => {
-    setEdges((eds) => eds.map((e) => ({ ...e, data: { ...e.data, highlighted: relatedHighlight.edgeIds.has(e.id) } })));
+    const configAudioIds = new Set<string>();
+    const configAssetsMap = new Map<string, string>();
+    nodes.forEach((nd) => {
+      const nt = (nd.data as any)?.nodeType || nd.type;
+      const dbType = (nd.data as any)?.dbType || nt;
+      if (nt === 'enhancement' && dbType === 'config') {
+        const mode = (nd.data as any)?.generationMode || (nd.data as any)?.configGenerationMode || '';
+        if (mode === 'audio') configAudioIds.add(nd.id);
+        configAssetsMap.set(nd.id, (nd.data as any)?.assetsOfAt || (nd.data as any)?.configAssetsOfAt || '[]');
+      }
+    });
+    const audioFingerprint = [...configAudioIds].sort().join(',') + '|' + [...configAssetsMap.entries()].map(([k,v]) => `${k}:${v}`).join(';');
+    const audioChanged = audioFingerprint !== prevAudioNodesRef.current;
+    if (audioChanged) prevAudioNodesRef.current = audioFingerprint;
+
+    setEdges((eds) => eds.map((e) => ({
+      ...e,
+      data: {
+        ...e.data,
+        highlighted: relatedHighlight.edgeIds.has(e.id),
+        // 始终注入，指纹仅防重算，不阻塞新边线
+        isAudio: configAudioIds.has(e.target) || undefined,
+        configAssetsOfAt: configAssetsMap.get(e.target),
+      },
+    })));
     setNodes((nds) =>
       nds.map((n) => ({
         ...n,
-        data: {
-          ...n.data,
-          highlighted: relatedHighlight.nodeIds.has(n.id),
-          isActive: n.id === activeNodeId,
-        },
+        data: { ...n.data, highlighted: relatedHighlight.nodeIds.has(n.id), isActive: n.id === activeNodeId },
       })),
     );
   }, [activeNodeId, edges.length]);
@@ -1322,8 +1377,34 @@ export default function CanvasEditorPage() {
         }).catch(() => {});
       }).catch(() => {});
 
-      // HappyHorse 由后端 worker 轮询，前端不需要主动轮询
-      if (isHH) return;
+      // HappyHorse 由后端 worker 轮询 DashScope，前端轮询 DB 状态
+      if (isHH) {
+        let hhAttempts = 0;
+        const hhPoll = async () => {
+          if (hhAttempts > 120) { setNodes((nds) => nds.map((n) => n.id === videoNodeId ? { ...n, data: { ...n.data, generating: false, generateError: '生成超时' } } : n)); return; }
+          hhAttempts++;
+          await new Promise((r) => setTimeout(r, 5000));
+          try {
+            const hhRes = await fetch(`/api/happyhorse-tasks/${taskId}`, { headers: getAuthHeaders() });
+            const hhData = await hhRes.json();
+            const record = hhData?.data;
+            if (!record) { hhPoll(); return; }
+            if ((record.status === 'done' || record.task_status === 'SUCCEEDED') && record.video_url) {
+              const rawUrl = record.video_url;
+              const url = rawUrl.startsWith('http') ? `/api/proxy-video?url=${encodeURIComponent(rawUrl)}` : rawUrl;
+              setNodes((nds) => nds.map((n) => n.id === videoNodeId ? { ...n, data: { ...n.data, generating: false, content: url, file_url: url } } : n));
+              return;
+            }
+            if (record.status === 'error' || record.task_status === 'FAILED') {
+              setNodes((nds) => nds.map((n) => n.id === videoNodeId ? { ...n, data: { ...n.data, generating: false, generateError: record.error_message || '生成失败' } } : n));
+              return;
+            }
+            hhPoll();
+          } catch { hhPoll(); }
+        };
+        hhPoll();
+        return;
+      }
 
       // 3) Seedance 轮询
       let attempts = 0;
@@ -1352,7 +1433,7 @@ export default function CanvasEditorPage() {
   }, [clothId]);
 
   // ── 从配置节点触发音频生成（先派生节点，再调 API）──
-  const handleGenerateAudioFromConfig = useCallback(async (configNodeId: string, prompt: string, model: string, _sizeLabel: string) => {
+  const handleGenerateAudioFromConfig = useCallback(async (configNodeId: string, prompt: string, model: string, _sizeLabel: string, refUrls: string[] = [], volcUrls: string[] = []) => {
     const configNode = nodesRef.current.find((n) => n.id === configNodeId);
     if (!configNode || !clothId) return;
 
@@ -1367,7 +1448,7 @@ export default function CanvasEditorPage() {
       type: 'audio',
       position: { x: configNode.position.x + configW + gap, y: configNode.position.y },
       width: configW, height: configH,
-      data: { label: '', content: '', file_url: '', nodeType: 'audio', dbType: 'audio', generating: true, id_of_resource: null, model, width: configW, height: configH },
+      data: { label: prompt, content: '', file_url: '', nodeType: 'audio', dbType: 'audio', generating: true, id_of_resource: null, model, width: configW, height: configH },
       style: { width: configW, height: configH },
     };
     const edgeId = `edge_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
@@ -1376,12 +1457,22 @@ export default function CanvasEditorPage() {
     setNodes((nds) => [...nds, audioNode]);
     setEdges((eds) => [...eds, newEdge]);
 
-    // 2) 调用生成 API（节点和连线等 API 返回后再写 DB）
+    // 2) 解析参考图（取第一个可用图片/火山 URL）
+    const referenceImageUrl = volcUrls[0] || refUrls[0] || '';
+    // 火山素材优先用 asset:// URI
+    const referenceAssetUri = volcUrls[0]?.startsWith('asset://') ? volcUrls[0] : undefined;
+
+    // 3) 调用生成 API（节点和连线等 API 返回后再写 DB）
     try {
-      const res = await fetch('/api/generate-audio', {
+      const res = await fetch('/api/audio-generations', {
         method: 'POST',
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ prompt, model, projectId: clothRef.current?.project_id }),
+        body: JSON.stringify({
+          projectId: clothRef.current?.project_id,
+          referenceImageUrl,
+          referenceAssetUri,
+          voicePrompt: prompt,
+        }),
       });
       const data = await res.json();
       if (!data.success) {
@@ -1399,7 +1490,7 @@ export default function CanvasEditorPage() {
         }).catch(() => {});
         return;
       }
-      const recordId: number = data.recordId || data.taskId;
+      const recordId: number = data.data?.audioGenerationId || data.data?.taskId;
       if (!recordId) {
         setNodes((nds) => nds.map((n) => n.id === audioNodeId ? { ...n, data: { ...n.data, generating: false, generateError: '未获取到任务ID' } } : n));
         fetch(`/api/cloths/${clothId}/assets`, {
@@ -1436,12 +1527,22 @@ export default function CanvasEditorPage() {
         attempts++;
         await new Promise((r) => setTimeout(r, 3000));
         try {
-          const pres = await fetch(`/api/audio-records/${recordId}`, { headers: getAuthHeaders() });
+          const pres = await fetch(`/api/audio-generations/${recordId}`, { headers: getAuthHeaders() });
           const pdata = await pres.json();
           const record = pdata?.data;
           if (!record) { poll(); return; }
-          if (record.status === 'done' && record.result_url) {
-            setNodes((nds) => nds.map((n) => n.id === audioNodeId ? { ...n, data: { ...n.data, generating: false, content: record.result_url, file_url: record.result_url } } : n));
+          const resultUrl = record.intermediate_video_url || record.task_video_url;
+          if (record.status === 'done' && resultUrl) {
+            setNodes((nds) => nds.map((n) => n.id === audioNodeId ? { ...n, data: { ...n.data, generating: false, content: resultUrl, file_url: resultUrl } } : n));
+            // 后台自动转 mp3，完成后替换 content 为 blob URL（原生下载即 mp3）
+            videoUrlToMp3Blob(resultUrl, {}).then((blob) => {
+              const blobUrl = URL.createObjectURL(blob);
+              mp3BlobCache.set(resultUrl, { blob, url: blobUrl });
+              setNodes((nds) => nds.map((n) => n.id === audioNodeId ? { ...n, data: { ...n.data, content: blobUrl } } : n));
+            }).catch(() => {
+              // 转码失败保留原视频 URL 播放，下载时仍会重试
+              setNodes((nds) => nds.map((n) => n.id === audioNodeId ? { ...n, data: { ...n.data, content: resultUrl } } : n));
+            });
             return;
           }
           if (record.status === 'error') { setNodes((nds) => nds.map((n) => n.id === audioNodeId ? { ...n, data: { ...n.data, generating: false, generateError: record.error_message || '生成失败' } } : n)); return; }
@@ -1454,161 +1555,143 @@ export default function CanvasEditorPage() {
 
   // ── 注入节点数据：回调、面板状态、配置面板 props ──
   useEffect(() => {
+    if (!cloth) return; // 等待画布数据加载完成
+    // 所有节点共享的回调（通过 ref 访问最新状态，避免闭包陈旧问题）
+    const commonCallbacks = {
+      showPromptPanel: false as boolean,
+      showVideoPromptPanel: false as boolean,
+      showAudioPromptPanel: false as boolean,
+      promptProjectId: cloth.project_id,
+      onPromptClose: () => setPromptNodeId(null),
+      onVideoPromptClose: () => setVideoPromptNodeId(null),
+      onAudioPromptClose: () => { setAudioPromptNodeId(null); },
+      onAudioPromptLibrary: () => { setPromptLibraryMode('use'); setPromptLibraryOpen(true); },
+      onNodeDirty: (nodeId: string) => {
+        dirtyNodeIdsRef.current.add(nodeId);
+        resetSyncTimer();
+      },
+      onDoubleClickImage: (nodeId: string) => {
+        const nd = nodesRef.current.find((nd2) => nd2.id === nodeId);
+        const url = (nd?.data as any)?.content || (nd?.data as any)?.file_url;
+        if (url) setPreviewUrl(url);
+      },
+      // 文本节点 → 创建增强节点
+      onScriptToImage: (nodeId: string) => { generateConfigNode(nodeId, 'image'); },
+      onScriptToVideo: (nodeId: string) => { generateConfigNode(nodeId, 'video'); },
+      // 图片生成
+      onPromptGenerating: (nodeId: string, recordId: number, model: string) => {
+        const curNode = nodesRef.current.find((nd) => nd.id === nodeId);
+        setNodes((nds) => nds.map((nd) =>
+          nd.id === nodeId
+            ? { ...nd, data: { ...nd.data, content: '', file_url: '', id_of_resource: recordId, model, generating: true } }
+            : nd
+        ));
+        if (curNode && clothId) {
+          const nodeType = (curNode.data as any)?.nodeType || curNode.type || 'image';
+          fetch(`/api/cloths/${clothId}/assets`, {
+            method: 'PUT',
+            headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ assets: [{ id: curNode.id, type: nodeType, subtype: model || null, title: (curNode.data as any)?.label || '', pos_x: curNode.position.x, pos_y: curNode.position.y, width: (curNode as any).width || 260, height: (curNode as any).height || 160, id_of_resource: recordId }] }),
+          }).catch(() => {});
+        }
+      },
+      onPromptGenerated: async (_nodeId: string, url: string, recordId: number, model: string) => {
+        const targetId = promptNodeIdRef.current;
+        if (!targetId) return;
+        const size = await readImageSize(url);
+        const w = size?.width || 260;
+        const h = size?.height || 160;
+        setNodes((nds2) => nds2.map((n2) => {
+          if (n2.id !== targetId) return n2;
+          return { ...n2, width: w, height: h, measured: { width: w, height: h }, style: { width: w, height: h }, data: { ...n2.data, content: url, file_url: url, id_of_resource: recordId, model, showPromptPanel: false, generating: false, width: w, height: h } };
+        }));
+        dirtyNodeIdsRef.current.add(targetId);
+        resetSyncTimer();
+        requestAnimationFrame(() => { setTimeout(() => rfInstanceRef.current?.updateNodeInternals(targetId), 50); });
+        setPromptNodeId(null);
+        setVideoPromptNodeId(null);
+        setToolbarNodeId(null);
+      },
+      onPromptError: (nodeId: string, msg: string) => {
+        setNodes((nds) => nds.map((nd) => nd.id === nodeId ? { ...nd, data: { ...nd.data, generating: false, generateError: msg } } : nd));
+      },
+      // 视频生成
+      onVideoPromptGenerating: (nodeId: string, recordId: number, model: string) => {
+        const curNode = nodesRef.current.find((nd) => nd.id === nodeId);
+        setNodes((nds) => nds.map((nd) =>
+          nd.id === nodeId
+            ? { ...nd, data: { ...nd.data, content: '', file_url: '', id_of_resource: recordId, model, generating: true } }
+            : nd
+        ));
+        if (curNode && clothId) {
+          const nodeType = (curNode.data as any)?.nodeType || curNode.type || 'video';
+          fetch(`/api/cloths/${clothId}/assets`, {
+            method: 'PUT',
+            headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ assets: [{ id: curNode.id, type: nodeType, subtype: model || null, title: (curNode.data as any)?.label || '', pos_x: curNode.position.x, pos_y: curNode.position.y, width: (curNode as any).width || 260, height: (curNode as any).height || 160, id_of_resource: recordId }] }),
+          }).catch(() => {});
+        }
+      },
+      onVideoPromptGenerated: (_nodeId: string, url: string, recordId: number, model: string) => {
+        const targetId = videoPromptNodeIdRef.current;
+        if (!targetId) return;
+        setNodes((nds2) => nds2.map((n2) => {
+          if (n2.id !== targetId) return n2;
+          return { ...n2, data: { ...n2.data, content: url, file_url: url, id_of_resource: recordId, model, showVideoPromptPanel: false, generating: false } };
+        }));
+        dirtyNodeIdsRef.current.add(targetId);
+        resetSyncTimer();
+        setVideoPromptNodeId(null);
+        setToolbarNodeId(null);
+      },
+      onVideoPromptError: (nodeId: string, msg: string) => {
+        setNodes((nds) => nds.map((nd) => nd.id === nodeId ? { ...nd, data: { ...nd.data, generating: false, generateError: msg } } : nd));
+      },
+      onVideoResized: (nodeId: string, nw: number, nh: number) => {
+        if (clothId) {
+          const node = nodesRef.current.find((nd) => nd.id === nodeId);
+          if (!node) return;
+          const d2 = node.data as any;
+          const dbType = d2?.dbType || node.type || 'video';
+          fetch(`/api/cloths/${clothId}/assets`, {
+            method: 'PUT',
+            headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ assets: [{ id: nodeId, type: dbType, subtype: d2?.model || null, id_of_resource: d2?.id_of_resource || null, title: d2?.label || '', pos_x: node.position.x, pos_y: node.position.y, width: nw, height: nh }] }),
+          }).catch(() => {});
+        }
+      },
+      // 音频生成
+      onAudioPromptGenerating: (nodeId: string, recordId: number, model: string, promptText: string) => {
+        const curNode = nodesRef.current.find((nd) => nd.id === nodeId);
+        setNodes((nds) => nds.map((nd) =>
+          nd.id === nodeId
+            ? { ...nd, data: { ...nd.data, content: '', file_url: '', id_of_resource: recordId, model, generating: true, audioPrompt: promptText } }
+            : nd
+        ));
+        if (curNode && clothId) {
+          fetch(`/api/cloths/${clothId}/assets`, {
+            method: 'PUT',
+            headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ assets: [{ id: curNode.id, type: curNode.type || 'audio', subtype: model || null, title: (curNode.data as any)?.label || '', pos_x: curNode.position.x, pos_y: curNode.position.y, width: (curNode as any).width || 260, height: (curNode as any).height || 160, id_of_resource: recordId }] }),
+          }).catch(() => {});
+        }
+      },
+      onAudioPromptError: (nodeId: string, msg: string) => {
+        setNodes((nds) => nds.map((nd) => nd.id === nodeId ? { ...nd, data: { ...nd.data, generating: false, generateError: msg } } : nd));
+      },
+    };
+
     setNodes((nds) => nds.map((n) => {
       const nodeType = (n.data as any)?.nodeType || n.type;
-      const base = {
-        ...n.data,
-        showPromptPanel: n.id === promptNodeId,
-        showVideoPromptPanel: n.id === videoPromptNodeId,
-        showAudioPromptPanel: n.id === audioPromptNodeId,
-        promptProjectId: cloth!.project_id,
-        onPromptClose: () => setPromptNodeId(null),
-        onVideoPromptClose: () => setVideoPromptNodeId(null),
-        // 文本节点：点击"生图"创建增强节点+连线
-        onScriptToImage: (nodeId: string) => { generateConfigNode(nodeId, 'image'); },
-        onScriptToVideo: (nodeId: string) => { generateConfigNode(nodeId, 'video'); },
-        onAudioPromptClose: () => { setAudioPromptNodeId(null); },
-        onAudioPromptLibrary: () => { setPromptLibraryMode('use'); setPromptLibraryOpen(true); },
-        onAudioPromptGenerating: (nodeId: string, recordId: number, model: string, promptText: string) => {
-          const curNode = nodesRef.current.find((n) => n.id === nodeId);
-          setNodes((nds) => nds.map((n) =>
-            n.id === nodeId
-              ? { ...n, data: { ...n.data, content: '', file_url: '', id_of_resource: recordId, model, generating: true, audioPrompt: promptText } }
-              : n
-          ));
-          if (curNode && clothId) {
-            fetch(`/api/cloths/${clothId}/assets`, {
-              method: 'PUT',
-              headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-              body: JSON.stringify({
-                assets: [{
-                  id: curNode.id, type: curNode.type || 'audio', subtype: model || null,
-                  title: (curNode.data as any)?.label || '',
-                  pos_x: curNode.position.x, pos_y: curNode.position.y,
-                  width: (curNode as any).width || (curNode.style as any)?.width || 260,
-                  height: (curNode as any).height || (curNode.style as any)?.height || 160,
-                  id_of_resource: recordId,
-                }],
-              }),
-            }).catch(() => {});
-          }
-        },
-        onNodeDirty: (nodeId: string) => {
-          dirtyNodeIdsRef.current.add(nodeId);
-          resetSyncTimer();
-        },
-        onDoubleClickImage: (nodeId: string) => {
-          const n = nodes.find((nd) => nd.id === nodeId);
-          const url = (n?.data as any)?.content || (n?.data as any)?.file_url;
-          if (url) setPreviewUrl(url);
-        },
-        onPromptGenerating: (nodeId: string, recordId: number, model: string) => {
-          const curNode = nodesRef.current.find((n) => n.id === nodeId);
-          setNodes((nds) => nds.map((n) =>
-            n.id === nodeId
-              ? { ...n, data: { ...n.data, content: '', file_url: '', id_of_resource: recordId, model, generating: true } }
-              : n
-          ));
-          // 立即写入数据库（不等延时保存）
-          if (curNode && clothId) {
-            const nodeType = (curNode.data as any)?.nodeType || curNode.type || 'image';
-            fetch(`/api/cloths/${clothId}/assets`, {
-              method: 'PUT',
-              headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-              body: JSON.stringify({
-                assets: [{
-                  id: curNode.id, type: nodeType, subtype: model || null,
-                  title: (curNode.data as any)?.label || '',
-                  pos_x: curNode.position.x, pos_y: curNode.position.y,
-                  width: (curNode as any).width || (curNode.style as any)?.width || 260,
-                  height: (curNode as any).height || (curNode.style as any)?.height || 160,
-                  id_of_resource: recordId,
-                }],
-              }),
-            }).catch(() => {});
-          }
-        },
-        onPromptGenerated: async (_nodeId: string, url: string, recordId: number, model: string) => {
-          const targetId = promptNodeIdRef.current;
-          if (!targetId) return;
-          const size = await readImageSize(url);
-          const w = size?.width || 260;
-          const h = size?.height || 160;
-          setNodes((nds2) => nds2.map((n2) => {
-            if (n2.id !== targetId) return n2;
-            return { ...n2, width: w, height: h, measured: { width: w, height: h }, style: { width: w, height: h }, data: { ...n2.data, content: url, file_url: url, id_of_resource: recordId, model, showPromptPanel: false, generating: false, width: w, height: h } };
-          }));
-          dirtyNodeIdsRef.current.add(targetId);
-          resetSyncTimer();
-          requestAnimationFrame(() => {
-            setTimeout(() => rfInstanceRef.current?.updateNodeInternals(targetId), 50);
-          });
-          setPromptNodeId(null);
-          setVideoPromptNodeId(null);
-          setToolbarNodeId(null);
-        },
-        onPromptError: (nodeId: string, msg: string) => {
-          setNodes((nds) => nds.map((n) =>
-            n.id === nodeId
-              ? { ...n, data: { ...n.data, generating: false, generateError: msg } }
-              : n
-          ));
-        },
-        onVideoPromptGenerating: (nodeId: string, recordId: number, model: string) => {
-          const curNode = nodesRef.current.find((n) => n.id === nodeId);
-          setNodes((nds) => nds.map((n) =>
-            n.id === nodeId
-              ? { ...n, data: { ...n.data, content: '', file_url: '', id_of_resource: recordId, model, generating: true } }
-              : n
-          ));
-          // 立即写入数据库（不等延时保存）
-          if (curNode && clothId) {
-            const nodeType = (curNode.data as any)?.nodeType || curNode.type || 'video';
-            fetch(`/api/cloths/${clothId}/assets`, {
-              method: 'PUT',
-              headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-              body: JSON.stringify({
-                assets: [{
-                  id: curNode.id, type: nodeType, subtype: model || null,
-                  title: (curNode.data as any)?.label || '',
-                  pos_x: curNode.position.x, pos_y: curNode.position.y,
-                  width: (curNode as any).width || (curNode.style as any)?.width || 260,
-                  height: (curNode as any).height || (curNode.style as any)?.height || 160,
-                  id_of_resource: recordId,
-                }],
-              }),
-            }).catch(() => {});
-          }
-        },
-        onVideoPromptGenerated: (_nodeId: string, url: string, recordId: number, model: string) => {
-          const targetId = videoPromptNodeIdRef.current;
-          if (!targetId) return;
-          setNodes((nds2) => nds2.map((n2) => {
-            if (n2.id !== targetId) return n2;
-            return { ...n2, data: { ...n2.data, content: url, file_url: url, id_of_resource: recordId, model, showVideoPromptPanel: false, generating: false } };
-          }));
-          dirtyNodeIdsRef.current.add(targetId);
-          resetSyncTimer();
-          setVideoPromptNodeId(null);
-          setToolbarNodeId(null);
-        },
-        onVideoPromptError: (nodeId: string, msg: string) => {
-          setNodes((nds) => nds.map((n) =>
-            n.id === nodeId
-              ? { ...n, data: { ...n.data, generating: false, generateError: msg } }
-              : n
-          ));
-        },
-        onAudioPromptError: (nodeId: string, msg: string) => {
-          setNodes((nds) => nds.map((n) =>
-            n.id === nodeId
-              ? { ...n, data: { ...n.data, generating: false, generateError: msg } }
-              : n
-          ));
-        },
-      };
-      // 配置节点（dbType=config）：注入配置面板数据
-      if (nodeType === 'enhancement' && (n.data as any)?.dbType === 'config') {
+      const isConfig = nodeType === 'enhancement' && (n.data as any)?.dbType === 'config';
+
+      // 注入面板状态标志
+      (commonCallbacks as any).showPromptPanel = n.id === promptNodeId;
+      (commonCallbacks as any).showVideoPromptPanel = n.id === videoPromptNodeId;
+      (commonCallbacks as any).showAudioPromptPanel = n.id === audioPromptNodeId;
+
+      // 配置节点：注入完整数据（通用回调 + 配置专用 props）
+      if (isConfig) {
         const mode = (n.data as any)?.generationMode || 'image';
         const connectedEdges = edges.filter((e) => e.target === n.id);
         const connectedTextNodes = connectedEdges
@@ -1621,66 +1704,65 @@ export default function CanvasEditorPage() {
         const imageCount = connectedTextNodes.filter((nd) => (nd?.data as any)?.nodeType === 'image' && (nd?.data as any)?.content).length;
         const videoCount = connectedTextNodes.filter((nd) => (nd?.data as any)?.nodeType === 'video' && (nd?.data as any)?.content).length;
         const audioCount = connectedTextNodes.filter((nd) => (nd?.data as any)?.nodeType === 'audio' && (nd?.data as any)?.content).length;
-        (base as any).configInputSummary = { textCount, imageCount, videoCount, audioCount } as ConfigPanelInputSummary;
-        // 构建 @ 引用列表（连接到此配置节点的素材节点）
-        (base as any).configReferences = buildConfigReferences(connectedEdges
-          .map((e) => nodesRef.current.find((nd) => nd.id === e.source))
-          .filter(Boolean) as Node[]
-        );
-        (base as any).configGenerationMode = mode;
-        (base as any).composerOpen = n.id === composerNodeId;
-        (base as any).onComposerToggle = () => handleComposerToggle(n.id);
-        (base as any).configTheme = {
-          fill: C.nodeFill,
-          stroke: C.nodeStroke,
-          text: C.nodeText,
-          muted: C.nodeMuted,
-          faint: C.nodeFaint,
-          activeBg: C.selection,
-          blue: C.blue,
+
+        const configBase: Record<string, unknown> = {
+          ...n.data,
+          ...commonCallbacks,
+          configInputSummary: { textCount, imageCount, videoCount, audioCount } as ConfigPanelInputSummary,
+          configReferences: buildConfigReferences(connectedEdges
+            .map((e) => nodesRef.current.find((nd) => nd.id === e.source))
+            .filter(Boolean) as Node[]
+          ),
+          configGenerationMode: mode,
+          composerOpen: n.id === composerNodeId,
+          onComposerToggle: () => handleComposerToggle(n.id),
+          configTheme: {
+            fill: C.nodeFill, stroke: C.nodeStroke, text: C.nodeText,
+            muted: C.nodeMuted, faint: C.nodeFaint, activeBg: C.selection, blue: C.blue,
+          },
+          configOnChange: (_nodeId: string, patch: Record<string, unknown>) => {
+            // 同步 configGenerationMode + configAssetsOfAt，确保 CanvasEdge 能读到最新值
+            const fullPatch = { ...patch };
+            if ('generationMode' in patch) (fullPatch as any).configGenerationMode = patch.generationMode;
+            if ('assetsOfAt' in patch) (fullPatch as any).configAssetsOfAt = patch.assetsOfAt;
+            setNodes((nds3) => nds3.map((n3) => n3.id === n.id ? { ...n3, data: { ...n3.data, ...fullPatch } } : n3));
+            // 同步更新边线 isAudio / configAssetsOfAt 标记（直接操作，无需等 sync effect）
+            if ('generationMode' in patch || 'assetsOfAt' in patch) {
+              setEdges((eds) => eds.map((e) => {
+                if (e.target !== n.id) return e;
+                const update: Record<string, unknown> = {};
+                if ('generationMode' in patch) update.isAudio = (fullPatch as any).configGenerationMode === 'audio' || undefined;
+                if ('assetsOfAt' in patch) update.configAssetsOfAt = (fullPatch as any).configAssetsOfAt;
+                return { ...e, data: { ...e.data, ...update } };
+              }));
+            }
+            dirtyNodeIdsRef.current.add(n.id);
+            if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+            syncTimerRef.current = setTimeout(() => { flushSyncRef.current?.(); }, 1000);
+          },
+          configOnBlur: () => { flushSync(); },
+          configOnGenerate: (nodeId2: string, mode2: ConfigGenerationMode, model: string, prompt: string, sizeLabel: string) => {
+            flushSync();
+            const assetsOfAtRaw = (n.data as any)?.assetsOfAt || (n.data as any)?.configAssetsOfAt || '[]';
+            let assetsOfAtList: { id: number; id_of_clothes_asset: number }[] = [];
+            try { assetsOfAtList = JSON.parse(assetsOfAtRaw); } catch {}
+            const refs = ((n.data as any)?.configReferences || []) as CanvasResourceReference[];
+            const { finalPrompt: assembled, refUrls, volcUrls } = assemblePromptForGenerate(prompt, assetsOfAtList, refs);
+            if (!assembled) return;
+            const isSeedanceModel = (mode2 === 'video' || mode2 === 'audio') && model?.startsWith('seedance');
+            const finalPrompt = isSeedanceModel
+              ? assembled.replace(/\[Image (\d+)\]/g, '@图片$1').replace(/\[Video (\d+)\]/g, '@视频$1').replace(/\[Audio (\d+)\]/g, '@音频$1')
+              : assembled;
+            if (mode2 === 'image') { handleGenerateImageFromConfig(nodeId2, finalPrompt, model, sizeLabel, refUrls); }
+            else if (mode2 === 'video') { handleGenerateVideoFromConfig(nodeId2, finalPrompt, model, sizeLabel, refUrls, volcUrls); }
+            else if (mode2 === 'audio') { handleGenerateAudioFromConfig(nodeId2, finalPrompt, model, sizeLabel, refUrls, volcUrls); }
+          },
         };
-        (base as any).configOnChange = (_nodeId: string, patch: Record<string, unknown>) => {
-          setNodes((nds3) => nds3.map((n3) => n3.id === n.id ? { ...n3, data: { ...n3.data, ...patch } } : n3));
-          dirtyNodeIdsRef.current.add(n.id);
-          // 延迟同步到数据库（与 handleContentChange 一致的 1s 防抖）
-          if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
-          syncTimerRef.current = setTimeout(() => {
-            flushSyncRef.current?.();
-          }, 1000);
-        };
-        (base as any).configOnBlur = () => {
-          flushSync();
-        };
-        (base as any).configOnGenerate = (nodeId2: string, mode2: ConfigGenerationMode, model: string, prompt: string, sizeLabel: string) => {
-          // 先同步 config 变更到数据库，再触发生成
-          flushSync();
-
-          // 组装提示词：@ 引用 → [Image N] / 文本内联
-          const assetsOfAtRaw = (n.data as any)?.assetsOfAt || (n.data as any)?.configAssetsOfAt || '[]';
-          let assetsOfAtList: { id: number; id_of_clothes_asset: number }[] = [];
-          try { assetsOfAtList = JSON.parse(assetsOfAtRaw); } catch {}
-          const refs = ((n.data as any)?.configReferences || []) as CanvasResourceReference[];
-
-          const { finalPrompt: assembled, refUrls, volcUrls } = assemblePromptForGenerate(prompt, assetsOfAtList, refs);
-
-          if (!assembled) return;
-
-          // Seedance 视频模型：将 [Image N] 转为 @图片N（后端统一处理 @ 前缀）
-          const isSeedanceVideo = mode2 === 'video' && model?.startsWith('seedance');
-          const finalPrompt = isSeedanceVideo
-            ? assembled.replace(/\[Image (\d+)\]/g, '@图片$1').replace(/\[Video (\d+)\]/g, '@视频$1').replace(/\[Audio (\d+)\]/g, '@音频$1')
-            : assembled;
-
-          if (mode2 === 'image') {
-            handleGenerateImageFromConfig(nodeId2, finalPrompt, model, sizeLabel, refUrls);
-          } else if (mode2 === 'video') {
-            handleGenerateVideoFromConfig(nodeId2, finalPrompt, model, sizeLabel, refUrls, volcUrls);
-          } else if (mode2 === 'audio') {
-            handleGenerateAudioFromConfig(nodeId2, finalPrompt, model, sizeLabel);
-          }
-        };
+        return { ...n, data: configBase };
       }
-      return { ...n, data: base };
+
+      // 非配置节点：注入通用回调 + 面板状态
+      return { ...n, data: { ...n.data, ...commonCallbacks } };
     }));
   }, [promptNodeId, videoPromptNodeId, audioPromptNodeId, cloth?.project_id, C, edges, composerNodeId]);
 
@@ -2024,6 +2106,30 @@ export default function CanvasEditorPage() {
     })();
   }, [clothId]);
 
+  // ── 音频节点后台转 mp3 ──
+  useEffect(() => {
+    for (const n of nodes) {
+      const nt = (n.data as any)?.nodeType;
+      const url = (n.data as any)?.content;
+      if (nt !== 'audio' || !url || !/^https?:\/\//i.test(url)) continue;
+      if (mp3BlobCache.has(url)) {
+        // 已有缓存，直接替换 content 为 blob URL
+        const entry = mp3BlobCache.get(url)!;
+        if ((n.data as any).content !== entry.url) {
+          setNodes((nds) => nds.map((nd) => nd.id === n.id ? { ...nd, data: { ...nd.data, content: entry.url } } : nd));
+        }
+        continue;
+      }
+      // 后台转码（不 await，不阻塞渲染）
+      videoUrlToMp3Blob(url, {}).then((blob) => {
+        const blobUrl = URL.createObjectURL(blob);
+        mp3BlobCache.set(url, { blob, url: blobUrl });
+        setNodes((nds) => nds.map((nd) => nd.id === n.id ? { ...nd, data: { ...nd.data, content: blobUrl } } : nd));
+      }).catch(() => {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodes.length, clothId]);
+
   // 标题保存
   const handleTitleSave = useCallback(async () => {
     if (!clothId || titleDraft.trim() === (cloth?.title || '').trim()) { setTitleEditing(false); return; }
@@ -2228,7 +2334,10 @@ export default function CanvasEditorPage() {
           <button
             type="button"
             onClick={() => setSettingsOpen(true)}
-            className="grid size-9 place-items-center rounded-full transition hover:bg-white/10"
+            className="grid size-9 place-items-center rounded-full transition"
+            style={{ color: C.nodeText }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = themeMode === 'dark' ? 'rgba(255,255,255,.1)' : 'rgba(0,0,0,.06)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
             title="设置"
             aria-label="设置"
           >
@@ -2239,26 +2348,36 @@ export default function CanvasEditorPage() {
             setThemeMode(next);
             document.documentElement.classList.toggle('dark', next === 'dark');
             document.documentElement.style.colorScheme = next;
-            // 写入 localStorage
+            // 写入 localStorage（保留完整设置，仅更新 theme 字段）
             try {
               const raw = localStorage.getItem('seedance_canvas_settings');
               const s = raw ? JSON.parse(raw) : {};
               s.theme = next;
+              // 确保必要字段存在，防止设置弹窗读取不完整对象崩溃
+              if (!s.image_models) s.image_models = ['nano-banana-2', 'gpt-image-2'];
+              if (!s.image_default) s.image_default = 'nano-banana-2';
+              if (!s.video_models) s.video_models = ['seedance-2.0', 'seedance-2.0-fast', 'happyhorse-1.0-t2v'];
+              if (!s.video_default) s.video_default = 'seedance-2.0';
               localStorage.setItem('seedance_canvas_settings', JSON.stringify(s));
             } catch {}
             // 同步到服务器
-            fetch('/api/cloths/settings', {
-              method: 'PUT',
-              headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-              body: JSON.stringify({ theme: next }),
-            }).catch(() => {});
+            try {
+              fetch('/api/cloths/settings', {
+                method: 'PUT',
+                headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ theme: next }),
+              }).catch(() => {});
+            } catch {}
           }} />
           <button
             type="button"
             onClick={() => setShortcutsOpen(true)}
-            className="grid size-9 place-items-center rounded-full transition hover:bg-white/10"
+            className="grid size-9 place-items-center rounded-full transition"
             title="快捷键"
             aria-label="快捷键"
+            style={{ color: C.nodeText }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = themeMode === 'dark' ? 'rgba(255,255,255,.1)' : 'rgba(0,0,0,.06)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
           >
             <Keyboard className="size-4" style={{ color: C.nodeText }} />
           </button>
@@ -2407,8 +2526,35 @@ export default function CanvasEditorPage() {
               const id = toolbarNodeId;
               if (!id) return;
               const n = nodes.find((nd) => nd.id === id);
+              const nodeType = (n?.data as any)?.nodeType;
               const url = (n?.data as any)?.content || (n?.data as any)?.file_url;
-              if (url) window.open(url, '_blank');
+              if (!url) return;
+              if (nodeType === 'audio') {
+                // 如果 content 已是 blob URL（后台已转 mp3），直接 fetch 下载
+                if (url.startsWith('blob:')) {
+                  fetch(url).then(r => r.blob()).then(blob => {
+                    const label = (n?.data as any)?.label || 'audio';
+                    downloadBlob(blob, `${label.replace(/[^\w\u4e00-\u9fa5]/g, '_')}.mp3`);
+                  }).catch(() => {});
+                  return;
+                }
+                // 否则查缓存（key=原始视频URL）或实时转码
+                const cached = mp3BlobCache.get(url);
+                if (cached) {
+                  const label = (n?.data as any)?.label || 'audio';
+                  downloadBlob(cached.blob, `${label.replace(/[^\w\u4e00-\u9fa5]/g, '_')}.mp3`);
+                } else {
+                  // 实时转码并缓存
+                  videoUrlToMp3Blob(url, {}).then(blob => {
+                    const blobUrl = URL.createObjectURL(blob);
+                    mp3BlobCache.set(url, { blob, url: blobUrl });
+                    const label = (n?.data as any)?.label || 'audio';
+                    downloadBlob(blob, `${label.replace(/[^\w\u4e00-\u9fa5]/g, '_')}.mp3`);
+                  }).catch(() => { window.open(url, '_blank'); });
+                }
+              } else {
+                window.open(url, '_blank');
+              }
             }}
             onReplaceImage={() => {
               if (toolbarNodeId) {
@@ -2687,7 +2833,7 @@ export default function CanvasEditorPage() {
           if (!audioAssociateNodeId) return;
           setNodes((nds) => nds.map((n) => {
             if (n.id !== audioAssociateNodeId) return n;
-            return { ...n, data: { ...n.data, content: record.audio_url, file_url: record.audio_url, id_of_resource: record.id } };
+            return { ...n, data: { ...n.data, content: record.audio_url, file_url: record.audio_url, id_of_resource: record.id, label: record.voice_prompt || '音频' } };
           }));
           dirtyNodeIdsRef.current.add(audioAssociateNodeId);
           resetSyncTimer();
@@ -2764,31 +2910,42 @@ export default function CanvasEditorPage() {
 
       {/* 浮窗下拉菜单（fixed 定位，在 ReactFlow 容器外，backdrop-filter 可正常工作） */}
       {ReactDOM.createPortal(
+        (() => {
+          const isLight = themeMode === 'light';
+          const menuBg = isLight ? '#ffffff' : '#1f1f1f';
+          const menuText = isLight ? 'rgba(0,0,0,0.85)' : 'rgba(255,255,255,0.85)';
+          const menuBorder = isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.08)';
+          const menuHover = isLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.08)';
+          const menuShadow = isLight
+            ? '0 6px 16px rgba(0,0,0,0.08), 0 3px 6px -4px rgba(0,0,0,0.12), 0 9px 28px 8px rgba(0,0,0,0.05)'
+            : '0 6px 16px rgba(0,0,0,0.2), 0 3px 6px -4px rgba(0,0,0,0.3), 0 9px 28px 8px rgba(0,0,0,0.15), 0 0 0 1px rgba(255,255,255,0.04), 0 0 40px rgba(255,255,255,0.02)';
+          const menuFaint = isLight ? 'rgba(0,0,0,0.45)' : 'rgba(168,162,158,1)';
+          return (
         <div className={`fixed z-50 w-56 rounded-lg p-1 origin-top ${
           drawerOpen ? 'opacity-100 scale-y-100' : 'opacity-0 scale-y-90 pointer-events-none'
         }`}
           style={{
             left: menuPos.left, top: menuPos.top,
-            background: '#1f1f1f',
-            boxShadow: '0 6px 16px rgba(0,0,0,0.2), 0 3px 6px -4px rgba(0,0,0,0.3), 0 9px 28px 8px rgba(0,0,0,0.15), 0 0 0 1px rgba(255,255,255,0.04), 0 0 40px rgba(255,255,255,0.02)',
+            background: menuBg,
+            boxShadow: menuShadow,
             transition: 'opacity 0.2s cubic-bezier(0.23, 1, 0.32, 1), transform 0.2s cubic-bezier(0.23, 1, 0.32, 1)',
           }}
           onClick={(e) => e.stopPropagation()}
         >
           <button onMouseDown={(e) => { e.preventDefault(); window.location.href = '/cloth'; }}
             className="flex items-center gap-3 w-full rounded-md px-3 py-[5px] text-sm leading-[1.5714] transition-colors"
-            style={{ color: 'rgba(255,255,255,0.85)' }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; }}
+            style={{ color: menuText }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = menuHover; }}
             onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}>
             <FilmIcon className="size-4" />我的画布
           </button>
-          <div className="my-1 border-t" style={{ borderColor: 'rgba(255,255,255,0.08)' }} />
+          <div className="my-1 border-t" style={{ borderColor: menuBorder }} />
           <button onClick={async () => {
             try { const id = 'cloth_' + Date.now().toString(36); const res = await fetch('/api/cloths', { method: 'POST', headers: getAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ id, title: '未命名画布', project_id: cloth!.project_id }) }); if (res.ok) navigate(`/cloth/${id}`); } catch {} setDrawerOpen(false);
           }}
             className="flex items-center gap-3 w-full rounded-md px-3 py-[5px] text-sm leading-[1.5714] transition-colors"
-            style={{ color: 'rgba(255,255,255,0.85)' }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; }}
+            style={{ color: menuText }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = menuHover; }}
             onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}>
             <PlusIcon className="size-4" />新建画布
           </button>
@@ -2797,38 +2954,40 @@ export default function CanvasEditorPage() {
             setDrawerOpen(false);
           }}
             className="flex items-center gap-3 w-full rounded-md px-3 py-[5px] text-sm leading-[1.5714] transition-colors"
-            style={{ color: '#dc4446' }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = '#dc4446'; e.currentTarget.style.color = '#1f1f1f'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = '#dc4446'; }}>
+            style={{ color: isLight ? '#cf1322' : '#dc4446' }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = isLight ? '#fff1f0' : '#dc4446'; e.currentTarget.style.color = isLight ? '#cf1322' : '#1f1f1f'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = isLight ? '#cf1322' : '#dc4446'; }}>
             <TrashIcon className="size-4" />删除当前画布
           </button>
-          <div className="my-1 border-t" style={{ borderColor: 'rgba(255,255,255,0.08)' }} />
+          <div className="my-1 border-t" style={{ borderColor: menuBorder }} />
           <button onClick={() => { importRef.current?.click(); setDrawerOpen(false); }}
             className="flex items-center gap-3 w-full rounded-md px-3 py-[5px] text-sm leading-[1.5714] transition-colors"
-            style={{ color: 'rgba(255,255,255,0.85)' }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; }}
+            style={{ color: menuText }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = menuHover; }}
             onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}>
             <FileUpIcon className="size-4" />导入素材
           </button>
-          <div className="my-1 border-t" style={{ borderColor: 'rgba(255,255,255,0.08)' }} />
+          <div className="my-1 border-t" style={{ borderColor: menuBorder }} />
           <button disabled
             className="flex items-center justify-between gap-3 w-full rounded-md px-3 py-[5px] text-sm leading-[1.5714] opacity-40"
-            style={{ color: 'rgba(255,255,255,0.85)' }}>
+            style={{ color: menuText }}>
             <span className="flex items-center gap-3">
               <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3" /></svg>撤销
             </span>
-            <span className="text-xs" style={{ color: C.nodeFaint }}>⌘ Z</span>
+            <span className="text-xs" style={{ color: menuFaint }}>⌘ Z</span>
           </button>
           <button disabled
             className="flex items-center justify-between gap-3 w-full rounded-md px-3 py-[5px] text-sm leading-[1.5714] opacity-40"
-            style={{ color: 'rgba(255,255,255,0.85)' }}>
+            style={{ color: menuText }}>
             <span className="flex items-center gap-3">
               <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M15 15l6-6m0 0l-6-6m6 6H9a6 6 0 000 12h3" /></svg>重做
             </span>
-            <span className="text-xs" style={{ color: C.nodeFaint }}>⌘ ⇧ Z</span>
+            <span className="text-xs" style={{ color: menuFaint }}>⌘ ⇧ Z</span>
           </button>
-        </div>,
-        document.body
+        </div>
+        );
+        })()
+      , document.body
       )}
     </div>
   );
