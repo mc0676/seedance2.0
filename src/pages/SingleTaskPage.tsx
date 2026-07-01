@@ -342,7 +342,6 @@ export default function SingleTaskPage() {
       staleChipRef.current = chip;
       // 不移动光标、不移除 chip，仅打开 @ 选择面板
       setShowMention(true);
-      setMentionQuery('');
       setMentionFocusIdx(-1);
     };
     document.addEventListener('pointerdown', handler, true);
@@ -481,6 +480,16 @@ export default function SingleTaskPage() {
   function promptHasChip(text: string, chipTag: string): boolean {
     const escaped = chipTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return new RegExp(escaped + '(?![\\w-])').test(text);
+  }
+
+  // 检测提示词中 chip 附近是否有语音/音频相关语境
+  const VOICE_CONTEXT_RE = /(声音|语音|语气|配音|音频|说话|台词|对白|朗读|播报|旁白|解说|口吻|语调)/;
+  function chipHasVoiceContext(text: string, chipTag: string): boolean {
+    const idx = text.indexOf(chipTag);
+    if (idx === -1) return false;
+    const start = Math.max(0, idx - 40);
+    const end = Math.min(text.length, idx + chipTag.length + 40);
+    return VOICE_CONTEXT_RE.test(text.slice(start, end));
   }
 
   // volcAssetId → user-written asset name（用于 chip 显示名称映射）
@@ -945,10 +954,22 @@ export default function SingleTaskPage() {
       (t) => t.effective_download_status === 'generating' || t.status === 'generating'
     );
     if (!hasGenerating) return;
-    const timer = window.setInterval(() => {
+    let timer = window.setInterval(() => {
       void loadHistory(1, false);
     }, 5000);
-    return () => window.clearInterval(timer);
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void loadHistory(1, false);
+        timer = window.setInterval(() => { void loadHistory(1, false); }, 5000);
+      } else {
+        window.clearInterval(timer);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [historyItems]);
 
@@ -1660,8 +1681,12 @@ export default function SingleTaskPage() {
     const activeAssetVidUris = freshSelections
       .filter((a) => a.fileType === 'video' && promptHasChip(prompt, a.chipTag))
       .map((a) => a.assetUri);
+    // 音频引用：优先匹配 fileType=audio 的资产；
+    // 若提示词中 image/video 资产附近有语音语境关键词，也作为音频引用
     const activeAssetAudUri = freshSelections
-      .find((a) => a.fileType === 'audio' && promptHasChip(prompt, a.chipTag))?.assetUri;
+      .find((a) => a.fileType === 'audio' && promptHasChip(prompt, a.chipTag))?.assetUri
+      || freshSelections
+      .find((a) => a.fileType !== 'audio' && promptHasChip(prompt, a.chipTag) && chipHasVoiceContext(prompt, a.chipTag))?.assetUri;
 
     // 有资产库 @ 引用时，上传区素材不再混入（避免 @素材1 时带出其他上传图片）
     const hasAssetChip = freshSelections.some((a) => promptHasChip(prompt, a.chipTag));
@@ -1981,7 +2006,7 @@ export default function SingleTaskPage() {
                   {groupedMentionableAssets.length > 0 && (
                     <div className="p-3">
                       <AssetGrid
-                        assets={gridAssets}
+                        assets={mentionableAssets}
                         groupNames={groupNameMap}
                         onSelect={(a) => { if ((a as any).volc_asset_id) { insertAssetMention(a as any); setMentionFocusIdx(-1); } }}
                       />
@@ -2272,7 +2297,7 @@ export default function SingleTaskPage() {
                         src={playUrl}
                         muted
                         className="w-full h-full object-cover"
-                        preload="metadata"
+                        preload="none"
                         onMouseEnter={(e) => (e.currentTarget as HTMLVideoElement).play()}
                         onMouseLeave={(e) => { (e.currentTarget as HTMLVideoElement).pause(); (e.currentTarget as HTMLVideoElement).currentTime = 0; }}
                       />
@@ -2342,7 +2367,7 @@ export default function SingleTaskPage() {
                               >
                                 {isSubDone ? (
                                   <>
-                                    <video src={subPlayUrl} muted className="w-full h-full object-cover" preload="metadata" />
+                                    <video src={subPlayUrl} muted className="w-full h-full object-cover" preload="none" />
                                     <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                                       <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
                                     </div>
@@ -2507,19 +2532,21 @@ export default function SingleTaskPage() {
                           const newSelections: AssetSelection[] = [];
                           let newPrompt = storedPrompt;
 
-                          assetRefs.forEach((ref, idx) => {
+                          assetRefs.forEach((ref) => {
                             const volcId = ref.uri.replace('asset://', '');
                             const asset = currentProjectAssets.find((a) => a.volc_asset_id === volcId);
-                            const oldTag = tagMatches[idx];
+                            // 按 volcId 精确匹配 prompt 中的 tag，而非按索引（assetRefs 与 tagMatches 顺序不一定一致）
+                            const oldTag = tagMatches.find((tag) => tag.includes(volcId));
                             if (!asset) {
-                              // 失效素材：替换 tag 为 @失效素材 并保留其后文本
-                              if (oldTag) newPrompt = newPrompt.replace(oldTag, '@失效素材');
+                              // 失效素材：替换 tag 为 @失效素材（替换所有出现）
+                              if (oldTag) newPrompt = newPrompt.split(oldTag).join('@失效素材');
                               // 加入 special selection 供编辑器渲染为灰色可点击 chip
                               newSelections.push({
-                                id: `stale-${volcId || idx}`,
+                                id: `stale-${volcId}`,
                                 volcAssetId: '',
                                 fileType: 'image',
                                 name: '失效素材',
+                                assetUri: '',
                                 chipTag: '@失效素材',
                               });
                               deletedNames.push(ref.originalName?.replace('asset://', '') || volcId);
