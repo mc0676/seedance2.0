@@ -136,8 +136,21 @@ function AppContent() {
 
   useEffect(() => {
     checkMaintenance();
-    const timer = setInterval(checkMaintenance, 5000);
-    return () => clearInterval(timer);
+    let timer = setInterval(checkMaintenance, 5000);
+    // 页面不可见时暂停轮询，切回可见时立即检查并恢复
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        checkMaintenance();
+        timer = setInterval(checkMaintenance, 5000);
+      } else {
+        clearInterval(timer);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   }, [checkMaintenance]);
 
   // 加载当前用户

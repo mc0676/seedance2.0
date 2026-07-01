@@ -222,6 +222,15 @@ server/
 - **数据库 volume**：`seedance-data`（挂载到容器 `/app/server/data`，重启不丢失）
 - **前端 volume**：`seedance-dist`（挂载到容器 `/app/dist`，路径 `/var/lib/docker/volumes/seedance-dist/_data`）
 
+### 一键部署（推荐）
+
+```bash
+# 本地执行 — 构建前端 + 上传 + 写入容器 + 重启 + 验证，全自动
+./deploy.sh
+```
+
+`deploy.sh` 封装完整流程，其他人无需记忆 scp/docker cp/volume 路径等细节。也可分步手动操作：
+
 ### 热更新（只改前端）
 
 ```bash

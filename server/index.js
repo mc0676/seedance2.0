@@ -8070,9 +8070,9 @@ async function refreshAssetThumbnailsToOss(projectId) {
 
         console.log(`[assets] 缩略图→OSS: ${asset.volc_asset_id}`);
       } catch (e) {
-        // 火山侧已删除的素材直接跳过
-        if (e.message && e.message.includes('not found')) {
-          console.warn(`[assets] 素材已从火山删除，跳过: ${asset.volc_asset_id}`);
+        // 火山侧返回 not found 仅代表缩略图获取失败（可能签名过期），不标记素材状态
+        if (e.message && (e.message.includes('not found') || e.message.includes('404') || e.message.includes('ResourceNotFound'))) {
+          // 首次失败时静默跳过，下次请求 assets 时重新尝试
         } else {
           console.warn(`[assets] 缩略图转存失败 ${asset.volc_asset_id}:`, e.message);
         }
@@ -8381,6 +8381,11 @@ app.delete('/api/projects/:id/assets/:assetId', authenticate, async (req, res) =
   }
 });
 
+// ===================== 无限画布 API =====================
+// 路由定义在 server/cloth/controller.js，authenticate 在此处统一挂载
+// 必须位于 catch-all app.all('/api/*') 之前，否则生产环境被拦截
+app.use('/api/cloths', authenticate, clothRouter);
+
 // 生产模式: 提供前端静态文件
 if (process.env.NODE_ENV === 'production') {
   const distPath = path.join(__dirname, '../dist');
@@ -8629,10 +8634,6 @@ process.on('SIGINT', () => {
   closeDatabase();
   process.exit(0);
 });
-
-// ===================== 无限画布 API =====================
-// 路由定义在 server/cloth/controller.js，authenticate 在此处统一挂载
-app.use('/api/cloths', authenticate, clothRouter);
 
 // GET /api/canvas/scripts - 当前用户文本块列表（含项目成员共享）
 app.get('/api/canvas/scripts', authenticate, (req, res) => {
