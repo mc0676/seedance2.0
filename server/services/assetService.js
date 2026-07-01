@@ -9,7 +9,7 @@ import { getDatabase } from '../database/index.js';
 const ARK_HOST = 'open.volcengineapi.com';
 const ARK_REGION = 'cn-beijing';
 
-const DO_SHOW_STATUS = ['1', 'true'].includes((process.env.SHOW_STATUS_OF_SYNCHRONIZATION_OF_ASSET_OF_VOLC || '').toLowerCase());
+const DO_SHOW_STATUS_OF_SYNCHRONIZATION_OF_ASSET_OF_VOLC = ['1', 'true'].includes((process.env.SHOW_STATUS_OF_SYNCHRONIZATION_OF_ASSET_OF_VOLC || '').toLowerCase());
 const ARK_SERVICE = 'ark';
 const ARK_VERSION = '2024-01-01';
 
@@ -111,7 +111,7 @@ async function arkRequest(action, body = {}, keyGroupId = null) {
   const query = { Action: action, Version: ARK_VERSION };
   const { authorization, 'x-date': xDate, bodyStr, sortedQuery } = arkSign('POST', body, query, keyGroupId);
 
-  if (DO_SHOW_STATUS) {
+  if (DO_SHOW_STATUS_OF_SYNCHRONIZATION_OF_ASSET_OF_VOLC) {
     const ts = new Date().toISOString();
     console.log(`[assetService.js] ${ts} [ark-assets] 正在调用 ${action} 方法，请求体为：`);
     console.log(JSON.stringify(body, null, 2));
