@@ -238,11 +238,6 @@ html:not(.dark) .custom-scrollbar::-webkit-scrollbar-thumb:hover {
   transition: color 0.18s ease;
 }
 
-/* 隐藏 Chrome 在 contenteditable=false span 后自动注入的 <br>（视觉兜底） */
-.mention-chip + br {
-  display: none;
-}
-
 /* ============================================================
    全局控件统一 class（@layer components）
    按钮层级：primary > secondary > save > danger > edit

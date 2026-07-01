@@ -110,6 +110,70 @@ export default function ImageGenPage() {
   const historyGenRef = useRef(0);
   const historyBottomRef = useRef<HTMLDivElement>(null);
 
+  // ── 表单草稿持久化（localStorage，按项目隔离）──
+  const draftKey = useCallback((k: string) => `seedance_img_${k}_${currentProjectId || 0}`, [currentProjectId]);
+
+  // 项目切换时保存旧项目数据 + 清空表单
+  const prevProjectIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    const pid = currentProjectId;
+    const prev = prevProjectIdRef.current;
+    prevProjectIdRef.current = pid;
+    if (!pid) return;
+    if (prev && prev !== pid) {
+      // 保存旧项目数据
+      const oldKey = (k: string) => `seedance_img_${k}_${prev}`;
+      localStorage.setItem(oldKey('prompt'), prompt);
+      localStorage.setItem(oldKey('params'), JSON.stringify({ model, gptAspect, nanoSize, nanoAspect }));
+      localStorage.setItem(oldKey('refUrls'), JSON.stringify(refUrls));
+      // 清空表单
+      setPrompt('');
+      setRefUrls([]);
+      setModel('nano-banana-2');
+      setGptAspect('1:1');
+      setNanoSize('1K');
+      setNanoAspect('1:1');
+    }
+  }, [currentProjectId]);
+
+  // 挂载或切换项目时恢复草稿
+  useEffect(() => {
+    const pid = currentProjectId;
+    if (!pid) return;
+    try {
+      const savedPrompt = localStorage.getItem(draftKey('prompt')) || '';
+      const savedParams = localStorage.getItem(draftKey('params'));
+      const savedRefUrls = localStorage.getItem(draftKey('refUrls'));
+      if (savedParams) {
+        const p = JSON.parse(savedParams);
+        if (p.model) setModel(p.model);
+        if (p.gptAspect) setGptAspect(p.gptAspect);
+        if (p.nanoSize) setNanoSize(p.nanoSize);
+        if (p.nanoAspect) setNanoAspect(p.nanoAspect);
+      }
+      if (savedRefUrls) setRefUrls(JSON.parse(savedRefUrls));
+      if (savedPrompt) setPrompt(savedPrompt);
+    } catch {}
+  }, [currentProjectId, draftKey]);
+
+  // 保存草稿
+  useEffect(() => {
+    const pid = currentProjectId;
+    if (!pid) return;
+    const timer = setTimeout(() => { localStorage.setItem(draftKey('prompt'), prompt); }, 300);
+    return () => clearTimeout(timer);
+  }, [prompt, currentProjectId, draftKey]);
+  useEffect(() => {
+    const pid = currentProjectId;
+    if (!pid) return;
+    localStorage.setItem(draftKey('params'), JSON.stringify({ model, gptAspect, nanoSize, nanoAspect }));
+  }, [model, gptAspect, nanoSize, nanoAspect, currentProjectId, draftKey]);
+  useEffect(() => {
+    const pid = currentProjectId;
+    if (!pid) return;
+    localStorage.setItem(draftKey('refUrls'), JSON.stringify(refUrls));
+  }, [refUrls, currentProjectId, draftKey]);
+
   const sizeLabel = useMemo(() => {
     if (model === 'gpt-image-2') return gptAspect;
     return `${nanoSize} · ${nanoAspect}`;
@@ -242,20 +306,37 @@ export default function ImageGenPage() {
 
   function extractEditorText(el: Node): string {
     let t = '';
-    for (const n of Array.from(el.childNodes)) {
+    const nodes = Array.from(el.childNodes);
+    let prevWasEmptyBlock = false;
+    for (const n of nodes) {
       if (n.nodeType === Node.TEXT_NODE) {
         t += (n.textContent ?? '').replace(/​/g, '');
+        prevWasEmptyBlock = false;
       } else if ((n as Element).tagName === 'BR') {
         const prev = n.previousSibling as Element | null;
         if (prev?.classList?.contains('mention-chip')) continue;
+        const parent = n.parentElement;
+        if (parent && (parent.tagName === 'DIV' || parent.tagName === 'P' || parent.tagName === 'LI')) {
+          if (parent.childNodes.length === 1) continue;
+        }
         t += '\n';
+        prevWasEmptyBlock = false;
       } else if ((n as Element).classList?.contains('mention-chip')) {
         t += (n as Element).getAttribute('data-tag') ?? '';
+        prevWasEmptyBlock = false;
       } else {
+        const tag = (n as Element).tagName;
+        if (tag === 'DIV' || tag === 'P' || tag === 'LI') {
+          if (t.length > 0 && !t.endsWith('\n')) t += '\n';
+          else if (prevWasEmptyBlock) t += '\n';
+          const childNodes = (n as Element).childNodes;
+          const isEmpty = childNodes.length === 1 && (childNodes[0] as Element).tagName === 'BR';
+          prevWasEmptyBlock = isEmpty;
+        }
         t += extractEditorText(n);
       }
     }
-    return t;
+    return t.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   }
 
   function chipLogicalLen(el: Element): number {
@@ -362,7 +443,12 @@ export default function ImageGenPage() {
   }
 
   function cleanChipBrs(el: HTMLElement) {
-    el.querySelectorAll('.mention-chip + br').forEach((br) => br.remove());
+    el.querySelectorAll('br').forEach(br => {
+      const prev = br.previousSibling;
+      if (prev && prev.nodeType === Node.ELEMENT_NODE && (prev as Element).classList.contains('mention-chip')) {
+        br.remove();
+      }
+    });
   }
 
   /** @ 面板过滤：空过滤=全部命中；否则去掉 @ 后前缀匹配，或文件名子串包含 */
@@ -572,7 +658,8 @@ export default function ImageGenPage() {
     if (!el) return;
     const raw = e.clipboardData.getData('text/plain');
     if (!raw) return;
-    const converted = raw.replace(/<ref>(@[^<\n]+)<\/ref>/g, '$1');
+    const normalized = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const converted = normalized.replace(/<ref>(@[^<\n]+)<\/ref>/g, '$1');
     const { start, end } = getSelectionRange(el);
     const currentText = extractEditorText(el);
     const newText = currentText.slice(0, start) + converted + currentText.slice(end);
@@ -953,7 +1040,7 @@ export default function ImageGenPage() {
 
                 {/* 信息区域 */}
                 <div className="flex-1 min-w-0 flex flex-col gap-1.5">
-                  <p className="text-xs text-gray-300 line-clamp-2 leading-relaxed">{(item.prompt || '（无提示词）').replace(/\[Image (\d+)\]/g, '@图片$1')}</p>
+                  <p className="text-xs text-gray-300 line-clamp-2 leading-relaxed whitespace-pre-line">{(item.prompt || '（无提示词）').replace(/\[Image (\d+)\]/g, '@图片$1')}</p>
 
                   {/* 失败原因（来自 image_records.error_message，由后端写入上游 API 原始 msg） */}
                   {item.status === 'error' && item.error_message && (

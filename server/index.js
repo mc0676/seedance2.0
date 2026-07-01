@@ -1236,7 +1236,8 @@ async function recoverImageRecord(db, record) {
 
 app.post('/api/generate-image', authenticate, async (req, res) => {
   const db = getDatabase();
-  const { prompt, model, size, aspectRatio, urls, projectId: reqProjectId, sizeLabel, refUrls: reqRefUrls } = req.body;
+  const { prompt: rawImgPrompt, model, size, aspectRatio, urls, projectId: reqProjectId, sizeLabel, refUrls: reqRefUrls } = req.body;
+  const prompt = typeof rawImgPrompt === 'string' ? rawImgPrompt.replace(/\r\n/g, '\n').replace(/\r/g, '\n') : rawImgPrompt;
 
   const DO_SHOW_STATUS_OF_TASK_OF_WUYIN = ['1', 'true'].includes((process.env.SHOW_STATUS_OF_TASK_OF_WUYIN || '').toLowerCase());
   if (DO_SHOW_STATUS_OF_TASK_OF_WUYIN) {
@@ -1591,7 +1592,9 @@ app.post('/api/generate-video', authenticate, upload.array('files', 5), async (r
   const startTime = Date.now();
 
   try {
-    const { prompt, ratio, duration, model, projectId: reqProjectId } = req.body;
+    const { prompt: rawPrompt, ratio, duration, model, projectId: reqProjectId } = req.body;
+    // 统一换行符为 \n（前端可能因各种原因传入 \r\n）
+    const prompt = typeof rawPrompt === 'string' ? rawPrompt.replace(/\r\n/g, '\n').replace(/\r/g, '\n') : rawPrompt;
     const referenceMode = req.body.referenceMode === 'first_last_frame' ? 'first_last_frame' : 'reference';
     const maxConcurrent = parseInt(settingsService.getSetting('max_concurrent') || '5', 10);
     const batchSize = Math.max(1, Math.min(parseInt(req.body.batchSize, 10) || 1, maxConcurrent || 5));
@@ -6266,10 +6269,12 @@ app.post('/api/happyhorse-tasks', authenticate, async (req, res) => {
     }
 
     const {
-      projectId, mode, prompt, resolution,
+      projectId, mode, prompt: rawHhPrompt, resolution,
       ratio, duration, media, audioSetting, seed,
       inputVideoDurationSec, batchSize: rawBatchSize,
     } = req.body || {};
+    // 统一换行符为 \n
+    const prompt = typeof rawHhPrompt === 'string' ? rawHhPrompt.replace(/\r\n/g, '\n').replace(/\r/g, '\n') : rawHhPrompt;
     const maxHHConcurrent = parseInt(settingsService.getSetting('max_concurrent') || '5', 10);
     const batchSize = Math.max(1, Math.min(parseInt(rawBatchSize, 10) || 1, maxHHConcurrent || 5));
 
@@ -6779,7 +6784,8 @@ app.post('/api/audio-generations', authenticate, async (req, res) => {
   let dbTaskId = null;
   let audioGenId = null;
   try {
-    const { projectId: reqProjectId, referenceImageUrl, referenceAssetUri, voicePrompt } = req.body || {};
+    const { projectId: reqProjectId, referenceImageUrl, referenceAssetUri, voicePrompt: rawVoicePrompt } = req.body || {};
+    const voicePrompt = typeof rawVoicePrompt === 'string' ? rawVoicePrompt.replace(/\r\n/g, '\n').replace(/\r/g, '\n') : rawVoicePrompt;
 
     if (!reqProjectId) return res.status(400).json({ error: '必须指定所属项目组（projectId）' });
     if (!referenceImageUrl || typeof referenceImageUrl !== 'string') {
@@ -8063,6 +8069,14 @@ async function refreshAssetThumbnailsToOss(projectId) {
         }
         const volcId = asset.volc_id || undefined;
         const volcAsset = await assetService.getAsset(asset.volc_asset_id, undefined, volcId);
+        // NotFound.asset_id：火山侧已删除，标记本地为已删除并清空无用字段
+        if (!volcAsset) {
+          db.prepare(`UPDATE project_assets SET status = 'deleted', file_url = NULL, file_size = NULL, review_status = NULL, auto_inject = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(asset.id);
+          if (DO_SHOW_STATUS) {
+            console.log(`[assets] 火山侧已删除，标记本地: ${asset.volc_asset_id}`);
+          }
+          continue;
+        }
         const freshUrl = volcAsset?.URL || volcAsset?.Url || volcAsset?.url;
         if (!freshUrl) continue;
 

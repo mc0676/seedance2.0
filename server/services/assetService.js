@@ -132,8 +132,20 @@ async function arkRequest(action, body = {}, keyGroupId = null) {
   try { json = JSON.parse(text); } catch {
     throw new Error(`ARK API 返回非JSON（HTTP ${resp.status}）：${text.slice(0, 200)}`);
   }
+  if (DO_SHOW_STATUS_OF_SYNCHRONIZATION_OF_ASSET_OF_VOLC) {
+    const ts = new Date().toISOString();
+    console.log(`[assetService.js] ${ts} [ark-assets] ${action} 回参：`);
+    console.log(JSON.stringify(json, null, 2));
+  }
   if (!resp.ok || json.ResponseMetadata?.Error) {
     const err = json.ResponseMetadata?.Error;
+    // NotFound.asset_id 表示火山侧已删除，返回 null 让调用方标记本地为已删除
+    if (err?.Code === 'NotFound.asset_id') {
+      if (DO_SHOW_STATUS_OF_SYNCHRONIZATION_OF_ASSET_OF_VOLC) {
+        console.log(`[assetService.js] [ark-assets] ${action} 资源已被火山侧删除 (NotFound.asset_id)，返回 null`);
+      }
+      return null;
+    }
     throw new Error(translateArkError(err?.Message || JSON.stringify(json)));
   }
   return json.Result !== undefined ? json.Result : json;
@@ -547,6 +559,17 @@ export async function syncAssetReviewFromVolc(localAssetId, projectId) {
   if (!asset.volc_asset_id) throw new Error('该素材尚未上传到 ARK，无法同步审核状态');
 
   const volcAsset = await getAsset(asset.volc_asset_id);
+
+  // 火山侧已删除，标记本地为已删除，清空无用字段
+  if (!volcAsset) {
+    db.prepare(`
+      UPDATE project_assets
+      SET status = 'deleted', file_url = NULL, file_size = NULL, review_status = NULL, auto_inject = NULL, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(localAssetId);
+    return db.prepare('SELECT * FROM project_assets WHERE id = ?').get(localAssetId);
+  }
+
   // ARK 返回的 Status: enabled=通过, disabled=拒绝, pending=审核中
   const volcStatus = volcAsset.Status || volcAsset.status;
   let reviewStatus = 'pending';

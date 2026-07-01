@@ -520,8 +520,9 @@ export default function SingleTaskPage() {
     const tagPattern = allTags
       .map(m => m.replace(/[.*+?^${}()|[]\]/g, '\$&'))
       .join('|');
-    // 从 assetSelections + availableAssets 建立 chipTag → displayName 映射
+    // 从 assetSelections + availableAssets + mentionItems 建立 chipTag → displayName 映射
     const tagDisplayMap = new Map<string, string>([
+      ...mentionItems.map((m): [string, string] => [m.tag, m.label]),
       ...sels.map((a): [string, string] => {
         const volcId = a.volcAssetId || a.chipTag.replace(/^@/, '');
         return [a.chipTag, assetDisplayMap.get(volcId) || a.name || a.chipTag];
@@ -589,23 +590,41 @@ export default function SingleTaskPage() {
   function extractText(el: Node): string {
     let t = '';
     const nodes = Array.from(el.childNodes);
+    let prevWasEmptyBlock = false;
     for (let i = 0; i < nodes.length; i++) {
       const n = nodes[i];
       if (n.nodeType === Node.TEXT_NODE) {
-        // 跳过零宽空格（chip 前后的光标占位符）
         t += (n.textContent ?? '').replace(/\u200B/g, '');
+        prevWasEmptyBlock = false;
       } else if ((n as Element).tagName === 'BR') {
         const prev = n.previousSibling as Element | null;
         if (prev?.classList?.contains('mention-chip')) continue;
+        // <br> inside 空的块级元素（Enter 产生的 <div><br></div>）由外层 div 处理换行
+        const parent = n.parentElement;
+        if (parent && (parent.tagName === 'DIV' || parent.tagName === 'P' || parent.tagName === 'LI')) {
+          if (parent.childNodes.length === 1) continue;
+        }
         t += '\n';
+        prevWasEmptyBlock = false;
       } else if ((n as Element).classList?.contains('mention-chip')) {
-        // chip 显示的是用户名称，但逻辑 tag 存在 data-tag 属性
         t += (n as Element).getAttribute('data-tag') ?? (n.textContent ?? '').replace(/​/g, '');
+        prevWasEmptyBlock = false;
       } else {
+        const tag = (n as Element).tagName;
+        if (tag === 'DIV' || tag === 'P' || tag === 'LI') {
+          // 每个块级元素前补 \n；若前一个是空块（仅含 <br>），补充额外的空行
+          if (t.length > 0 && !t.endsWith('\n')) t += '\n';
+          else if (prevWasEmptyBlock) t += '\n';
+          // 判断当前块是否为空（仅含 <br>）
+          const childNodes = (n as Element).childNodes;
+          const isEmpty = childNodes.length === 1 && (childNodes[0] as Element).tagName === 'BR';
+          prevWasEmptyBlock = isEmpty;
+        }
         t += extractText(n);
       }
     }
-    return t;
+    // 统一换行符为 \n（数据库/API 均使用 \n，避免混入 \r\n）
+    return t.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   }
 
   function getCursorOffset(root: HTMLDivElement): number {
@@ -719,7 +738,14 @@ export default function SingleTaskPage() {
 
   // 清理 Chrome 注入的 <br>
   function cleanChipBrs(el: HTMLElement) {
-    el.querySelectorAll('.mention-chip + br').forEach(br => br.remove());
+    // 仅移除紧跟在 chip 后面的 <br>（无实质性文本内容间隔），
+    // 不能用 .mention-chip + br（CSS + 只看元素兄弟，会误删中间有文本的 <br>）
+    el.querySelectorAll('br').forEach(br => {
+      const prev = br.previousSibling;
+      if (prev && prev.nodeType === Node.ELEMENT_NODE && (prev as Element).classList.contains('mention-chip')) {
+        br.remove();
+      }
+    });
   }
 
   function setEditorHtml(html: string) {
@@ -758,33 +784,182 @@ export default function SingleTaskPage() {
   }
 
 
+  // ── 项目切换时保存旧项目数据 + 清空表单 ──
+  // 注意：复用下方的 prevProjectIdRef（历史加载也用），但不在本 effect 中更新它
+  // skipNextPromptSaveRef 必须在 project-switch effect 之前声明（TDZ）
+  const skipNextPromptSaveRef = useRef(false);
+  useEffect(() => {
+    const pid = state.currentProject?.id;
+    const prev = prevProjectIdRef.current;
+    if (!pid) return;
+    if (prev && prev !== pid) {
+      // 从 localStorage 读取最后保存的 prompt（React state 可能因各种原因滞后），
+      // 再与当前编辑器 DOM 内容合并，优先取非空值
+      const lastSavedPrompt = localStorage.getItem(`seedance_prompt_${prev}`) || '';
+      const currentPrompt = prompt || lastSavedPrompt;
+      // 立即保存当前表单到旧项目（防止 debounce 丢失 + 防止污染新项目）
+      localStorage.setItem(`seedance_prompt_${prev}`, currentPrompt);
+      localStorage.setItem(`seedance_params_${prev}`, JSON.stringify({ model, ratio, duration, resolution, referenceMode }));
+      localStorage.setItem(`seedance_images_${prev}`, JSON.stringify(serializeFiles(images)));
+      localStorage.setItem(`seedance_firstFrameImages_${prev}`, JSON.stringify(serializeFiles(firstFrameImages)));
+      localStorage.setItem(`seedance_lastFrameImages_${prev}`, JSON.stringify(serializeFiles(lastFrameImages)));
+      localStorage.setItem(`seedance_videos_${prev}`, JSON.stringify(serializeFiles(videos)));
+      localStorage.setItem(`seedance_audios_${prev}`, JSON.stringify(serializeFiles(audios)));
+      localStorage.setItem(`seedance_assetSelections_${prev}`, JSON.stringify(assetSelections));
+      // 清空表单（跳过本次 prompt 保存，避免空值覆盖刚存的旧项目数据）
+      skipNextPromptSaveRef.current = true;
+      setPrompt('');
+      setEditorHtml('');
+      setImages((prev) => { prev.forEach((f) => f.previewUrl && URL.revokeObjectURL(f.previewUrl)); return []; });
+      setFirstFrameImages((prev) => { prev.forEach((f) => f.previewUrl && URL.revokeObjectURL(f.previewUrl)); return []; });
+      setLastFrameImages((prev) => { prev.forEach((f) => f.previewUrl && URL.revokeObjectURL(f.previewUrl)); return []; });
+      setVideos((prev) => { prev.forEach((f) => f.previewUrl && URL.revokeObjectURL(f.previewUrl)); return []; });
+      setAudios((prev) => { prev.forEach((f) => f.previewUrl && URL.revokeObjectURL(f.previewUrl)); return []; });
+      setAssetSelections([]);
+      setGeneration({ status: 'idle' });
+    }
+  }, [state.currentProject?.id]);
+
   // 挂载或切换项目时从 localStorage 恢复草稿
-  const promptRestoredRef = useRef<number | undefined>(undefined);
+  const rebuildEditorRef = useRef(false);
   useEffect(() => {
     const pid = state.currentProject?.id;
     if (!pid || !editorRef.current) return;
-    // 同一项目不重复恢复
-    if (promptRestoredRef.current === pid) return;
-    promptRestoredRef.current = pid;
     const saved = localStorage.getItem(`seedance_prompt_${pid}`) || '';
+    let hasChipSelections = false;
+    // 同步恢复 assetSelections，确保 buildHtml 能重建 chip
+    try {
+      const savedSelections = localStorage.getItem(`seedance_assetSelections_${pid}`);
+      if (savedSelections) {
+        const parsed = JSON.parse(savedSelections);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setAssetSelections(parsed);
+          rebuildEditorRef.current = true;
+          hasChipSelections = true;
+        }
+      }
+    } catch {}
     if (saved) {
       setPrompt(saved);
-      setEditorHtml(buildHtml(saved));
+      // 有非空 assetSelections 时等 rebuildEditorRef effect 处理 chip 渲染，
+      // 否则直接写入编辑器 DOM
+      if (!hasChipSelections) {
+        setEditorHtml(buildHtml(saved));
+      }
     } else {
       setPrompt('');
       setEditorHtml('');
     }
   }, [state.currentProject?.id]);
 
+  // assetSelections 或上传素材恢复后重建编辑器 chip
+  useEffect(() => {
+    if (!rebuildEditorRef.current) return;
+    rebuildEditorRef.current = false;
+    if (!prompt || !editorRef.current) return;
+    setEditorHtml(buildHtml(prompt));
+  }, [assetSelections, images, videos, audios, firstFrameImages, lastFrameImages]);
+
   // prompt 变化时持久化到 localStorage（按项目隔离）
+  // 项目切换清空表单时，skipNextPromptSaveRef 防止用空值覆盖刚保存的旧项目数据
   useEffect(() => {
     const pid = state.currentProject?.id;
     if (!pid) return;
+    if (skipNextPromptSaveRef.current) { skipNextPromptSaveRef.current = false; return; }
     const timer = setTimeout(() => {
       localStorage.setItem(`seedance_prompt_${pid}`, prompt);
     }, 300);
     return () => clearTimeout(timer);
   }, [prompt, state.currentProject?.id]);
+
+  // ── 参考素材持久化（localStorage，按项目隔离）──
+  const serializeFiles = (files: UploadedFile[]) =>
+    files.map(({ id, name, size, mediaType, ossUrl }) => ({ id, name, size, mediaType, ossUrl }));
+
+  // 挂载时恢复素材
+  // 注意：不用 ref guard，原因同 prompt restore
+  useEffect(() => {
+    const pid = state.currentProject?.id;
+    if (!pid) return;
+    try {
+      const restore = (key: string, setter: (f: UploadedFile[]) => void) => {
+        const raw = localStorage.getItem(`seedance_${key}_${pid}`);
+        if (!raw) return;
+        const saved: Array<{ id: string; name: string; size: number; mediaType: string; ossUrl?: string }> = JSON.parse(raw);
+        const restored: UploadedFile[] = saved.map((s) => ({
+          id: s.id, name: s.name, size: s.size,
+          mediaType: s.mediaType as 'image' | 'video' | 'audio',
+          ossUrl: s.ossUrl,
+          file: new File([], s.name, { type: s.mediaType === 'video' ? 'video/mp4' : s.mediaType === 'audio' ? 'audio/mpeg' : 'image/jpeg' }),
+          previewUrl: s.ossUrl || '',
+        }));
+        setter(restored);
+      };
+      restore('images', setImages);
+      restore('firstFrameImages', setFirstFrameImages);
+      restore('lastFrameImages', setLastFrameImages);
+      restore('videos', setVideos);
+      restore('audios', setAudios);
+      // 恢复模型参数
+      const savedParams = localStorage.getItem(`seedance_params_${pid}`);
+      if (savedParams) {
+        const p = JSON.parse(savedParams);
+        if (p.model) setModel(p.model);
+        if (p.ratio) setRatio(p.ratio);
+        if (p.duration) setDuration(p.duration);
+        if (p.resolution) setResolution(p.resolution);
+        if (p.referenceMode) setReferenceMode(p.referenceMode);
+      }
+      // 素材恢复后，若 prompt 包含 @ 引用，标记需要重建 chip
+      const savedPromptCheck = localStorage.getItem(`seedance_prompt_${pid}`) || '';
+      if (savedPromptCheck && /@\S/.test(savedPromptCheck)) {
+        rebuildEditorRef.current = true;
+      }
+    } catch {}
+  }, [state.currentProject?.id]);
+
+  // 素材变化时持久化
+  const persistFiles = useCallback((key: string, files: UploadedFile[]) => {
+    const pid = state.currentProject?.id;
+    if (!pid) return;
+    try { localStorage.setItem(`seedance_${key}_${pid}`, JSON.stringify(serializeFiles(files))); } catch {}
+  }, [state.currentProject?.id]);
+  const persistParams = useCallback(() => {
+    const pid = state.currentProject?.id;
+    if (!pid) return;
+    try { localStorage.setItem(`seedance_params_${pid}`, JSON.stringify({ model, ratio, duration, resolution, referenceMode })); } catch {}
+  }, [state.currentProject?.id, model, ratio, duration, resolution, referenceMode]);
+
+  useEffect(() => { persistFiles('images', images); }, [images, persistFiles]);
+  useEffect(() => { persistFiles('firstFrameImages', firstFrameImages); }, [firstFrameImages, persistFiles]);
+  useEffect(() => { persistFiles('lastFrameImages', lastFrameImages); }, [lastFrameImages, persistFiles]);
+  useEffect(() => { persistFiles('videos', videos); }, [videos, persistFiles]);
+  useEffect(() => { persistFiles('audios', audios); }, [audios, persistFiles]);
+  useEffect(() => { persistParams(); }, [persistParams]);
+  // 持久化 assetSelections
+  useEffect(() => {
+    const pid = state.currentProject?.id;
+    if (!pid) return;
+    try {
+      localStorage.setItem(`seedance_assetSelections_${pid}`, JSON.stringify(assetSelections));
+    } catch {}
+  }, [assetSelections, state.currentProject?.id]);
+
+  // 清除草稿的工具函数
+  const clearDrafts = useCallback(() => {
+    const pid = state.currentProject?.id;
+    if (!pid) return;
+    try {
+      localStorage.removeItem(`seedance_prompt_${pid}`);
+      localStorage.removeItem(`seedance_images_${pid}`);
+      localStorage.removeItem(`seedance_firstFrameImages_${pid}`);
+      localStorage.removeItem(`seedance_lastFrameImages_${pid}`);
+      localStorage.removeItem(`seedance_videos_${pid}`);
+      localStorage.removeItem(`seedance_audios_${pid}`);
+      localStorage.removeItem(`seedance_params_${pid}`);
+      localStorage.removeItem(`seedance_assetSelections_${pid}`);
+    } catch {}
+  }, [state.currentProject?.id]);
 
   // 复用时通过 pendingEditorHtmlRef 写入编辑器，useLayoutEffect 在每次 render 后立即执行，
   // 早于 useEffect，不受 projectAssets useEffect 覆盖的影响
@@ -853,29 +1028,7 @@ export default function SingleTaskPage() {
 
 
 
-  // 工作组切换时清空表单（assetSelections、prompt、上传素材都属于上个工作组的上下文，不应跨组保留）
-  const formResetProjectIdRef = useRef<number | undefined>(undefined);
-  useEffect(() => {
-    const pid = state.currentProject?.id;
-    if (formResetProjectIdRef.current === undefined) {
-      formResetProjectIdRef.current = pid;
-      return; // 首次挂载不清空
-    }
-    if (pid === formResetProjectIdRef.current) return;
-    formResetProjectIdRef.current = pid;
-    // 清空所有跨工作组不应保留的表单上下文
-    setAssetSelections([]);
-    setPrompt('');
-    setEditorHtml('');
-    setImages((prev) => { prev.forEach((f) => f.previewUrl && URL.revokeObjectURL(f.previewUrl)); return []; });
-    setFirstFrameImages((prev) => { prev.forEach((f) => f.previewUrl && URL.revokeObjectURL(f.previewUrl)); return []; });
-    setLastFrameImages((prev) => { prev.forEach((f) => f.previewUrl && URL.revokeObjectURL(f.previewUrl)); return []; });
-    setVideos((prev) => { prev.forEach((f) => f.previewUrl && URL.revokeObjectURL(f.previewUrl)); return []; });
-    setAudios((prev) => { prev.forEach((f) => f.previewUrl && URL.revokeObjectURL(f.previewUrl)); return []; });
-    setGeneration({ status: 'idle' });
-    if (editorRef.current) editorRef.current.innerHTML = '';
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.currentProject?.id]);
+  // 工作组切换时清空表单已由上方 project-switch effect 统一处理（含旧数据保存）
 
   const refreshWorkgroup = useCallback(async () => {
     const pid = state.currentProject?.id;
@@ -1236,7 +1389,9 @@ export default function SingleTaskPage() {
     e.preventDefault();
     if (!editorRef.current) return;
     const raw = e.clipboardData.getData('text/plain');
-    const converted = raw.replace(/<ref>(@[^<\n]+)<\/ref>/g, '$1');
+    // 统一换行符（Windows \r\n → \n，Mac \r → \n）
+    const normalized = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const converted = normalized.replace(/<ref>(@[^<\n]+)<\/ref>/g, '$1');
     let { start, end } = getSelectionRange(editorRef.current);
     let currentText = extractText(editorRef.current);
     flushUndo(currentText, start);
@@ -1248,6 +1403,8 @@ export default function SingleTaskPage() {
     const newText = currentText.slice(0, adjustedStart) + converted + currentText.slice(end);
     setEditorHtml(buildHtml(newText));
     setPrompt(newText);
+    // 确保 skipNextInputUndoRef 在 paste 完成后复位，避免吞掉下一个真实按键
+    requestAnimationFrame(() => { skipNextInputUndoRef.current = false; });
     // Restore assetSelections for any @asset chips present in the pasted text
     const pastedAssets = availableAssets.filter(
       (a) => a.volc_asset_id && promptHasChip(newText, `@${a.volc_asset_id}`)
@@ -1293,6 +1450,11 @@ export default function SingleTaskPage() {
       } else if ((node as Element).classList?.contains('mention-chip')) {
         out += `<ref>${(node as Element).getAttribute('data-tag') ?? node.textContent ?? ''}</ref>`;
       } else {
+        // 块级元素前补换行
+        const tag = (node as Element).tagName;
+        if (tag === 'DIV' || tag === 'P' || tag === 'LI') {
+          if (out.length > 0 && !out.endsWith('\n')) out += '\n';
+        }
         node.childNodes.forEach(walk);
       }
     };
@@ -1688,18 +1850,12 @@ export default function SingleTaskPage() {
       || freshSelections
       .find((a) => a.fileType !== 'audio' && promptHasChip(prompt, a.chipTag) && chipHasVoiceContext(prompt, a.chipTag))?.assetUri;
 
-    // 有资产库 @ 引用时，上传区素材不再混入（避免 @素材1 时带出其他上传图片）
+    // 收集所有被 @ 的素材：上传区素材 + 资产库素材
     const hasAssetChip = freshSelections.some((a) => promptHasChip(prompt, a.chipTag));
-    const imageUrls = hasAssetChip
-      ? activeAssetImgUris
-      : [...uploadedImageUrls, ...activeAssetImgUris];
-    // 多视频素材全部合入（ARK 支持多路 video 作参考），取第一个非空
-    const videoUrl = hasAssetChip
-      ? (activeAssetVidUris[0] || resolvedVideoUrl)
-      : (resolvedVideoUrl || activeAssetVidUris[0]);
-    const audioUrl = hasAssetChip
-      ? (activeAssetAudUri || resolvedAudioUrl)
-      : (resolvedAudioUrl || activeAssetAudUri);
+    const imageUrls = [...uploadedImageUrls, ...activeAssetImgUris];
+    // 多视频素材全部合入（ARK 支持多路 video 作参考）
+    const videoUrl = resolvedVideoUrl || activeAssetVidUris[0];
+    const audioUrl = resolvedAudioUrl || activeAssetAudUri;
 
     setGeneration({ status: 'generating', progress: '正在提交视频生成请求...' });
 
@@ -1732,6 +1888,7 @@ export default function SingleTaskPage() {
           void loadProjectTasks(state.currentProject.id);
         }
         void loadHistory(1, false);
+        handleReset();
         return;
       }
 
@@ -1741,6 +1898,7 @@ export default function SingleTaskPage() {
         if (state.currentProject) {
           void loadProjectTasks(state.currentProject.id);
         }
+        handleReset();
       } else {
         generatingRef.current = false;
         setGeneration({ status: 'error', error: '未获取到视频结果，请重试' });
@@ -1790,6 +1948,7 @@ export default function SingleTaskPage() {
     setResolution((settings.resolution as '480p' | '720p' | '1080p') || '720p');
     setReferenceMode((settings.reference_mode as 'reference' | 'first_last_frame') || 'reference');
     setGeneration({ status: 'idle' });
+    clearDrafts();
   };
 
   const activeImages = referenceMode === 'first_last_frame' ? [...firstFrameImages, ...lastFrameImages] : images;
@@ -2248,10 +2407,10 @@ export default function SingleTaskPage() {
       }
 
       right={
-        <>
+        <div className="flex flex-col h-full pt-4 gap-4">
         {/* Current generation banner */}
         {(isGenerating || generation.status === 'error') && (
-          <div className={`mx-4 mt-4 p-4 rounded-2xl border ${generation.status === 'error' ? 'border-red-500/30 bg-red-500/5' : 'border-purple-500/30 bg-purple-500/5'}`}>
+          <div className={`mx-4 p-4 rounded-2xl border ${generation.status === 'error' ? 'border-red-500/30 bg-red-500/5' : 'border-purple-500/30 bg-purple-500/5'}`}>
             {isGenerating ? (
               <div className="flex items-center gap-3">
                 <span className="animate-spin h-4 w-4 border-2 border-purple-400 border-t-transparent rounded-full flex-shrink-0" />
@@ -2297,7 +2456,7 @@ export default function SingleTaskPage() {
                         src={playUrl}
                         muted
                         className="w-full h-full object-cover"
-                        preload="none"
+                        preload="metadata"
                         onMouseEnter={(e) => (e.currentTarget as HTMLVideoElement).play()}
                         onMouseLeave={(e) => { (e.currentTarget as HTMLVideoElement).pause(); (e.currentTarget as HTMLVideoElement).currentTime = 0; }}
                       />
@@ -2321,7 +2480,7 @@ export default function SingleTaskPage() {
                 {/* Info */}
                 <div className="flex-1 min-w-0 flex flex-col gap-1.5">
                   {/* Prompt */}
-                  <p className="text-xs text-gray-300 line-clamp-2 leading-relaxed">{item.prompt || '（无提示词）'}</p>
+                  <p className="text-xs text-gray-300 line-clamp-2 leading-relaxed whitespace-pre-line">{item.prompt || '（无提示词）'}</p>
 
                   {/* 报错信息直接显示在卡片内（仅非批量时） */}
                   {!isGroup && item.status === 'error' && item.error_message && (
@@ -2367,7 +2526,7 @@ export default function SingleTaskPage() {
                               >
                                 {isSubDone ? (
                                   <>
-                                    <video src={subPlayUrl} muted className="w-full h-full object-cover" preload="none" />
+                                    <video src={subPlayUrl} muted className="w-full h-full object-cover" preload="metadata" />
                                     <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                                       <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
                                     </div>
@@ -2614,7 +2773,7 @@ export default function SingleTaskPage() {
             <div className="text-center text-xs text-gray-600 py-2">已显示全部记录</div>
           )}
         </div>
-        </>
+        </div>
       }
 
     />

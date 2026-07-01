@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
 import { uploadToOss } from '../services/ossService';
 import { submitAudioGeneration, listAudioGenerations, getAudioGeneration, getAudioGenPublicConfig, estimateAudioGenCredits, type AudioGenPublicConfig, type AudioGenEstimate } from '../services/audioService';
@@ -57,6 +57,64 @@ export default function AudioGenPage() {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // ── 表单草稿持久化（localStorage，按项目隔离）──
+  const draftKey = useCallback((k: string) => `seedance_audio_${k}_${projectId || 0}`, [projectId]);
+
+  // 项目切换时保存旧项目数据 + 清空表单
+  const prevProjectIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    const pid = projectId;
+    const prev = prevProjectIdRef.current;
+    prevProjectIdRef.current = pid;
+    if (!pid) return;
+    if (prev && prev !== pid) {
+      const oldKey = (k: string) => `seedance_audio_${k}_${prev}`;
+      localStorage.setItem(oldKey('voicePrompt'), voicePrompt);
+      localStorage.setItem(oldKey('refImageUrl'), JSON.stringify(refImageUrl));
+      localStorage.setItem(oldKey('refAssetUri'), JSON.stringify(refAssetUri));
+      localStorage.setItem(oldKey('refImagePreview'), JSON.stringify(refImagePreview));
+      setVoicePrompt('');
+      setRefImageUrl(null);
+      setRefAssetUri(null);
+      setRefImagePreview(null);
+      setSubmitError(null);
+    }
+  }, [projectId]);
+
+  // 挂载或切换项目时恢复草稿
+  useEffect(() => {
+    if (!projectId) return;
+    try {
+      const savedPrompt = localStorage.getItem(draftKey('voicePrompt')) || '';
+      const savedRefUrl = localStorage.getItem(draftKey('refImageUrl'));
+      const savedRefUri = localStorage.getItem(draftKey('refAssetUri'));
+      const savedRefPreview = localStorage.getItem(draftKey('refImagePreview'));
+      if (savedRefUrl && savedRefUrl !== 'null') setRefImageUrl(JSON.parse(savedRefUrl));
+      if (savedRefUri && savedRefUri !== 'null') setRefAssetUri(JSON.parse(savedRefUri));
+      if (savedRefPreview && savedRefPreview !== 'null') setRefImagePreview(JSON.parse(savedRefPreview));
+      if (savedPrompt) setVoicePrompt(savedPrompt);
+    } catch {}
+  }, [projectId, draftKey]);
+
+  // 保存草稿
+  useEffect(() => {
+    if (!projectId) return;
+    const timer = setTimeout(() => { localStorage.setItem(draftKey('voicePrompt'), voicePrompt); }, 300);
+    return () => clearTimeout(timer);
+  }, [voicePrompt, projectId, draftKey]);
+  useEffect(() => {
+    if (!projectId) return;
+    localStorage.setItem(draftKey('refImageUrl'), JSON.stringify(refImageUrl));
+  }, [refImageUrl, projectId, draftKey]);
+  useEffect(() => {
+    if (!projectId) return;
+    localStorage.setItem(draftKey('refAssetUri'), JSON.stringify(refAssetUri));
+  }, [refAssetUri, projectId, draftKey]);
+  useEffect(() => {
+    if (!projectId) return;
+    localStorage.setItem(draftKey('refImagePreview'), JSON.stringify(refImagePreview));
+  }, [refImagePreview, projectId, draftKey]);
+
   // ── 历史列表 ─────────────────────────────────────────────
   const [items, setItems] = useState<AudioGeneration[]>([]);
   const [loading, setLoading] = useState(false);
@@ -94,6 +152,14 @@ export default function AudioGenPage() {
 
   // 素材组列表（asset_groups 表）
   const [projectAssetGroups, setProjectAssetGroups] = useState<import('../types').AssetGroupInfo[]>([]);
+  const resolveAssetUrl = useCallback((url: string | null | undefined): string | undefined => {
+    if (!url) return undefined;
+    if (!url.startsWith('asset://')) return url;
+    const volcId = url.slice('asset://'.length);
+    const pa = projectAssets.find(a => a.volc_asset_id === volcId);
+    return pa?.file_url || pa?.thumbnail_url || url;
+  }, [projectAssets]);
+
   function pickAsset(a: ProjectAsset) {
     if (!a.file_url) return;
     setRefImageUrl(a.file_url);
@@ -418,7 +484,7 @@ export default function AudioGenPage() {
             ) : (
               <div className="space-y-3">
                 <div className="relative w-full aspect-video rounded-xl overflow-hidden bg-black">
-                  <img src={refImagePreview || refImageUrl} alt="参考图" loading="lazy" decoding="async" className="w-full h-full object-contain" />
+                  <img src={refImagePreview || resolveAssetUrl(refImageUrl)} alt="参考图" loading="lazy" decoding="async" className="w-full h-full object-contain" />
                   {uploading && (
                     <div className="absolute inset-0 bg-black/60 flex items-center justify-center text-sm text-white">
                       <SpinnerIcon className="w-5 h-5 mr-2 animate-spin" /> 上传中 {uploadPct}%
@@ -546,7 +612,7 @@ export default function AudioGenPage() {
                           失败
                         </div>
                       ) : it.reference_image_url ? (
-                        <img src={it.reference_image_url} alt="" loading="lazy" decoding="async" className="w-full h-full object-contain" />
+                        <img src={resolveAssetUrl(it.reference_image_url)} alt="" loading="lazy" decoding="async" className="w-full h-full object-contain" />
                       ) : (
                         <div className="w-full h-full flex flex-col items-center justify-center text-gray-600">
                           <MicIcon className="w-8 h-8" />

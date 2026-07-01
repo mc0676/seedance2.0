@@ -1,6 +1,8 @@
 import { getDatabase } from '../database/index.js';
 import { getActiveDiscount } from './discountService.js';
 
+const DO_SHOW_STATUS_OF_ESTIMATION_OF_VOLC = ['1', 'true'].includes((process.env.SHOW_STATUS_OF_ESTIMATION_OF_VOLC || '').toLowerCase());
+
 /**
  * 分辨率档位 → 默认像素（按 16:9 标准），其他比例由 ratio 缩放推断。
  * 参考火山官网 Seedance 2.0 / Fast 标准输出。
@@ -134,7 +136,9 @@ export function estimate(modelKey, params = {}) {
     }
   }
 
-  console.log(`[计费][estimate] model=${modelKey} resolution=${params.resolution || '720p'} ratio=${params.ratio || '16:9'} outDur=${params.outputDurationSec || 5}s inDur=${params.inputDurationSec || 0}s hasVideo=${!!params.hasVideoInput} hasAudio=${!!params.hasAudio} draft=${!!params.isDraft} fps=${fps} → tokens=${tokens} unitPrice=${unitPrice}元/M draftFactor=${draftFactor} yuan=${yuan} credits=${credits} locked=${lockedCredits}${hasDiscount ? ` discounted=${discountedCredits}` : ''}`);
+  if (DO_SHOW_STATUS_OF_ESTIMATION_OF_VOLC) {
+    console.log(`[计费][estimate] model=${modelKey} resolution=${params.resolution || '720p'} ratio=${params.ratio || '16:9'} outDur=${params.outputDurationSec || 5}s inDur=${params.inputDurationSec || 0}s hasVideo=${!!params.hasVideoInput} hasAudio=${!!params.hasAudio} draft=${!!params.isDraft} fps=${fps} → tokens=${tokens} unitPrice=${unitPrice}元/M draftFactor=${draftFactor} yuan=${yuan} credits=${credits} locked=${lockedCredits}${hasDiscount ? ` discounted=${discountedCredits}` : ''}`);
+  }
   return { tokens, unitPrice, draftFactor, yuan, credits, lockedCredits, model: modelKey, ...(hasDiscount ? { discountedCredits, discountedLockedCredits } : {}) };
 }
 

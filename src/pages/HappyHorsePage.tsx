@@ -110,6 +110,129 @@ export default function HappyHorsePage() {
   const [editVideoDuration, setEditVideoDuration] = useState<number | null>(null);
   // 参数变化时重置折扣过期提示
   useEffect(() => { setDiscountExpired(false); }, [mode, resolution, duration, editVideoDuration]);
+
+  // ── 表单草稿持久化（localStorage，按项目隔离）──
+  const draftKey = (k: string) => `seedance_hh_${k}_${projectId || 0}_${mode}`;
+  // 复用历史任务时跳过模式/项目切换清空
+  const skipModeResetRef = useRef(false);
+  // 恢复上次模式的标志（项目/模式切换共用，声明在前避免 TDZ）
+  const modeRestoredRef = useRef(false);
+
+  // 0) 项目切换时保存旧项目数据 + 清空表单 + 允许恢复新模式
+  // 注意：复用下方的 prevProjectIdRef（任务加载也用），但不在本 effect 中更新它，
+  // 否则会破坏任务加载的 project-change 检测逻辑。
+  useEffect(() => {
+    const prev = prevProjectIdRef.current;
+    if (!projectId) return;
+    if (prev && prev !== projectId) {
+      // 立即保存当前表单到旧项目的 key（防止 debounce cleanup 丢失 + 防止污染新项目）
+      const oldKey = (k: string) => `seedance_hh_${k}_${prev}_${mode}`;
+      localStorage.setItem(oldKey('prompt'), prompt);
+      localStorage.setItem(oldKey('params'), JSON.stringify({ resolution, ratio, duration, audioSetting, seed, editVideoDuration }));
+      localStorage.setItem(oldKey('media'), JSON.stringify(media));
+      localStorage.setItem(`seedance_hh_mode_${prev}`, mode);
+      // 清空表单，避免旧项目数据残留在 UI 上
+      setMedia([]);
+      setSubmitError(null);
+      setEditVideoDuration(null);
+      setPrompt('');
+      setResolution('720P');
+      setRatio('16:9');
+      setDuration(5);
+      setAudioSetting('auto');
+      setSeed('');
+      // 重置恢复标志，允许新项目恢复自己的模式
+      modeRestoredRef.current = false;
+    }
+  }, [projectId]);
+
+  // 0.5) 模式切换时立即保存旧模式的草稿（避免 debounce 被 cleanup 取消而丢失）
+  const prevModeRef = useRef<HappyhorseMode>(mode);
+  useEffect(() => {
+    const prev = prevModeRef.current;
+    prevModeRef.current = mode;
+    if (!projectId || prev === mode) return;
+    // 立即保存旧模式的当前表单值
+    const oldKey = (k: string) => `seedance_hh_${k}_${projectId}_${prev}`;
+    localStorage.setItem(oldKey('prompt'), prompt);
+    localStorage.setItem(oldKey('params'), JSON.stringify({ resolution, ratio, duration, audioSetting, seed, editVideoDuration }));
+    localStorage.setItem(oldKey('media'), JSON.stringify(media));
+  }, [mode]);
+
+  // 0.5) 切换 mode 时清空表单（复用流程中跳过；必须在 draft restore 之前执行）
+  useEffect(() => {
+    if (skipModeResetRef.current) { skipModeResetRef.current = false; return; }
+    setMedia([]);
+    setSubmitError(null);
+    setEditVideoDuration(null);
+    setPrompt('');
+  }, [mode]);
+
+  // 1) 项目加载后恢复上次选择的模式
+  useEffect(() => {
+    if (!projectId || modeRestoredRef.current) return;
+    modeRestoredRef.current = true;
+    try {
+      const savedMode = localStorage.getItem(`seedance_hh_mode_${projectId}`);
+      if (savedMode && ['t2v','i2v','r2v','video-edit'].includes(savedMode)) {
+        setMode(savedMode as HappyhorseMode);
+      }
+    } catch {}
+  }, [projectId]);
+
+  // 2) 模式确定后恢复该模式下的表单草稿
+  // 注意：不用 ref guard 跳过重复调用，因为 React StrictMode 会丢弃第一次 effect 的 state update，
+  // 必须让第二次 effect 调用也执行 setPrompt/setMedia/setParams 才能正确恢复。
+  useEffect(() => {
+    if (!projectId) return;
+    try {
+      const savedPrompt = localStorage.getItem(draftKey('prompt')) || '';
+      const savedParams = localStorage.getItem(draftKey('params'));
+      const savedMedia = localStorage.getItem(draftKey('media'));
+      if (savedParams) {
+        const p = JSON.parse(savedParams);
+        if (p.resolution) setResolution(p.resolution);
+        if (p.ratio) setRatio(p.ratio);
+        if (p.duration) setDuration(p.duration);
+        if (p.audioSetting) setAudioSetting(p.audioSetting);
+        if (typeof p.seed === 'string') setSeed(p.seed);
+        if (p.editVideoDuration != null) setEditVideoDuration(p.editVideoDuration);
+      }
+      if (savedMedia) setMedia(JSON.parse(savedMedia));
+      if (savedPrompt) setPrompt(savedPrompt);
+    } catch {}
+  }, [projectId, mode]);
+
+  // 保存草稿
+  useEffect(() => {
+    if (!projectId) return;
+    const timer = setTimeout(() => { localStorage.setItem(draftKey('prompt'), prompt); }, 300);
+    return () => clearTimeout(timer);
+  }, [prompt, projectId, mode]);
+  useEffect(() => {
+    if (!projectId) return;
+    localStorage.setItem(draftKey('params'), JSON.stringify({ resolution, ratio, duration, audioSetting, seed, editVideoDuration }));
+  }, [resolution, ratio, duration, audioSetting, seed, editVideoDuration, projectId, mode]);
+  useEffect(() => {
+    if (!projectId) return;
+    localStorage.setItem(draftKey('media'), JSON.stringify(media));
+  }, [media, projectId, mode]);
+
+  // 清除当前模式草稿
+  const clearDrafts = useCallback(() => {
+    if (!projectId) return;
+    try {
+      localStorage.removeItem(draftKey('prompt'));
+      localStorage.removeItem(draftKey('params'));
+      localStorage.removeItem(draftKey('media'));
+    } catch {}
+  }, [projectId, mode]);
+
+  // 记住最后一次选择的模式
+  useEffect(() => {
+    if (!projectId) return;
+    localStorage.setItem(`seedance_hh_mode_${projectId}`, mode);
+  }, [mode, projectId]);
   // 批量生成
   const maxConcurrent = Math.max(1, parseInt(state.settings.max_concurrent || '5', 10) || 5);
   const [batchSize, setBatchSize] = useState(1);
@@ -241,18 +364,6 @@ export default function HappyHorsePage() {
   }, [tasks, projectId, loadTasks]);
 
   // 切换 mode 时清空 media（避免类型混淆）
-  // 复用历史任务时，setMode 会触发下面的 useEffect 把表单清空，
-  // 与同事件里的 setMedia/setPrompt(...) 撞车——用 ref flag 跳过这一次重置。
-  const skipModeResetRef = useRef(false);
-
-  // 切换 mode 时清空表单（复用流程中跳过）
-  useEffect(() => {
-    if (skipModeResetRef.current) { skipModeResetRef.current = false; return; }
-    setMedia([]);
-    setSubmitError(null);
-    setEditVideoDuration(null);
-    setPrompt('');
-  }, [mode]);
 
   const showRatio = mode === 't2v' || mode === 'r2v';
   const showDuration = mode !== 'video-edit';
@@ -344,21 +455,39 @@ export default function HappyHorsePage() {
 
   function extractEditorText(el: Node): string {
     let t = '';
-    for (const n of Array.from(el.childNodes)) {
+    const nodes = Array.from(el.childNodes);
+    let prevWasEmptyBlock = false;
+    for (const n of nodes) {
       if (n.nodeType === Node.TEXT_NODE) {
         t += (n.textContent ?? '').replace(/​/g, '');
+        prevWasEmptyBlock = false;
       } else if ((n as Element).tagName === 'BR') {
         const prev = n.previousSibling as Element | null;
         if (prev?.classList?.contains('mention-chip')) continue;
+        // <br> inside 空的块级元素（Enter 产生的 <div><br></div>）由外层 div 处理换行
+        const parent = n.parentElement;
+        if (parent && (parent.tagName === 'DIV' || parent.tagName === 'P' || parent.tagName === 'LI')) {
+          if (parent.childNodes.length === 1) continue;
+        }
         t += '\n';
+        prevWasEmptyBlock = false;
       } else if ((n as Element).classList?.contains('mention-chip')) {
-        // 逻辑文本永远使用 data-tag（@N），与显示文本无关
         t += (n as Element).getAttribute('data-tag') ?? '';
+        prevWasEmptyBlock = false;
       } else {
+        const tag = (n as Element).tagName;
+        if (tag === 'DIV' || tag === 'P' || tag === 'LI') {
+          if (t.length > 0 && !t.endsWith('\n')) t += '\n';
+          else if (prevWasEmptyBlock) t += '\n';
+          const childNodes = (n as Element).childNodes;
+          const isEmpty = childNodes.length === 1 && (childNodes[0] as Element).tagName === 'BR';
+          prevWasEmptyBlock = isEmpty;
+        }
         t += extractEditorText(n);
       }
     }
-    return t;
+    // 统一换行符为 \n
+    return t.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   }
 
   /** chip 在「逻辑文本」中占用的字符数 = data-tag 的字符数 */
@@ -467,7 +596,14 @@ export default function HappyHorsePage() {
   }
 
   function cleanChipBrs(el: HTMLElement) {
-    el.querySelectorAll('.mention-chip + br').forEach((br) => br.remove());
+    // 仅移除紧跟在 chip 后面的 <br>（无实质性文本内容间隔），
+    // 不能用 .mention-chip + br（CSS + 只看元素兄弟，会误删中间有文本的 <br>）
+    el.querySelectorAll('br').forEach(br => {
+      const prev = br.previousSibling;
+      if (prev && prev.nodeType === Node.ELEMENT_NODE && (prev as Element).classList.contains('mention-chip')) {
+        br.remove();
+      }
+    });
   }
 
   // r2v 模式下，当 mentionItems（即各 @N 的显示名）变化时，同步刷新已挂载 chip 的 textContent
@@ -682,8 +818,9 @@ export default function HappyHorsePage() {
     if (!el) return;
     const raw = e.clipboardData.getData('text/plain');
     if (!raw) return;
-    // <ref>@N</ref> 是本编辑器自己复制出来的封装，剥壳后还原为纯 @N 文本，由 buildEditorHtml 重新 chip 化
-    const converted = raw.replace(/<ref>(@[^<\n]+)<\/ref>/g, '$1');
+    // 统一换行符 + 封装修复
+    const normalized = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const converted = normalized.replace(/<ref>(@[^<\n]+)<\/ref>/g, '$1');
     const { start, end } = getSelectionRange(el);
     const currentText = extractEditorText(el);
     const newText = currentText.slice(0, start) + converted + currentText.slice(end);
@@ -966,6 +1103,7 @@ export default function HappyHorsePage() {
         batchSize: batchSize > 1 ? batchSize : undefined,
       });
       setPrompt(''); setMedia([]); setSeed(''); setEditVideoDuration(null);
+      clearDrafts();
     } catch (e: any) {
       clearCool();
       setSubmitError(translateDashScopeError(e.message) || '提交失败');
@@ -976,6 +1114,7 @@ export default function HappyHorsePage() {
 
   function handleReset() {
     setPrompt(''); setMedia([]); setSeed(''); setSubmitError(null);
+    clearDrafts();
   }
 
   // ── 任务操作 ─────────────────────────────────────────────
@@ -1516,7 +1655,7 @@ export default function HappyHorsePage() {
                         <span className="text-gray-500">#{t.id}</span>
                         <span className="text-purple-400">{MODE_TABS.find((m) => m.mode === t.mode)?.label}</span>
                       </div>
-                      <p className="text-xs text-gray-300 line-clamp-2 leading-relaxed">{t.prompt || '（无提示词）'}</p>
+                      <p className="text-xs text-gray-300 line-clamp-2 leading-relaxed whitespace-pre-line">{t.prompt || '（无提示词）'}</p>
                       {!isGroup && t.status === 'error' && t.error_message && (
                         <p className="text-xs text-red-400 line-clamp-3 leading-relaxed bg-red-950/30 rounded-lg px-2 py-1">{translateDashScopeError(t.error_message)}</p>
                       )}
