@@ -7107,6 +7107,12 @@ async function volcArkAssetRequest(action, body, db, keyGroupId = null) {
   const urlPath = '/';
   const query = { Action: action, Version: '2024-01-01' };
   const bodyStr = body ? JSON.stringify(body) : '{}';
+  const DO_SHOW_STATUS = ['1', 'true'].includes((process.env.SHOW_STATUS_OF_SYNCHRONIZATION_OF_ASSET_OF_VOLC || '').toLowerCase());
+  if (DO_SHOW_STATUS) {
+    const ts = new Date().toISOString();
+    console.log(`[index.js] ${ts} [volc-ark] 正在调用 ${action} 方法，请求体为：`);
+    console.log(JSON.stringify(body, null, 2));
+  }
   const signHeaders = volcSign('POST', host, urlPath, query, bodyStr, ak, sk);
   const sortedQuery = Object.keys(query).sort().map(k =>
     `${encodeURIComponent(k)}=${encodeURIComponent(query[k])}`
@@ -8042,9 +8048,19 @@ async function refreshAssetThumbnailsToOss(projectId) {
 
     if (assets.length === 0) return;
 
-    console.log(`[assets] 后台刷新 ${assets.length} 个非 OSS 缩略图...`);
+    const DO_SHOW_STATUS = ['1', 'true'].includes((process.env.SHOW_STATUS_OF_SYNCHRONIZATION_OF_ASSET_OF_VOLC || '').toLowerCase());
+    if (DO_SHOW_STATUS) {
+      const ts = new Date().toISOString();
+      console.log(`[index.js] ${ts} [assets] 后台刷新 ${assets.length} 个非 OSS 缩略图...`);
+      console.log(JSON.stringify(assets.map(a => ({ id: a.id, volc_asset_id: a.volc_asset_id, name: a.name, oldThumbnail: a.thumbnail_url })), null, 2));
+    }
     for (const asset of assets) {
       try {
+        if (DO_SHOW_STATUS) {
+          const ts2 = new Date().toISOString();
+          console.log(`\n------------------------------------------------`);
+          console.log(`[index.js] ${ts2} [assets] 正在处理 id: ${asset.id} - name: ${asset.name} - volc_asset_id: ${asset.volc_asset_id}`);
+        }
         const volcId = asset.volc_id || undefined;
         const volcAsset = await assetService.getAsset(asset.volc_asset_id, undefined, volcId);
         const freshUrl = volcAsset?.URL || volcAsset?.Url || volcAsset?.url;
@@ -8068,7 +8084,9 @@ async function refreshAssetThumbnailsToOss(projectId) {
           WHERE id = ?
         `).run(ossUrl, freshUrl, asset.id);
 
-        console.log(`[assets] 缩略图→OSS: ${asset.volc_asset_id}`);
+        if (DO_SHOW_STATUS) {
+          console.log(`[assets] 缩略图→OSS: ${asset.volc_asset_id}`);
+        }
       } catch (e) {
         // 火山侧已删除的素材直接跳过
         if (e.message && e.message.includes('not found')) {
