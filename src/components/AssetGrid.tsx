@@ -58,7 +58,29 @@ export default function AssetGrid({
                 'border-gray-700 hover:border-gray-500 hover:scale-105'
               }`}
             >
-              {asset.thumbnail_url || asset.file_url ? (
+              {asset.file_type === 'audio' ? (
+                <div className="w-full h-full flex items-center justify-center text-4xl bg-[#0d0f1a] text-gray-500">🎵</div>
+              ) : asset.file_type === 'video' ? (
+                asset.thumbnail_url || asset.file_url ? (
+                  <img src={asset.thumbnail_url || asset.file_url!} alt={asset.name} loading="lazy" decoding="async"
+                    className="w-full h-full object-contain bg-[#0d0f1a]"
+                    onError={(e) => {
+                      // 缩略图加载失败时替换为视频图标
+                      const img = e.currentTarget;
+                      const parent = img.parentElement;
+                      if (parent) {
+                        img.style.display = 'none';
+                        const fallback = document.createElement('div');
+                        fallback.className = 'w-full h-full flex items-center justify-center text-4xl bg-[#0d0f1a] text-gray-500';
+                        fallback.textContent = '🎬';
+                        parent.appendChild(fallback);
+                      }
+                    }}
+                  />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-4xl bg-[#0d0f1a] text-gray-500">🎬</div>
+                )
+              ) : asset.thumbnail_url || asset.file_url ? (
                 <img
                   src={asset.thumbnail_url || asset.file_url!}
                   alt={asset.name}
