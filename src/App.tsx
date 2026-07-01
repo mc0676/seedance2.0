@@ -87,7 +87,7 @@ function MainLayout({
   children: React.ReactNode;
 }) {
   const needsProfile = !!currentUser
-    && (!currentUser.name?.trim() || !currentUser.department?.trim());
+    && !currentUser.name?.trim();
 
   return (
     <div className="min-h-screen bg-[#0f111a]">

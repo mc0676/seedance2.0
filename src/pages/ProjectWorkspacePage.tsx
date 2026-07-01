@@ -28,9 +28,9 @@ interface VolcAsset {
 }
 
 function StatusBadge({ status }: { status?: string }) {
-  if (status === 'Active' || status === 'approved') return <span className="px-2 py-0.5 rounded-full text-xs font-medium text-green-400 bg-green-400/10">已过审</span>;
-  if (status === 'Failed' || status === 'rejected') return <span className="px-2 py-0.5 rounded-full text-xs font-medium text-red-400 bg-red-400/10">未过审</span>;
-  return <span className="px-2 py-0.5 rounded-full text-xs font-medium text-amber-400 bg-amber-400/10">审核中</span>;
+  if (status === 'Active' || status === 'approved') return <span className="px-2 py-0.5 rounded-full text-xs font-medium text-green-300 bg-green-600/30 border border-green-500/50">已过审</span>;
+  if (status === 'Failed' || status === 'rejected') return <span className="px-2 py-0.5 rounded-full text-xs font-medium text-red-300 bg-red-600/30 border border-red-500/50">未过审</span>;
+  return <span className="px-2 py-0.5 rounded-full text-xs font-medium text-amber-300 bg-amber-600/30 border border-amber-500/50">审核中</span>;
 }
 
 function MemberRoleTag({ role }: { role: string }) {
@@ -804,11 +804,14 @@ export default function ProjectWorkspacePage() {
                   {volcAssets.map((a) => {
                     const imgUrl = assetUrlMap[a.Id];
                     const isVideo = a.AssetType === 'Video';
+                    const isAudio = a.AssetType === 'Audio';
                     return (
                       <div key={a.Id} className="bg-[#1c1f2e] border border-gray-800 hover:border-purple-500/40 rounded-2xl overflow-hidden transition-all group flex flex-col">
                         {/* 图片区 */}
                         <div className="aspect-square bg-[#0f111a] overflow-hidden relative flex-shrink-0">
-                          {imgUrl && !isVideo ? (
+                          {isAudio ? (
+                            <div className="w-full h-full flex items-center justify-center text-gray-600 text-5xl">🎵</div>
+                          ) : imgUrl && !isVideo ? (
                             <img src={imgUrl} alt={a.Name || a.Id} loading="lazy" decoding="async" className="w-full h-full object-contain" />
                           ) : imgUrl && isVideo ? (
                             <video src={imgUrl} className="w-full h-full object-contain" muted />
@@ -828,7 +831,7 @@ export default function ProjectWorkspacePage() {
                             {a.Name || <span className="text-gray-500">—</span>}
                           </p>
                           {a.AssetType
-                            ? <span className="text-xs text-gray-400 bg-gray-700/50 px-1.5 py-0.5 rounded w-fit">{a.AssetType}</span>
+                            ? <span className="text-xs text-gray-400 bg-gray-700/50 px-1.5 py-0.5 rounded w-fit">{a.AssetType === 'Video' ? '视频' : a.AssetType === 'Audio' ? '音频' : '图片'}</span>
                             : <p className="text-gray-700 text-xs">—</p>}
                           <div className="flex items-center gap-1.5 min-w-0">
                             <span className="text-gray-600 text-xs font-mono truncate" title={a.Id}>{a.Id}</span>

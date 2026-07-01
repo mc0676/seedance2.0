@@ -7,6 +7,8 @@ interface CanvasNodeInfoModalProps {
   node: Node | null;
   open: boolean;
   onClose: () => void;
+  /** 'dark' | 'light'，用于适配面板颜色 */
+  theme?: 'dark' | 'light';
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {
@@ -18,7 +20,7 @@ function InfoRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function CanvasNodeInfoModal({ node, open, onClose }: CanvasNodeInfoModalProps) {
+export function CanvasNodeInfoModal({ node, open, onClose, theme }: CanvasNodeInfoModalProps) {
   const [view, setView] = useState<'info' | 'json'>('info');
   const [visible, setVisible] = useState(false);
   const [animating, setAnimating] = useState(false);
@@ -62,12 +64,13 @@ export function CanvasNodeInfoModal({ node, open, onClose }: CanvasNodeInfoModal
 
   if (!visible) return null;
 
+  const isLight = theme === 'light';
   const t = {
-    bg: '#1f1f1f',
-    border: '#333',
-    text: 'rgba(255,255,255,0.85)',
-    textSecondary: 'rgba(255,255,255,0.45)',
-    fill: 'rgba(255,255,255,0.06)',
+    bg: isLight ? '#ffffff' : '#1f1f1f',
+    border: isLight ? '#e5e5e5' : '#333',
+    text: isLight ? 'rgba(0,0,0,0.85)' : 'rgba(255,255,255,0.85)',
+    textSecondary: isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)',
+    fill: isLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.06)',
   };
 
   return (

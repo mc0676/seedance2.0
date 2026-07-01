@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { updateMyProfile } from '../services/authService';
-import DepartmentCombobox from './DepartmentCombobox';
 import type { User } from '../types';
 
 interface ProfileCompletionGateProps {
@@ -19,15 +18,12 @@ interface ProfileCompletionGateProps {
  */
 export default function ProfileCompletionGate({ user, onSaved }: ProfileCompletionGateProps) {
   const [name, setName] = useState((user.name || '').trim());
-  const [department, setDepartment] = useState((user.department || '').trim());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
   const trimmedName = name.trim();
-  const trimmedDept = department.trim();
   const nameValid = trimmedName.length >= 2 && trimmedName.length <= 20;
-  const deptValid = !!trimmedDept && trimmedDept.length <= 60;
-  const canSubmit = nameValid && deptValid && !loading;
+  const canSubmit = nameValid && !loading;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -35,7 +31,7 @@ export default function ProfileCompletionGate({ user, onSaved }: ProfileCompleti
     setLoading(true);
     setError('');
     try {
-      const fresh = await updateMyProfile({ name: trimmedName, department: trimmedDept });
+      const fresh = await updateMyProfile({ name: trimmedName, department: '默认小组' });
       onSaved(fresh);
     } catch (err) {
       setError(err instanceof Error ? err.message : '提交失败');
@@ -56,7 +52,7 @@ export default function ProfileCompletionGate({ user, onSaved }: ProfileCompleti
           </div>
           <h2 className="text-xl font-semibold text-white mb-2">完善个人信息</h2>
           <p className="text-gray-400 text-sm">
-            首次使用本平台需补充姓名与小组，便于团队协作。<br />
+            首次使用本平台需补充姓名。<br />
             邮箱：<span className="text-gray-300">{user.email}</span>
           </p>
         </div>
@@ -74,16 +70,14 @@ export default function ProfileCompletionGate({ user, onSaved }: ProfileCompleti
             />
           </div>
           <div>
-            <label className="block text-sm text-gray-300 mb-1">小组 <span className="text-red-400">*</span></label>
-            <DepartmentCombobox
-              value={department}
-              onChange={setDepartment}
-              placeholder="搜索已有小组，或输入新小组按 Enter 创建"
+            <label className="block text-sm text-gray-300 mb-1">小组</label>
+            <input
+              value="默认小组"
+              disabled
+              readOnly
+              className="w-full px-3 py-2 bg-gray-700/50 border border-gray-600 rounded-lg text-gray-400 cursor-not-allowed text-sm"
             />
-            <p className="text-[10px] text-gray-500 mt-1">
-              提交后该小组将加入字典库供其他同事选用。<br />
-              <span className="text-amber-400/80">注意：小组一经提交，后续修改需联系管理员。</span>
-            </p>
+            <p className="text-[10px] text-gray-500 mt-1">所有用户默认加入"默认小组"</p>
           </div>
 
           {error && <p className="text-sm text-red-400">{error}</p>}

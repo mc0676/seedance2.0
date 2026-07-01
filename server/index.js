@@ -7257,7 +7257,7 @@ app.post('/api/admin/volc-native/assets', authenticate, requireAdmin, async (req
       db.prepare(`
         INSERT OR REPLACE INTO project_assets (project_id, asset_group_id, volc_asset_id, volc_id, name, file_type, file_url, status, updated_at)
         VALUES (?, (SELECT id FROM asset_groups WHERE volc_group_id = ?), ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP)
-      `).run(ag?.project_id || null, groupId, result.Id, kId, name, assetType === 'Video' ? 'video' : 'image', url);
+      `).run(ag?.project_id || null, groupId, result.Id, kId, name, assetType === 'Video' ? 'video' : assetType === 'Audio' ? 'audio' : 'image', url);
     }
     res.json({ success: true, data: result });
   } catch (e) {
@@ -7791,7 +7791,7 @@ app.post('/api/volc-native/assets', authenticate, async (req, res) => {
       db.prepare(`
         INSERT OR REPLACE INTO project_assets (project_id, asset_group_id, volc_asset_id, volc_id, name, file_type, file_url, status, updated_at)
         VALUES (?, (SELECT id FROM asset_groups WHERE volc_group_id = ?), ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP)
-      `).run(ag?.project_id || null, groupId, result.Id, kId, name, assetType === 'Video' ? 'video' : 'image', url);
+      `).run(ag?.project_id || null, groupId, result.Id, kId, name, assetType === 'Video' ? 'video' : assetType === 'Audio' ? 'audio' : 'image', url);
     }
     res.json({ success: true, data: result });
   } catch (e) {

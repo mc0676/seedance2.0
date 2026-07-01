@@ -181,11 +181,11 @@ export async function registerUser(email, password, emailCode) {
     throw new Error('该邮箱已被注册');
   }
 
-  // 创建用户
+  // 创建用户（默认进入"默认小组"）
   const passwordHash = hashPassword(password);
   const result = db.prepare(`
-    INSERT INTO users (email, password_hash, role, status, credits)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO users (email, password_hash, role, status, credits, department_id)
+    VALUES (?, ?, ?, ?, ?, 0)
   `).run(email, passwordHash, 'user', 'active', 10);
 
   const newUserId = Number(result.lastInsertRowid);

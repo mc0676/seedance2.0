@@ -926,6 +926,13 @@ export default function CanvasEditorPage() {
     } catch {}
     return 'dark';
   });
+  // 离开画布时恢复 html.dark（确保非画布模块保持深色主题）
+  useEffect(() => {
+    return () => {
+      document.documentElement.classList.add('dark');
+      document.documentElement.style.colorScheme = 'dark';
+    };
+  }, []);
   const [backgroundMode, setBackgroundMode] = useState<'dots' | 'lines' | 'blank'>('lines');
   const [showImageInfo, setShowImageInfo] = useState(false);
   const C = themeMode === 'light' ? C_LIGHT : C_DARK;
@@ -950,6 +957,7 @@ export default function CanvasEditorPage() {
   const audioPromptNodeIdRef = useRef<string | null>(null);
   useEffect(() => { audioPromptNodeIdRef.current = audioPromptNodeId; }, [audioPromptNodeId]);
   const rfInstanceRef = useRef<any>(null);
+  const viewportSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toolbarTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const keepNodeToolbar = (nodeId: string) => {
     if (toolbarTimerRef.current) { clearTimeout(toolbarTimerRef.current); toolbarTimerRef.current = null; }
@@ -2281,7 +2289,7 @@ export default function CanvasEditorPage() {
   if (!cloth) return <div className="flex items-center justify-center h-screen text-gray-500">加载中...</div>;
 
   return (
-    <div className="h-screen flex flex-col relative" style={{ background: C.bg }}>
+    <div className={`h-screen flex flex-col relative canvas-theme-root ${themeMode === 'dark' ? 'dark' : ''}`} style={{ background: C.bg }}>
       {/* 顶部栏：汉堡菜单 + 标题 */}
       <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start justify-between p-5">
         <div className="pointer-events-auto flex min-w-0 flex-1 items-center gap-2">
@@ -2448,7 +2456,29 @@ export default function CanvasEditorPage() {
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           proOptions={{ hideAttribution: true }}
-          onInit={(instance: any) => { rfInstanceRef.current = instance; }}
+          onInit={(instance: any) => {
+            rfInstanceRef.current = instance;
+            // 恢复上次保存的视口位置
+            try {
+              const saved = localStorage.getItem(`seedance_viewport_${clothId}`);
+              if (saved) {
+                const vp = JSON.parse(saved);
+                if (typeof vp.x === 'number' && typeof vp.y === 'number' && typeof vp.zoom === 'number') {
+                  instance.setViewport(vp, { duration: 0 });
+                }
+              }
+            } catch {}
+          }}
+          onMoveEnd={() => {
+            // 保存视口位置到 localStorage（防抖 500ms）
+            if (viewportSaveTimerRef.current) clearTimeout(viewportSaveTimerRef.current);
+            viewportSaveTimerRef.current = setTimeout(() => {
+              const vp = rfInstanceRef.current?.getViewport();
+              if (vp && clothId) {
+                try { localStorage.setItem(`seedance_viewport_${clothId}`, JSON.stringify({ x: vp.x, y: vp.y, zoom: vp.zoom })); } catch {}
+              }
+            }, 500);
+          }}
           style={{ background: C.bg }}
           connectionLineStyle={{ stroke: C.nodeMuted, strokeWidth: 2, strokeDasharray: '5,5' }}
           defaultEdgeOptions={{ type: 'default' }}
@@ -2766,6 +2796,7 @@ export default function CanvasEditorPage() {
         node={infoNodeId ? nodes.find((n) => n.id === infoNodeId) ?? null : null}
         open={Boolean(infoNodeId)}
         onClose={() => setInfoNodeId(null)}
+        theme={themeMode}
       />
 
       {/* 关联图片弹窗 — 展示当前项目的图片生成历史 */}

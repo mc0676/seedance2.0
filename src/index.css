@@ -53,6 +53,23 @@ body {
   background: #4b5563;
 }
 
+/* ── 浅色主题滚动条（仅当 html 无 .dark 时生效，即画布浅色模式）── */
+html:not(.dark) * {
+  scrollbar-color: #d4d4d4 #f0f0f0;
+}
+
+html:not(.dark) ::-webkit-scrollbar-track {
+  background: #f0f0f0;
+}
+
+html:not(.dark) ::-webkit-scrollbar-thumb {
+  background: #c4c4c4;
+}
+
+html:not(.dark) ::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
+
 /* Custom scrollbar class for panels */
 .custom-scrollbar::-webkit-scrollbar {
   width: 6px;
@@ -69,6 +86,14 @@ body {
 
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
   background: #4b5563;
+}
+
+html:not(.dark) .custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #c4c4c4;
+}
+
+html:not(.dark) .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
 }
 
 /* ============================================================

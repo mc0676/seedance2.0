@@ -415,6 +415,9 @@ export function initDatabase() {
       CREATE INDEX IF NOT EXISTS idx_departments_name ON departments(name);
     `);
 
+    // 确保默认小组（id=0）存在
+    db.exec(`INSERT OR IGNORE INTO departments (id, name) VALUES (0, '默认小组')`);
+
     const uCols = db.prepare("PRAGMA table_info(users)").all().map((c) => c.name);
     if (!uCols.includes('name')) {
       console.log('[database] 迁移：users 添加 name 列...');
