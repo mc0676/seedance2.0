@@ -323,11 +323,23 @@ export default function AdminPage() {
   const [accountTasksLoading, setAccountTasksLoading] = useState(false);
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
 
-  // 管理后台 Tab 切换
-  const [adminTab, setAdminTab] = useState<'general' | 'users' | 'models' | 'tasks' | 'assets'>('general');
+  // 管理后台 Tab 切换（持久化到 localStorage）
+  const [adminTab, setAdminTab] = useState<'general' | 'users' | 'models' | 'tasks' | 'assets'>(() => {
+    try {
+      const saved = localStorage.getItem('seedance_admin_tab');
+      if (saved === 'general' || saved === 'users' || saved === 'models' || saved === 'tasks' || saved === 'assets') return saved;
+    } catch {}
+    return 'general';
+  });
 
-  // 模型配置二级标签
-  const [modelSubTab, setModelSubTab] = useState<'volcano' | 'happyhorse' | 'wuyin' | 'deepseek'>('volcano');
+  // 模型配置二级标签（持久化到 localStorage）
+  const [modelSubTab, setModelSubTab] = useState<'volcano' | 'happyhorse' | 'wuyin' | 'deepseek'>(() => {
+    try {
+      const saved = localStorage.getItem('seedance_model_subtab');
+      if (saved === 'volcano' || saved === 'happyhorse' || saved === 'wuyin' || saved === 'deepseek') return saved;
+    } catch {}
+    return 'volcano';
+  });
 
   // 火山Key组管理
   const [volcKeyGroups, setVolcKeyGroups] = useState<VolcKeyGroup[]>([]);
@@ -711,6 +723,11 @@ export default function AdminPage() {
     document.addEventListener('mouseup', stopDrag);
     return () => document.removeEventListener('mouseup', stopDrag);
   }, []);
+
+  // 持久化一级标签选择
+  useEffect(() => { localStorage.setItem('seedance_admin_tab', adminTab); }, [adminTab]);
+  // 持久化二级标签选择
+  useEffect(() => { localStorage.setItem('seedance_model_subtab', modelSubTab); }, [modelSubTab]);
 
   // 系统配置
   const [registrationEnabled, setRegistrationEnabled] = useState(true);
