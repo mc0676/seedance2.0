@@ -210,7 +210,7 @@ function DepartmentManagementCard({ onChanged }: { onChanged: () => void }) {
 
   const handleDelete = async (d: AdminDepartment) => {
     const tip = d.user_count > 0
-      ? `小组「${d.name}」当前有 ${d.user_count} 个用户。删除后这些用户的小组字段会被清空，下次登录需重新选择。\n确认删除？`
+      ? `小组「${d.name}」当前有 ${d.user_count} 个用户。删除后这些用户将自动移入默认小组。\n确认删除？`
       : `确认删除小组「${d.name}」？`;
     if (!window.confirm(tip)) return;
     try {
@@ -291,7 +291,7 @@ function DepartmentManagementCard({ onChanged }: { onChanged: () => void }) {
       )}
 
       <p className="text-[10px] text-gray-500 mt-3">
-        提示：删除小组后，该小组下的所有用户会被解绑（小组字段置空），下次登录会被引导重新选择小组。
+        提示：删除小组后，该小组下的所有用户会自动移入默认小组。
       </p>
     </div>
   );
@@ -322,6 +322,12 @@ export default function AdminPage() {
   const [manualApiKey, setManualApiKey] = useState<string>(GLOBAL_ARK_KEY);
   const [accountTasksLoading, setAccountTasksLoading] = useState(false);
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
+
+  // 管理后台 Tab 切换
+  const [adminTab, setAdminTab] = useState<'general' | 'users' | 'models' | 'tasks' | 'assets'>('general');
+
+  // 模型配置二级标签
+  const [modelSubTab, setModelSubTab] = useState<'volcano' | 'happyhorse' | 'wuyin' | 'deepseek'>('volcano');
 
   // 火山Key组管理
   const [volcKeyGroups, setVolcKeyGroups] = useState<VolcKeyGroup[]>([]);
@@ -387,7 +393,7 @@ export default function AdminPage() {
   const [audioCfgSaving, setAudioCfgSaving] = useState(false);
 
   // 火山原生资产库
-  interface VolcAssetGroup { Id: string; Name: string; Description?: string; GroupType?: string; ProjectName?: string; CreateTime?: string; UpdateTime?: string; coverUrl?: string; }
+  interface VolcAssetGroup { Id: string; Name: string; Description?: string; GroupType?: string; ProjectName?: string; CreateTime?: string; UpdateTime?: string; coverUrl?: string; coverType?: string; }
   interface VolcAsset { Id: string; Name?: string; AssetType?: string; Status?: string; CreateTime?: string; UpdateTime?: string; ProjectName?: string; URL?: string; GroupId?: string; }
   // 层级：null=第一级组列表，object=第二级素材列表
   const [volcLevel, setVolcLevel] = useState<'groups' | 'assets'>('groups');
@@ -401,6 +407,8 @@ export default function AdminPage() {
   const [volcAssetTotal, setVolcAssetTotal] = useState(0);
   const [selectedGroup, setSelectedGroup] = useState<VolcAssetGroup | null>(null);
   const [volcGroupSearch, setVolcGroupSearch] = useState('');
+  const [volcGroupSortBy, setVolcGroupSortBy] = useState<string>('CreateTime');
+  const [volcGroupSortOrder, setVolcGroupSortOrder] = useState<string>('Desc');
   const [volcAssetSearch, setVolcAssetSearch] = useState('');
   const [assetUrlMap, setAssetUrlMap] = useState<Record<string, string>>({});
   // 编辑素材组
@@ -418,7 +426,7 @@ export default function AdminPage() {
   // AK/SK
   const [volcAkId, setVolcAkId] = useState('');
   const [volcSkKey, setVolcSkKey] = useState('');
-  const [volcAkSkEditing, setVolcAkSkEditing] = useState(false);
+  const [volcAkSkVisible, setVolcAkSkVisible] = useState(false);
   const [volcAkIdDraft, setVolcAkIdDraft] = useState('');
   const [volcSkKeyDraft, setVolcSkKeyDraft] = useState('');
   // 资产库 / 全局任务查询按 API 账户 tab 切换
@@ -445,6 +453,8 @@ export default function AdminPage() {
       const params = new URLSearchParams({ pageNumber: String(page), pageSize: '20' });
       if (search.trim()) params.set('name', search.trim());
       if (kId) params.set('keyGroupId', String(kId));
+      params.set('sortBy', volcGroupSortBy);
+      params.set('sortOrder', volcGroupSortOrder);
       const res = await fetch(`/api/admin/volc-native/asset-groups?${params}`, { headers: getAuthHeaders() });
       const data = await res.json();
       if (!data.success) throw new Error(data.error);
@@ -452,23 +462,45 @@ export default function AdminPage() {
       setVolcAssetGroups(items);
       setVolcGroupTotal(data.data?.TotalCount || 0);
       setVolcGroupPage(page);
-      // 写入缓存
-      if (kId) {
-        setAssetCache(prev => ({ ...prev, [kId]: { groups: items.slice(), total: data.data?.TotalCount || 0 } }));
-      }
-      // 异步加载每组封面
-      items.forEach(async (g) => {
+      // 批量加载每组封面（单次 ListAssets 请求）
+      if (items.length > 0) {
+        const allGroupIds = items.map(g => g.Id);
         try {
-          const r = await fetch(`/api/admin/volc-native/assets?groupId=${encodeURIComponent(g.Id)}&pageNumber=1&pageSize=1`, { headers: getAuthHeaders() });
+          const r = await fetch(`/api/admin/volc-native/assets?groupIds=${encodeURIComponent(allGroupIds.join(','))}&pageNumber=1&pageSize=${allGroupIds.length}`, { headers: getAuthHeaders() });
           const d = await r.json();
-          const firstAsset = d.data?.Items?.[0];
-          if (!firstAsset) return;
-          const r2 = await fetch(`/api/admin/volc-native/asset?id=${encodeURIComponent(firstAsset.Id)}`, { headers: getAuthHeaders() });
-          const d2 = await r2.json();
-          const url: string | undefined = d2.data?.URL;
-          if (url) setVolcAssetGroups(prev => prev.map(item => item.Id === g.Id ? { ...item, coverUrl: url } : item));
-        } catch {}
-      });
+          const assetItems: Array<{ Id: string; URL?: string; GroupId?: string; AssetType?: string }> = d.data?.Items || [];
+          // 按 GroupId 分组，取每组第一个素材的 URL 和类型作为封面
+          const coverMap: Record<string, { url: string; type: string }> = {};
+          for (const a of assetItems) {
+            if (a.URL && a.GroupId && !coverMap[a.GroupId]) {
+              coverMap[a.GroupId] = { url: a.URL, type: a.AssetType || 'Image' };
+            }
+          }
+          if (Object.keys(coverMap).length > 0) {
+            const itemsWithCovers = items.map(item => coverMap[item.Id] ? { ...item, coverUrl: coverMap[item.Id].url, coverType: coverMap[item.Id].type } : item);
+            setVolcAssetGroups(itemsWithCovers);
+            // 写入缓存（含封面）
+            if (kId) {
+              setAssetCache(prev => ({ ...prev, [kId]: { groups: itemsWithCovers.slice(), total: data.data?.TotalCount || 0 } }));
+            }
+          } else {
+            // 无封面也写入缓存
+            if (kId) {
+              setAssetCache(prev => ({ ...prev, [kId]: { groups: items.slice(), total: data.data?.TotalCount || 0 } }));
+            }
+          }
+        } catch {
+          // 封面加载失败仍写入基础缓存
+          if (kId) {
+            setAssetCache(prev => ({ ...prev, [kId]: { groups: items.slice(), total: data.data?.TotalCount || 0 } }));
+          }
+        }
+      } else {
+        // 无数据也写入缓存
+        if (kId) {
+          setAssetCache(prev => ({ ...prev, [kId]: { groups: [], total: 0 } }));
+        }
+      }
     } catch (e) {
       if (kId) {
         setAssetCache(prev => ({ ...prev, [kId]: { groups: [], total: 0 } }));
@@ -617,7 +649,7 @@ export default function AdminPage() {
       });
       const data = await res.json();
       if (!data.success) throw new Error(data.error);
-      setVolcAkId(volcAkIdDraft); setVolcSkKey(volcSkKeyDraft); setVolcAkSkEditing(false);
+      setVolcAkId(volcAkIdDraft); setVolcSkKey(volcSkKeyDraft); setVolcAkSkVisible(false);
     } catch (e) { alert(e instanceof Error ? e.message : '保存失败'); }
   };
 
@@ -1473,17 +1505,61 @@ export default function AdminPage() {
 
 
   return (
-    <div className="min-h-screen bg-[#0f111a] p-6">
-      <div className="max-w-7xl mx-auto">
-        {/* 页面标题 */}
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-white mb-2">管理后台</h1>
-          <p className="text-gray-400">管理系统用户和查看系统统计</p>
+    <div className="min-h-screen bg-[#0f111a]">
+      {/* 顶部导航栏 */}
+      <div className="sticky top-0 z-40 bg-[#1c1f2e] border-b border-gray-800">
+        <div className="px-6 flex items-center h-14">
+          <nav className="flex gap-1 h-full">
+            <button
+              onClick={() => setAdminTab('general')}
+              className={`px-4 h-full flex items-center text-sm font-medium border-b-2 transition-colors ${
+                adminTab === 'general'
+                  ? 'border-purple-500 text-white'
+                  : 'border-transparent text-gray-400 hover:text-gray-200'
+              }`}
+            >综合</button>
+            <button
+              onClick={() => setAdminTab('users')}
+              className={`px-4 h-full flex items-center text-sm font-medium border-b-2 transition-colors ${
+                adminTab === 'users'
+                  ? 'border-purple-500 text-white'
+                  : 'border-transparent text-gray-400 hover:text-gray-200'
+              }`}
+            >用户</button>
+            <button
+              onClick={() => setAdminTab('models')}
+              className={`px-4 h-full flex items-center text-sm font-medium border-b-2 transition-colors ${
+                adminTab === 'models'
+                  ? 'border-purple-500 text-white'
+                  : 'border-transparent text-gray-400 hover:text-gray-200'
+              }`}
+            >模型配置</button>
+            <button
+              onClick={() => setAdminTab('tasks')}
+              className={`px-4 h-full flex items-center text-sm font-medium border-b-2 transition-colors ${
+                adminTab === 'tasks'
+                  ? 'border-purple-500 text-white'
+                  : 'border-transparent text-gray-400 hover:text-gray-200'
+              }`}
+            >任务查询</button>
+            <button
+              onClick={() => setAdminTab('assets')}
+              className={`px-4 h-full flex items-center text-sm font-medium border-b-2 transition-colors ${
+                adminTab === 'assets'
+                  ? 'border-purple-500 text-white'
+                  : 'border-transparent text-gray-400 hover:text-gray-200'
+              }`}
+            >私域虚拟人像素材库</button>
+          </nav>
         </div>
-
-        {/* 统计卡片 */}
-        {stats && (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
+      </div>
+      {/* 页面内容 */}
+      <div className="p-6">
+        {adminTab === 'general' && (<>
+          <h1 className="text-3xl font-bold text-white mb-1">管理后台</h1>
+          <p className="text-gray-400 text-sm mb-6">管理系统用户和查看系统统计</p>
+          {stats && (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 mb-8">
             <StatCard title="总用户数" value={stats.totalUsers} icon={UsersIcon} color="bg-gradient-to-br from-blue-500 to-cyan-500" />
             <StatCard title="活跃用户" value={stats.activeUsers} icon={CheckIcon} color="bg-gradient-to-br from-green-500 to-emerald-500" />
             <StatCard title="总项目组数" value={stats.totalProjects} icon={SparkleIcon} color="bg-gradient-to-br from-purple-500 to-pink-500" />
@@ -1491,7 +1567,7 @@ export default function AdminPage() {
             <StatCard title="今日签到" value={stats.todayCheckIns} icon={CheckIcon} color="bg-gradient-to-br from-rose-500 to-red-500" />
             <StatCard title="发放积分" value={stats.totalCreditsIssued} icon={SparkleIcon} color="bg-gradient-to-br from-indigo-500 to-violet-500" />
           </div>
-        )}
+          )}
 
         {/* ═══════════ 消耗分析面板 ═══════════ */}
         <AnalyticsPanels />
@@ -1699,7 +1775,137 @@ export default function AdminPage() {
             </div>
           )}
         </div>
+        {/* 批量生成设置 */}
+        {isSuperAdmin && (
+          <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
+            <h2 className="text-xl font-semibold text-white mb-2">批量生成设置</h2>
+            <p className="text-xs text-gray-500 mb-4">
+              控制视频生成和 HappyHorse 模块点击一次按钮可同时生成的任务数。数量越大，积分消耗越快。
+            </p>
+            <label className="block text-sm font-medium text-gray-400 mb-2">
+              每次批量生成数量上限
+            </label>
+            <div className="flex flex-wrap gap-2 mb-4">
+              {([1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const).map((n) => (
+                <button
+                  key={n}
+                  onClick={() => setBatchMaxConcurrent(String(n))}
+                  className={`px-3 py-2 rounded-xl text-sm font-medium border transition-all ${
+                    batchMaxConcurrent === String(n)
+                      ? 'border-purple-500 bg-purple-500/10 text-purple-400'
+                      : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
+                  }`}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={async () => {
+                setBatchSaving(true);
+                try {
+                  const res = await fetch('/api/admin/batch-concurrent', {
+                    method: 'PUT',
+                    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+                    body: JSON.stringify({ max_concurrent: batchMaxConcurrent }),
+                  });
+                  const data = await res.json();
+                  if (!data.success) throw new Error(data.error || '保存失败');
+                  alert('已保存');
+                } catch (e) {
+                  alert(e instanceof Error ? e.message : '保存失败');
+                } finally {
+                  setBatchSaving(false);
+                }
+              }}
+              disabled={batchSaving}
+              className="px-6 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:from-gray-700 disabled:to-gray-700 disabled:text-gray-500 rounded-xl transition-all font-medium shadow-lg shadow-purple-900/20 text-sm"
+            >
+              {batchSaving ? '保存中...' : '保存设置'}
+            </button>
+          </div>
+        )}
 
+            {/* 音频生成中转视频配置 */}
+            <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
+                <h2 className="text-xl font-semibold text-white mb-2">音频生成中转配置</h2>
+                <p className="text-xs text-gray-500 mb-4">音频生成会先生成一段中转视频再提取音轨,这里配置中转视频的参数,降低消耗。默认:Seedance
+                    2.0 Fast / 1:1 / 480p / 4 秒</p>
+                {audioCfg && audioCfgOptions ? (
+                    isSuperAdmin && audioCfgEditing && audioCfgDraft ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <label className="block">
+                                <span className="text-xs text-gray-400 block mb-1">模型</span>
+                                <select
+                                    className="w-full px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-white text-sm focus:outline-none focus:border-purple-500"
+                                    value={audioCfgDraft.model}
+                                    onChange={(e) => setAudioCfgDraft({...audioCfgDraft, model: e.target.value})}
+                                >
+                                    {Array.from(new Set([audioCfgDraft.model, ...modelPricings.map((m) => m.model_key), 'seedance-2.0-fast', 'seedance-2.0'])).map((k) => (
+                                        <option key={k} value={k}>{k}</option>
+                                    ))}
+                                </select>
+                            </label>
+                            <label className="block">
+                                <span className="text-xs text-gray-400 block mb-1">画面比例</span>
+                                <select
+                                    className="w-full px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-white text-sm focus:outline-none focus:border-purple-500"
+                                    value={audioCfgDraft.ratio}
+                                    onChange={(e) => setAudioCfgDraft({...audioCfgDraft, ratio: e.target.value})}
+                                >
+                                    {audioCfgOptions.ratios.map((r) => <option key={r} value={r}>{r}</option>)}
+                                </select>
+                            </label>
+                            <label className="block">
+                                <span className="text-xs text-gray-400 block mb-1">分辨率</span>
+                                <select
+                                    className="w-full px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-white text-sm focus:outline-none focus:border-purple-500"
+                                    value={audioCfgDraft.resolution}
+                                    onChange={(e) => setAudioCfgDraft({...audioCfgDraft, resolution: e.target.value})}
+                                >
+                                    {audioCfgOptions.resolutions.map((r) => <option key={r} value={r}>{r}</option>)}
+                                </select>
+                            </label>
+                            <label className="block">
+                                <span className="text-xs text-gray-400 block mb-1">时长(秒)</span>
+                                <select
+                                    className="w-full px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-white text-sm focus:outline-none focus:border-purple-500"
+                                    value={audioCfgDraft.duration}
+                                    onChange={(e) => setAudioCfgDraft({
+                                        ...audioCfgDraft,
+                                        duration: Number(e.target.value)
+                                    })}
+                                >
+                                    {audioCfgOptions.durations.map((d) => <option key={d} value={d}>{d}s</option>)}
+                                </select>
+                            </label>
+                            <div className="sm:col-span-2 flex gap-2 mt-1">
+                                <button onClick={handleSaveAudioCfg} disabled={audioCfgSaving}
+                                        className="btn-save">{audioCfgSaving ? '保存中...' : '保存'}</button>
+                                <button onClick={() => setAudioCfgEditing(false)}
+                                        className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-xl text-white text-sm">取消
+                                </button>
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="flex items-center gap-3 flex-wrap">
+                            <code
+                                className="flex-1 min-w-0 px-3 py-2 bg-[#0f111a] rounded text-gray-300 text-sm font-mono">
+                                {audioCfg.model} · {audioCfg.ratio} · {audioCfg.resolution} · {audioCfg.duration}s
+                            </code>
+                            {isSuperAdmin && <button onClick={() => {
+                                setAudioCfgDraft(audioCfg);
+                                setAudioCfgEditing(true);
+                            }} className="btn-edit">修改
+                            </button>}
+                        </div>
+                    )
+                ) : (
+                    <div className="text-xs text-gray-500">加载中...</div>
+                )}
+            </div>
+        </>)}
+        {adminTab === 'users' && (<>
         {/* 用户列表 */}
         <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl overflow-hidden mb-8">
           <div className="p-6 border-b border-gray-800">
@@ -1914,7 +2120,9 @@ export default function AdminPage() {
 
         {/* 小组管理（紧邻用户列表） */}
         <DepartmentManagementCard onChanged={() => setDepartmentRefreshKey((k) => k + 1)} />
+        </>)}
 
+        {adminTab === 'general' && (<>
         {/* 系统设置（仅系统管理员） */}
         {isSuperAdmin && (
         <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-8">
@@ -1967,7 +2175,40 @@ export default function AdminPage() {
         </div>
         )}
 
-
+        </>)}
+        {adminTab === 'models' && (<>
+        {/* 二级标签导航 — 传统下划线样式，青色区分 */}
+        <div className="flex gap-1 mb-6 border-b border-gray-800">
+          <button onClick={() => setModelSubTab('volcano')}
+            className={`px-4 py-2 -mb-[1px] text-sm font-medium border-b-2 transition-colors ${
+              modelSubTab === 'volcano'
+                ? 'border-cyan-500 text-white'
+                : 'border-transparent text-gray-400 hover:text-gray-200'
+            }`}
+          >火山</button>
+          <button onClick={() => setModelSubTab('happyhorse')}
+            className={`px-4 py-2 -mb-[1px] text-sm font-medium border-b-2 transition-colors ${
+              modelSubTab === 'happyhorse'
+                ? 'border-cyan-500 text-white'
+                : 'border-transparent text-gray-400 hover:text-gray-200'
+            }`}
+          >快乐马</button>
+          <button onClick={() => setModelSubTab('wuyin')}
+            className={`px-4 py-2 -mb-[1px] text-sm font-medium border-b-2 transition-colors ${
+              modelSubTab === 'wuyin'
+                ? 'border-cyan-500 text-white'
+                : 'border-transparent text-gray-400 hover:text-gray-200'
+            }`}
+          >速创</button>
+          <button onClick={() => setModelSubTab('deepseek')}
+            className={`px-4 py-2 -mb-[1px] text-sm font-medium border-b-2 transition-colors ${
+              modelSubTab === 'deepseek'
+                ? 'border-cyan-500 text-white'
+                : 'border-transparent text-gray-400 hover:text-gray-200'
+            }`}
+          >深度求索</button>
+        </div>
+        {modelSubTab === 'volcano' && (<>
         {/* 模型计费管理 */}
         <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
           <div className="mb-4 flex items-center justify-between">
@@ -2067,7 +2308,9 @@ export default function AdminPage() {
             );
           })}
         </div>
-
+        </>)}
+        </>)}
+        {adminTab === 'assets' && (<>
         {/* 火山原生资产库 */}
         <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
           {/* 头部 */}
@@ -2087,12 +2330,6 @@ export default function AdminPage() {
               </div>
             </div>
             <div className="flex gap-2 flex-wrap">
-              {volcLevel === 'groups' && (
-                <button onClick={() => loadVolcGroups(1, volcGroupSearch, assetTabKeyGroupId)} disabled={volcGroupsLoading}
-                  className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 rounded-xl text-white text-xs">
-                  {volcGroupsLoading ? '加载中...' : '查询'}
-                </button>
-              )}
               {volcLevel === 'assets' && (
                 <button onClick={() => loadVolcAssets(1)} disabled={volcAssetsLoading}
                   className="px-3 py-1.5 bg-[#0f111a] border border-gray-700 rounded-xl text-gray-400 hover:text-white text-xs disabled:opacity-50">
@@ -2100,12 +2337,9 @@ export default function AdminPage() {
                 </button>
               )}
               {isSuperAdmin && (() => {
-                const selGroup = volcKeyGroups.find(kg => kg.id === assetTabKeyGroupId);
-                const ak = selGroup?.volc_access_key || volcAkId;
-                const sk = selGroup?.volc_secret_key || volcSkKey;
                 return (
-                <button onClick={() => { setVolcAkSkEditing(v => !v); setVolcAkIdDraft(ak); setVolcSkKeyDraft(sk); }}
-                  className="px-3 py-1.5 bg-[#0f111a] border border-gray-700 rounded-xl text-gray-400 hover:text-white text-xs">配置 AK/SK</button>
+                <button onClick={() => setVolcAkSkVisible(v => !v)}
+                  className="px-3 py-1.5 bg-[#0f111a] border border-gray-700 rounded-xl text-gray-400 hover:text-white text-xs">查看 AK/SK</button>
                 );
               })()}
             </div>
@@ -2149,21 +2383,23 @@ export default function AdminPage() {
             </div>
           )}
 
-          {/* AK/SK 配置面板（仅系统管理员） */}
-          {isSuperAdmin && volcAkSkEditing && (
+          {/* AK/SK 查看面板（仅系统管理员） */}
+          {isSuperAdmin && volcAkSkVisible && (() => {
+            const selGroup = volcKeyGroups.find(kg => kg.id === assetTabKeyGroupId);
+            const displayAk = selGroup?.volc_access_key || volcAkId;
+            const displaySk = selGroup?.volc_secret_key || volcSkKey;
+            return (
             <div className="mb-4 p-4 bg-[#0f111a] border border-gray-700 rounded-xl space-y-3">
               <div><label className="block text-xs text-gray-400 mb-1">Access Key ID</label>
-                <input value={volcAkIdDraft} onChange={(e) => setVolcAkIdDraft(e.target.value)}
-                  className="w-full bg-[#1c1f2e] border border-gray-700 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500" /></div>
+                <div className="w-full bg-[#1c1f2e] border border-gray-700 rounded-xl px-3 py-2 text-white text-sm font-mono truncate">{displayAk || '—'}</div></div>
               <div><label className="block text-xs text-gray-400 mb-1">Secret Access Key</label>
-                <input value={volcSkKeyDraft} onChange={(e) => setVolcSkKeyDraft(e.target.value)} type="password"
-                  className="w-full bg-[#1c1f2e] border border-gray-700 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500" /></div>
+                <div className="w-full bg-[#1c1f2e] border border-gray-700 rounded-xl px-3 py-2 text-white text-sm font-mono truncate">{displaySk ? '••••••••' + displaySk.slice(-4) : '—'}</div></div>
               <div className="flex gap-2">
-                <button onClick={handleSaveVolcAkSk} className="btn-save">保存</button>
-                <button onClick={() => setVolcAkSkEditing(false)} className="px-4 py-2 bg-gray-700 rounded-xl text-white text-sm">取消</button>
+                <button onClick={() => setVolcAkSkVisible(false)} className="px-4 py-2 bg-gray-700 rounded-xl text-white text-sm">关闭</button>
               </div>
             </div>
-          )}
+            );
+          })()}
 
           {/* 编辑素材组弹层（仅系统管理员） */}
           {isSuperAdmin && editingGroup && (
@@ -2223,10 +2459,25 @@ export default function AdminPage() {
           {volcLevel === 'groups' && (
             <div>
               <div className="flex items-center gap-2 mb-4 flex-wrap">
-                <span className="text-xs text-gray-500">共 {volcGroupTotal} 个素材组</span>
+                <span className="text-xs text-gray-500">名称</span>
                 <input value={volcGroupSearch} onChange={(e) => setVolcGroupSearch(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && loadVolcGroups(1, volcGroupSearch)}
                   placeholder="按名称搜索..." className="flex-1 min-w-32 max-w-48 bg-[#0f111a] border border-gray-700 rounded-xl px-3 py-1.5 text-white text-xs focus:outline-none focus:border-purple-500" />
+                <select value={volcGroupSortBy} onChange={(e) => setVolcGroupSortBy(e.target.value)}
+                  className="bg-[#0f111a] border border-gray-700 rounded-xl px-2 py-1.5 text-white text-xs focus:outline-none focus:border-purple-500">
+                  <option value="CreateTime">创建时间</option>
+                  <option value="UpdateTime">更新时间</option>
+                </select>
+                <select value={volcGroupSortOrder} onChange={(e) => setVolcGroupSortOrder(e.target.value)}
+                  className="bg-[#0f111a] border border-gray-700 rounded-xl px-2 py-1.5 text-white text-xs focus:outline-none focus:border-purple-500">
+                  <option value="Desc">新日期在前面</option>
+                  <option value="Asc">新日期在后面</option>
+                </select>
+                <button onClick={() => loadVolcGroups(1, volcGroupSearch, assetTabKeyGroupId)} disabled={volcGroupsLoading}
+                  className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 rounded-xl text-white text-xs">
+                  {volcGroupsLoading ? '加载中...' : '查询'}
+                </button>
+                <span className="text-xs text-gray-500 ml-auto">共 {volcGroupTotal} 个素材组</span>
               </div>
               {volcGroupsLoading ? (
                 <div className="flex items-center justify-center h-40">
@@ -2244,7 +2495,13 @@ export default function AdminPage() {
                         onClick={() => handleEnterGroup(g)}>
                         <div className="aspect-square bg-[#161824] overflow-hidden relative flex-shrink-0">
                           {g.coverUrl ? (
-                            <img src={g.coverUrl} alt={g.Name} className="w-full h-full object-contain group-hover:scale-105 transition-transform duration-300" />
+                            g.coverType === 'Video' ? (
+                              <video src={g.coverUrl} className="w-full h-full object-contain" muted preload="metadata" />
+                            ) : g.coverType === 'Audio' ? (
+                              <div className="w-full h-full flex items-center justify-center text-gray-400 text-4xl">🎵</div>
+                            ) : (
+                              <img src={g.coverUrl} alt={g.Name} className="w-full h-full object-contain group-hover:scale-105 transition-transform duration-300" />
+                            )
                           ) : (
                             <div className="w-full h-full flex items-center justify-center text-gray-600 text-3xl">👤</div>
                           )}
@@ -2308,16 +2565,19 @@ export default function AdminPage() {
                     {volcAssets.map((a) => {
                       const imgUrl = assetUrlMap[a.Id];
                       const isVideo = a.AssetType === 'Video';
+                      const isAudio = a.AssetType === 'Audio';
                       return (
                         <div key={a.Id} className="bg-[#0f111a] border border-gray-800 hover:border-purple-500/40 rounded-2xl overflow-hidden transition-all group flex flex-col">
                           <div className="aspect-square bg-[#161824] overflow-hidden relative flex-shrink-0">
-                            {imgUrl && !isVideo ? (
-                              <img src={imgUrl} alt={a.Name || a.Id} className="w-full h-full object-contain" />
-                            ) : imgUrl && isVideo ? (
+                            {imgUrl && isVideo ? (
                               <video src={imgUrl} className="w-full h-full object-contain" muted />
+                            ) : imgUrl && isAudio ? (
+                              <div className="w-full h-full flex items-center justify-center text-gray-400 text-5xl">🎵</div>
+                            ) : imgUrl ? (
+                              <img src={imgUrl} alt={a.Name || a.Id} className="w-full h-full object-contain" />
                             ) : (
                               <div className="w-full h-full flex items-center justify-center text-gray-600 text-3xl">
-                                {a.AssetType === 'Video' ? '🎬' : a.AssetType === 'Audio' ? '🎵' : '🖼'}
+                                {isVideo ? '🎬' : isAudio ? '🎵' : '🖼'}
                               </div>
                             )}
                             <div className="absolute top-2 left-2">
@@ -2367,7 +2627,10 @@ export default function AdminPage() {
             </div>
           )}
         </div>
+        </>)}
 
+        {adminTab === 'models' && (<>
+        {modelSubTab === 'volcano' && (<>
         {/* 火山Key组管理（仅系统管理员） */}
         {isSuperAdmin && (<>
         <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
@@ -2640,6 +2903,8 @@ export default function AdminPage() {
           </div>
         </div>
 
+        </>)}
+        {modelSubTab === 'happyhorse' && (<>
         {/* HappyHorse API Key + 计费 */}
         <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
           <h2 className="text-xl font-semibold text-white mb-2">HappyHorse API Key</h2>
@@ -2853,6 +3118,8 @@ export default function AdminPage() {
           )}
         </div>
 
+        </>)}
+        {modelSubTab === 'wuyin' && (<>
         {/* 速创API Key 管理（仅系统管理员） */}
         {isSuperAdmin && (<>
         <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
@@ -2875,7 +3142,9 @@ export default function AdminPage() {
             </div>
           )}
         </div>
-
+        </>)}
+        </>)}
+        {modelSubTab === 'deepseek' && (<>
         {/* DeepSeek API 配置 */}
         <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
           <h2 className="text-xl font-semibold text-white mb-2">DeepSeek API</h2>
@@ -2926,7 +3195,10 @@ export default function AdminPage() {
             </div>
           )}
         </div>
+        </>)}
 
+        </>)}
+        {adminTab === 'tasks' && (<>
         <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
           <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
             <div>
@@ -3068,136 +3340,6 @@ export default function AdminPage() {
           )}
         </div>
         </>)}
-
-            {/* 音频生成中转视频配置 */}
-            <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
-                <h2 className="text-xl font-semibold text-white mb-2">音频生成中转配置</h2>
-                <p className="text-xs text-gray-500 mb-4">音频生成会先生成一段中转视频再提取音轨,这里配置中转视频的参数,降低消耗。默认:Seedance
-                    2.0 Fast / 1:1 / 480p / 4 秒</p>
-                {audioCfg && audioCfgOptions ? (
-                    isSuperAdmin && audioCfgEditing && audioCfgDraft ? (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                            <label className="block">
-                                <span className="text-xs text-gray-400 block mb-1">模型</span>
-                                <select
-                                    className="w-full px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-white text-sm focus:outline-none focus:border-purple-500"
-                                    value={audioCfgDraft.model}
-                                    onChange={(e) => setAudioCfgDraft({...audioCfgDraft, model: e.target.value})}
-                                >
-                                    {Array.from(new Set([audioCfgDraft.model, ...modelPricings.map((m) => m.model_key), 'seedance-2.0-fast', 'seedance-2.0'])).map((k) => (
-                                        <option key={k} value={k}>{k}</option>
-                                    ))}
-                                </select>
-                            </label>
-                            <label className="block">
-                                <span className="text-xs text-gray-400 block mb-1">画面比例</span>
-                                <select
-                                    className="w-full px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-white text-sm focus:outline-none focus:border-purple-500"
-                                    value={audioCfgDraft.ratio}
-                                    onChange={(e) => setAudioCfgDraft({...audioCfgDraft, ratio: e.target.value})}
-                                >
-                                    {audioCfgOptions.ratios.map((r) => <option key={r} value={r}>{r}</option>)}
-                                </select>
-                            </label>
-                            <label className="block">
-                                <span className="text-xs text-gray-400 block mb-1">分辨率</span>
-                                <select
-                                    className="w-full px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-white text-sm focus:outline-none focus:border-purple-500"
-                                    value={audioCfgDraft.resolution}
-                                    onChange={(e) => setAudioCfgDraft({...audioCfgDraft, resolution: e.target.value})}
-                                >
-                                    {audioCfgOptions.resolutions.map((r) => <option key={r} value={r}>{r}</option>)}
-                                </select>
-                            </label>
-                            <label className="block">
-                                <span className="text-xs text-gray-400 block mb-1">时长(秒)</span>
-                                <select
-                                    className="w-full px-3 py-2 bg-[#0f111a] border border-gray-700 rounded text-white text-sm focus:outline-none focus:border-purple-500"
-                                    value={audioCfgDraft.duration}
-                                    onChange={(e) => setAudioCfgDraft({
-                                        ...audioCfgDraft,
-                                        duration: Number(e.target.value)
-                                    })}
-                                >
-                                    {audioCfgOptions.durations.map((d) => <option key={d} value={d}>{d}s</option>)}
-                                </select>
-                            </label>
-                            <div className="sm:col-span-2 flex gap-2 mt-1">
-                                <button onClick={handleSaveAudioCfg} disabled={audioCfgSaving}
-                                        className="btn-save">{audioCfgSaving ? '保存中...' : '保存'}</button>
-                                <button onClick={() => setAudioCfgEditing(false)}
-                                        className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-xl text-white text-sm">取消
-                                </button>
-                            </div>
-                        </div>
-                    ) : (
-                        <div className="flex items-center gap-3 flex-wrap">
-                            <code
-                                className="flex-1 min-w-0 px-3 py-2 bg-[#0f111a] rounded text-gray-300 text-sm font-mono">
-                                {audioCfg.model} · {audioCfg.ratio} · {audioCfg.resolution} · {audioCfg.duration}s
-                            </code>
-                            {isSuperAdmin && <button onClick={() => {
-                                setAudioCfgDraft(audioCfg);
-                                setAudioCfgEditing(true);
-                            }} className="btn-edit">修改
-                            </button>}
-                        </div>
-                    )
-                ) : (
-                    <div className="text-xs text-gray-500">加载中...</div>
-                )}
-            </div>
-
-        {/* 批量生成设置 */}
-        {isSuperAdmin && (
-          <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl p-6 mb-6">
-            <h2 className="text-xl font-semibold text-white mb-2">批量生成设置</h2>
-            <p className="text-xs text-gray-500 mb-4">
-              控制视频生成和 HappyHorse 模块点击一次按钮可同时生成的任务数。数量越大，积分消耗越快。
-            </p>
-            <label className="block text-sm font-medium text-gray-400 mb-2">
-              每次批量生成数量上限
-            </label>
-            <div className="flex flex-wrap gap-2 mb-4">
-              {([1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const).map((n) => (
-                <button
-                  key={n}
-                  onClick={() => setBatchMaxConcurrent(String(n))}
-                  className={`px-3 py-2 rounded-xl text-sm font-medium border transition-all ${
-                    batchMaxConcurrent === String(n)
-                      ? 'border-purple-500 bg-purple-500/10 text-purple-400'
-                      : 'border-gray-700 bg-[#161824] text-gray-400 hover:border-gray-600'
-                  }`}
-                >
-                  {n}
-                </button>
-              ))}
-            </div>
-            <button
-              onClick={async () => {
-                setBatchSaving(true);
-                try {
-                  const res = await fetch('/api/admin/batch-concurrent', {
-                    method: 'PUT',
-                    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-                    body: JSON.stringify({ max_concurrent: batchMaxConcurrent }),
-                  });
-                  const data = await res.json();
-                  if (!data.success) throw new Error(data.error || '保存失败');
-                  alert('已保存');
-                } catch (e) {
-                  alert(e instanceof Error ? e.message : '保存失败');
-                } finally {
-                  setBatchSaving(false);
-                }
-              }}
-              disabled={batchSaving}
-              className="px-6 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:from-gray-700 disabled:to-gray-700 disabled:text-gray-500 rounded-xl transition-all font-medium shadow-lg shadow-purple-900/20 text-sm"
-            >
-              {batchSaving ? '保存中...' : '保存设置'}
-            </button>
-          </div>
-        )}
 
         {/* 用户编辑弹窗 */}
         {showUserModal && selectedUser && (

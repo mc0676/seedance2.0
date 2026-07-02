@@ -7113,11 +7113,10 @@ async function volcArkAssetRequest(action, body, db, keyGroupId = null) {
   const urlPath = '/';
   const query = { Action: action, Version: '2024-01-01' };
   const bodyStr = body ? JSON.stringify(body) : '{}';
-  const DO_SHOW_STATUS = ['1', 'true'].includes((process.env.SHOW_STATUS_OF_SYNCHRONIZATION_OF_ASSET_OF_VOLC || '').toLowerCase());
-  if (DO_SHOW_STATUS) {
+  const DO_SHOW_STATUS_OF_SYNCHRONIZATION_OF_ASSET_OF_VOLC = ['1', 'true'].includes((process.env.SHOW_STATUS_OF_SYNCHRONIZATION_OF_ASSET_OF_VOLC || '').toLowerCase());
+  if (DO_SHOW_STATUS_OF_SYNCHRONIZATION_OF_ASSET_OF_VOLC) {
     const ts = new Date().toISOString();
-    console.log(`[index.js] ${ts} [volc-ark] 正在调用 ${action} 方法，请求体为：`);
-    console.log(JSON.stringify(body, null, 2));
+    console.log(`[index.js] ${ts} [volc-ark] ${action} 请求：${bodyStr}`);
   }
   const signHeaders = volcSign('POST', host, urlPath, query, bodyStr, ak, sk);
   const sortedQuery = Object.keys(query).sort().map(k =>
@@ -7137,6 +7136,14 @@ async function volcArkAssetRequest(action, body, db, keyGroupId = null) {
   let json;
   try { json = JSON.parse(text); } catch {
     throw new Error(`火山API返回非JSON响应（HTTP ${resp.status}）：${text.slice(0, 200)}`);
+  }
+  if (DO_SHOW_STATUS_OF_SYNCHRONIZATION_OF_ASSET_OF_VOLC) {
+    console.log('--------------------------------------------------------------------------------');
+    const ts = new Date().toISOString();
+    console.log(`[index.js] ${ts} [volc-ark] ${action} 已经收到响应，本次入参是：`);
+    console.log(JSON.stringify(body, null, 2));
+    console.log(`本次出参是：`);
+    console.log(JSON.stringify(json, null, 2));
   }
   if (!resp.ok || json.ResponseMetadata?.Error) {
     const rawMsg = json.ResponseMetadata?.Error?.Message || JSON.stringify(json);
@@ -7193,14 +7200,17 @@ app.get('/api/admin/volc-native/asset', authenticate, requireAdmin, async (req, 
 app.get('/api/admin/volc-native/asset-groups', authenticate, requireAdmin, async (req, res) => {
   try {
     const db = getDatabase();
-    const { pageNumber = 1, pageSize = 20, name, keyGroupId } = req.query;
+    const { pageNumber = 1, pageSize = 20, name, keyGroupId, sortBy, sortOrder } = req.query;
     const filter = { GroupType: 'AIGC' };
     if (name) filter.Name = name;
-    const result = await volcArkAssetRequest('ListAssetGroups', {
+    const body = {
       Filter: filter,
       PageNumber: Number(pageNumber),
       PageSize: Number(pageSize),
-    }, db, keyGroupId ? Number(keyGroupId) : null);
+    };
+    if (sortBy === 'CreateTime' || sortBy === 'UpdateTime') body.SortBy = sortBy;
+    if (sortOrder === 'Asc' || sortOrder === 'Desc') body.SortOrder = sortOrder;
+    const result = await volcArkAssetRequest('ListAssetGroups', body, db, keyGroupId ? Number(keyGroupId) : null);
     res.json({ success: true, data: result });
   } catch (e) {
     res.status(502).json({ error: e.message });
@@ -7211,16 +7221,20 @@ app.get('/api/admin/volc-native/asset-groups', authenticate, requireAdmin, async
 app.get('/api/admin/volc-native/assets', authenticate, requireAdmin, async (req, res) => {
   try {
     const db = getDatabase();
-    const { groupId, pageNumber = 1, pageSize = 20, name, statuses, keyGroupId } = req.query;
+    const { groupId, groupIds, pageNumber = 1, pageSize = 20, name, statuses, keyGroupId } = req.query;
     const filter = { GroupType: 'AIGC' };
-    if (groupId) filter.GroupIds = [groupId];
+    if (groupIds) filter.GroupIds = groupIds.split(',');
+    else if (groupId) filter.GroupIds = [groupId];
     if (name) filter.Name = name;
     if (statuses) filter.Statuses = statuses.split(',');
     // 若未传 keyGroupId，从 asset_groups 查
     let kId = keyGroupId ? Number(keyGroupId) : null;
-    if (!kId && groupId) {
-      const ag = db.prepare('SELECT volc_id FROM asset_groups WHERE volc_group_id = ?').get(groupId);
-      kId = ag?.volc_id || null;
+    if (!kId) {
+      const lookupId = groupId || (groupIds ? groupIds.split(',')[0] : null);
+      if (lookupId) {
+        const ag = db.prepare('SELECT volc_id FROM asset_groups WHERE volc_group_id = ?').get(lookupId);
+        kId = ag?.volc_id || null;
+      }
     }
     const result = await volcArkAssetRequest('ListAssets', {
       Filter: filter,
@@ -8054,15 +8068,15 @@ async function refreshAssetThumbnailsToOss(projectId) {
 
     if (assets.length === 0) return;
 
-    const DO_SHOW_STATUS = ['1', 'true'].includes((process.env.SHOW_STATUS_OF_SYNCHRONIZATION_OF_ASSET_OF_VOLC || '').toLowerCase());
-    if (DO_SHOW_STATUS) {
+    const DO_SHOW_STATUS_OF_SYNCHRONIZATION_OF_ASSET_OF_VOLC = ['1', 'true'].includes((process.env.SHOW_STATUS_OF_SYNCHRONIZATION_OF_ASSET_OF_VOLC || '').toLowerCase());
+    if (DO_SHOW_STATUS_OF_SYNCHRONIZATION_OF_ASSET_OF_VOLC) {
       const ts = new Date().toISOString();
       console.log(`[index.js] ${ts} [assets] 后台刷新 ${assets.length} 个非 OSS 缩略图...`);
       console.log(JSON.stringify(assets.map(a => ({ id: a.id, volc_asset_id: a.volc_asset_id, name: a.name, oldThumbnail: a.thumbnail_url })), null, 2));
     }
     for (const asset of assets) {
       try {
-        if (DO_SHOW_STATUS) {
+        if (DO_SHOW_STATUS_OF_SYNCHRONIZATION_OF_ASSET_OF_VOLC) {
           const ts2 = new Date().toISOString();
           console.log(`\n------------------------------------------------`);
           console.log(`[index.js] ${ts2} [assets] 正在处理 id: ${asset.id} - name: ${asset.name} - volc_asset_id: ${asset.volc_asset_id}`);
@@ -8072,7 +8086,7 @@ async function refreshAssetThumbnailsToOss(projectId) {
         // NotFound.asset_id：火山侧已删除，标记本地为已删除并清空无用字段
         if (!volcAsset) {
           db.prepare(`UPDATE project_assets SET status = 'deleted', file_url = NULL, file_size = NULL, review_status = NULL, auto_inject = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(asset.id);
-          if (DO_SHOW_STATUS) {
+          if (DO_SHOW_STATUS_OF_SYNCHRONIZATION_OF_ASSET_OF_VOLC) {
             console.log(`[assets] 火山侧已删除，标记本地: ${asset.volc_asset_id}`);
           }
           continue;
@@ -8098,7 +8112,7 @@ async function refreshAssetThumbnailsToOss(projectId) {
           WHERE id = ?
         `).run(ossUrl, freshUrl, asset.id);
 
-        if (DO_SHOW_STATUS) {
+        if (DO_SHOW_STATUS_OF_SYNCHRONIZATION_OF_ASSET_OF_VOLC) {
           console.log(`[assets] 缩略图→OSS: ${asset.volc_asset_id}`);
         }
       } catch (e) {

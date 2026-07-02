@@ -113,8 +113,7 @@ async function arkRequest(action, body = {}, keyGroupId = null) {
 
   if (DO_SHOW_STATUS_OF_SYNCHRONIZATION_OF_ASSET_OF_VOLC) {
     const ts = new Date().toISOString();
-    console.log(`[assetService.js] ${ts} [ark-assets] 正在调用 ${action} 方法，请求体为：`);
-    console.log(JSON.stringify(body, null, 2));
+    console.log(`[assetService.js] ${ts} [ark-assets] ${action} 请求：${bodyStr}`);
   }
   const resp = await fetch(`https://${ARK_HOST}/?${sortedQuery}`, {
     method: 'POST',
@@ -133,8 +132,11 @@ async function arkRequest(action, body = {}, keyGroupId = null) {
     throw new Error(`ARK API 返回非JSON（HTTP ${resp.status}）：${text.slice(0, 200)}`);
   }
   if (DO_SHOW_STATUS_OF_SYNCHRONIZATION_OF_ASSET_OF_VOLC) {
+    console.log('---------------------------------------------------------------------------------------------------');
     const ts = new Date().toISOString();
-    console.log(`[assetService.js] ${ts} [ark-assets] ${action} 回参：`);
+    console.log(`[assetService.js] ${ts} [ark-assets] ${action} 已经收到响应，本次入参是：`);
+    console.log(JSON.stringify(body, null, 2));
+    console.log(`本次出参是：`);
     console.log(JSON.stringify(json, null, 2));
   }
   if (!resp.ok || json.ResponseMetadata?.Error) {

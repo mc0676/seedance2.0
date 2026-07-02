@@ -99,6 +99,8 @@ export function deleteDepartment(id) {
   const target = db.prepare(`SELECT id, name FROM departments WHERE id = ?`).get(id);
   if (!target) throw new Error('部门不存在');
   const affected = db.prepare(`SELECT COUNT(*) AS n FROM users WHERE department_id = ?`).get(id).n;
+  // 将该部门用户迁移到默认小组（id=0），而非置空
+  db.prepare(`UPDATE users SET department_id = 0 WHERE department_id = ?`).run(id);
   db.prepare(`DELETE FROM departments WHERE id = ?`).run(id);
   return { id, name: target.name, affectedUsers: affected };
 }
