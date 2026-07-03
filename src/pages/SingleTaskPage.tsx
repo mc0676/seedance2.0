@@ -18,6 +18,8 @@ import { GearIcon, PlusIcon, CloseIcon, SparkleIcon } from '../components/Icons'
 import DownloadButton from '../components/DownloadButton';
 import Layout from '../components/Layout';
 import AssetGrid, { type GridAsset } from '../components/AssetGrid';
+import PromptEditor from '../components/PromptEditor';
+import type { ReferenceItem, PromptEditorHandle } from '../components/PromptEditor';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { getProjectAssets } from '../services/projectService';
@@ -329,6 +331,7 @@ export default function SingleTaskPage() {
   const mentionAnchorNodeRef = useRef<Node | null>(null);
   const mentionAnchorOffsetRef = useRef<number>(0);
   const editorRef = useRef<HTMLDivElement>(null);
+  const [editorHandle, setEditorHandle] = useState<PromptEditorHandle | null>(null);
   const staleChipRef = useRef<HTMLElement | null>(null);
   // document-level pointerdown: 用 elementFromPoint 绕过 contentEditable + pointer-events 限制
   useEffect(() => {
@@ -376,14 +379,26 @@ export default function SingleTaskPage() {
     ...audios.map((f, i) => ({ file: f, label: `音频${i + 1}`, tag: `@音频${i + 1}`, emoji: '🎵', isAsset: false })),
   ];
 
-  // 素材组所有非 rejected 素材均可 @（同一素材可多次引用）
-  // 渲染层 sanity check：strict 过滤——只展示 project_id 严格等于当前工作组 ID 的资产
+  // 素材组所有可用素材
   const currentProjectId = state.currentProject?.id;
   const projectsLoaded = !state.loading;
   const availableAssets = useMemo(
     () => projectAssets.filter((a) => a.project_id === currentProjectId),
     [projectAssets, currentProjectId]
   );
+
+  // PromptEditor 引用项（上传文件 + 已选资产 + 可用素材组资产）
+  const referenceItems = useMemo<ReferenceItem[]>(() => [
+    ...images.map((f, i) => ({ tag: `@图片${i + 1}`, name: `图片${i + 1}`, url: f.previewUrl, type: 'image' as const, source: 'upload' as const })),
+    ...firstFrameImages.map((f, i) => ({ tag: `@首图${i + 1}`, name: `首图${i + 1}`, url: f.previewUrl, type: 'image' as const, source: 'upload' as const })),
+    ...lastFrameImages.map((f, i) => ({ tag: `@尾图${i + 1}`, name: `尾图${i + 1}`, url: f.previewUrl, type: 'image' as const, source: 'upload' as const })),
+    ...videos.map((_f, i) => ({ tag: `@视频${i + 1}`, name: `视频${i + 1}`, type: 'video' as const, source: 'upload' as const })),
+    ...audios.map((_f, i) => ({ tag: `@音频${i + 1}`, name: `音频${i + 1}`, type: 'audio' as const, source: 'upload' as const })),
+    ...assetSelections.map(s => ({ tag: s.chipTag, name: s.name, url: s.thumbnailUrl, type: s.fileType, source: 'asset' as const })),
+    ...availableAssets.filter(a => a.volc_asset_id).map(a => ({ tag: `@${a.volc_asset_id}`, name: a.name, url: a.thumbnail_url || a.file_url, type: (a.file_type || 'image') as ReferenceItem['type'], source: 'asset' as const })),
+  ], [images, firstFrameImages, lastFrameImages, videos, audios, assetSelections, availableAssets]);
+
+  // 素材组所有非 rejected 素材均可 @
 
   // 自愈：prompt 或 availableAssets 变化时，确保 prompt 中所有 @<volcId> chip 都在 assetSelections 中
   // 覆盖所有路径：粘贴、手动输入、加载历史、素材延迟加载等
@@ -1617,7 +1632,7 @@ export default function SingleTaskPage() {
       if (prev.some((s) => s.id === sel.id)) return prev;
       return [...prev, sel];
     });
-    insertMention(chipTag, asset.name);
+    editorHandle?.insertMention(chipTag);
   };
 
   useEffect(() => { if (!showMention) setMentionFocusIdx(-1); }, [showMention]);
@@ -2114,18 +2129,15 @@ export default function SingleTaskPage() {
             </div>
 
             <div className="relative">
-              <div
-                ref={editorRef}
-                contentEditable={!isGenerating}
-                id="prompt-editor"
-                onInput={handleEditorInput}
-                onKeyDown={handleEditorKeyDown}
-                onPaste={handleEditorPaste}
-                onCopy={handleEditorCopy}
-                onCut={handleEditorCut}
-                data-placeholder="描述你想要生成的视频场景。输入 @ 可引用本次上传的素材或项目组素材组里的素材..."
-                className="prompt-editor w-full text-sm focus:outline-none min-h-[100px] text-gray-200 leading-relaxed bg-[#0d0f1a] rounded-xl px-4 py-3"
-                suppressContentEditableWarning
+              <PromptEditor
+                refs={referenceItems}
+                value={prompt}
+                onChange={setPrompt}
+                disabled={isGenerating}
+                editorId="prompt-editor"
+                placeholder="描述你想要生成的视频场景。输入 @ 可引用本次上传的素材或项目组素材组里的素材..."
+                maxLength={5000}
+                onReady={setEditorHandle}
               />
               {showMention && (mentionItems.length > 0 || mentionableAssets.length > 0) && (
                 <div

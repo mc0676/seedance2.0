@@ -33,7 +33,7 @@ export default function AssetGrid({
   showPendingOverlay = true,
 }: AssetGridProps) {
   return (
-    <div className="max-h-[20rem] overflow-y-auto custom-scrollbar">
+    <div className="max-h-[28rem] overflow-y-auto custom-scrollbar" style={{ scrollbarGutter: 'stable' }}>
       <div className="grid grid-cols-4 gap-2">
         {assets.map((asset) => {
           const isSelected = selectedUrl && asset.file_url && selectedUrl === asset.file_url;
@@ -55,7 +55,7 @@ export default function AssetGrid({
                 isRejected ? 'cursor-not-allowed opacity-60 bg-red-500/10 border-red-500/40' :
                 isPending ? 'bg-amber-500/10 border-amber-500/40' :
                 isSelected ? 'border-purple-400 shadow-lg shadow-purple-500/20' :
-                'border-gray-700 hover:border-gray-500 hover:scale-105'
+                'border-gray-700 hover:border-gray-500 hover:brightness-110'
               }`}
             >
               {asset.file_type === 'audio' ? (
