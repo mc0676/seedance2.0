@@ -6341,6 +6341,11 @@ app.post('/api/happyhorse-tasks', authenticate, async (req, res) => {
     } else if (m === 'video-edit') {
       const vid = cleaned.find((x) => x.type === 'video');
       if (!vid) return res.status(400).json({ error: '视频编辑需上传 1 个待编辑视频' });
+      // 视频时长 ≥3s 硬性校验（DashScope 要求）
+      const hintInputDurVid = Number(inputVideoDurationSec);
+      if (Number.isFinite(hintInputDurVid) && hintInputDurVid > 0 && hintInputDurVid < 3) {
+        return res.status(400).json({ error: `视频时长不足（当前 ${hintInputDurVid.toFixed(1)}s），DashScope 要求视频至少 3 秒。请上传更长的视频后重试。` });
+      }
       const refs = cleaned.filter((x) => x.type === 'reference_image');
       if (refs.length > 5) return res.status(400).json({ error: '视频编辑参考图最多 5 张' });
       apiInputMedia = [{ type: 'video', url: vid.url }, ...refs.map((x) => ({ type: 'reference_image', url: x.url }))];

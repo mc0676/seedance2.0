@@ -1049,6 +1049,15 @@ export default function HappyHorsePage() {
       setSubmitError('无法识别视频时长，无法预估积分。请重新上传视频后再生成。');
       return;
     }
+    // video-edit：输入视频 ≥3s（DashScope 硬性要求）
+    if (mode === 'video-edit' && editVideoDuration && editVideoDuration < 3) {
+      setSubmitError(`视频时长不足（当前 ${editVideoDuration.toFixed(1)}s），DashScope 要求视频至少 3 秒。请上传更长的视频。`);
+      return;
+    }
+    // video-edit：输入视频 >15s 会被截断，仅作提醒不阻断
+    if (mode === 'video-edit' && editVideoDuration && editVideoDuration > 15) {
+      setSubmitError(`提示：视频时长 ${editVideoDuration.toFixed(1)}s，超出 15s 上限，将仅使用前 15s 进行编辑。`);
+    }
 
     // 折扣过期检查
     if (estimate.discountedCredits != null && !discountExpired) {

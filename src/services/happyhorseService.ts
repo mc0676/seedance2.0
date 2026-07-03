@@ -157,22 +157,32 @@ export function estimateHappyhorseCredits(
 }
 
 const DASHSCOPE_ERROR_MAP: { pattern: RegExp; zh: string }[] = [
-  { pattern: /overdue balance|overdue.*account|account.*overdue/i, zh: '阿里云后端异常，请稍后重试' },
-  { pattern: /account.*good.*standing|good.*standing/i,           zh: '阿里云后端异常，请稍后重试' },
+  { pattern: /duration.*at least\s*(\d+\.?\d*)\s*s.*got\s*(\d+\.?\d*)/i, zh: '' }, // 动态生成
+  { pattern: /overdue balance|overdue.*account|account.*overdue/i, zh: '阿里云账户欠费，请联系管理员充值' },
+  { pattern: /account.*good.*standing|good.*standing/i,           zh: '阿里云账户异常，请联系管理员处理' },
   { pattern: /rate limit|too many requests/i,                      zh: '请求过于频繁，请稍后重试' },
+  { pattern: /green net check|inappropriate content/i,             zh: '内容安全审核未通过，请修改素材后重试' },
   { pattern: /sensitive|copyright/i,                               zh: '内容触发安全审核，请修改后重试' },
-  { pattern: /internal.*error|service.*error/i,                    zh: '阿里云后端异常，请稍后重试' },
+  { pattern: /internal.*error|service.*error/i,                    zh: '阿里云服务异常，请稍后重试' },
   { pattern: /timeout/i,                                           zh: '生成超时，请稍后重试' },
+  { pattern: /access denied/i,                                     zh: '阿里云接口访问被拒，请联系管理员' },
 ];
 
 /** 前端本地化 DashScope 原始错误消息（不修改 DB 数据，仅用于展示） */
 export function translateDashScopeError(msg: string | null | undefined): string {
   if (!msg) return msg || '';
+  // 图片分辨率不足
   const resMatch = msg.match(/image.*?\/([^/\s]+\.\w+)\s+resolution must be at least (\d+x\d+), got (\d+x\d+)/i);
   if (resMatch) {
     return `图片分辨率不足：${resMatch[1]} 为 ${resMatch[3].replace('x', '×')}，最小要求 ${resMatch[2].replace('x', '×')}`;
   }
+  // 视频时长不足：duration should be at least 3s, got 2.32s
+  const durMatch = msg.match(/duration.*at least\s*(\d+\.?\d*)\s*s.*got\s*(\d+\.?\d*)/i);
+  if (durMatch) {
+    return `视频时长不足：需要至少 ${durMatch[1]}s，当前视频仅 ${durMatch[2]}s`;
+  }
   for (const { pattern, zh } of DASHSCOPE_ERROR_MAP) {
+    if (!zh) continue;
     if (pattern.test(msg)) return zh;
   }
   return msg;
