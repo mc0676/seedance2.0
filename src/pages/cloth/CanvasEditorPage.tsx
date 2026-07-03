@@ -24,7 +24,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import { getAuthHeaders } from '../../services/authService';
 import { Settings2, Keyboard } from 'lucide-react';
-import { MenuIcon, ImageIcon, VideoIcon, SparkleIcon, FilmIcon, PlusIcon, TrashIcon, FileUpIcon } from '../../components/Icons';
+import { MenuIcon, ImageIcon, VideoIcon, SparkleIcon, FilmIcon, PlusIcon, TrashIcon, FileUpIcon, SettingsIcon } from '../../components/Icons';
 import { CanvasMinimap } from '../../components/cloth/CanvasMinimap';
 import { CanvasZoomDock } from '../../components/cloth/CanvasZoomDock';
 import { CanvasNodeHoverToolbar } from '../../components/cloth/CanvasNodeHoverToolbar';
@@ -524,12 +524,6 @@ function CanvasNodeImpl({ id: nodeId, data, selected, width: rfWidth, height: rf
               </div>
               <span className="text-[11px] text-center leading-tight">{(data as any).generateError}</span>
             </div>
-          ) : (data as any)?.generating ? (
-            /* 原项目 LoadingContent — 旋转圆环 + "生成中" */
-            <div className="flex h-full w-full flex-col items-center justify-center gap-3" style={{ color: C.blue }}>
-              <div className="size-10 animate-spin rounded-full border-2" style={{ borderColor: C.nodeStroke, borderTopColor: C.blue }} />
-              <span className="text-[10px] tracking-[0.2em]">生成中</span>
-            </div>
           ) : hasImageContent ? (
             <div className="h-full w-full overflow-hidden rounded-3xl">
               <img
@@ -539,6 +533,12 @@ function CanvasNodeImpl({ id: nodeId, data, selected, width: rfWidth, height: rf
                 className="pointer-events-none block h-full w-full select-none object-contain"
                 onDragStart={(e) => e.preventDefault()}
               />
+            </div>
+          ) : (data as any)?.generating ? (
+            /* 原项目 LoadingContent — 旋转圆环 + "生成中" */
+            <div className="flex h-full w-full flex-col items-center justify-center gap-3" style={{ color: C.blue }}>
+              <div className="size-10 animate-spin rounded-full border-2" style={{ borderColor: C.nodeStroke, borderTopColor: C.blue }} />
+              <span className="text-[10px] tracking-[0.2em]">生成中</span>
             </div>
           ) : (
             <div className="flex h-full w-full flex-col items-center justify-center gap-3" style={{ color: C.nodePlaceholder }}>
@@ -556,12 +556,6 @@ function CanvasNodeImpl({ id: nodeId, data, selected, width: rfWidth, height: rf
                 <svg className="size-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
               </div>
               <span className="text-[11px] text-center leading-tight">{(data as any).generateError}</span>
-            </div>
-          ) : (data as any)?.generating ? (
-            /* 视频生成中 — 旋转圆环 + "生成中" */
-            <div className="flex h-full w-full flex-col items-center justify-center gap-3" style={{ color: C.blue }}>
-              <div className="size-10 animate-spin rounded-full border-2" style={{ borderColor: C.nodeStroke, borderTopColor: C.blue }} />
-              <span className="text-[10px] tracking-[0.2em]">生成中</span>
             </div>
           ) : hasVideoContent ? (
             <video
@@ -602,6 +596,12 @@ function CanvasNodeImpl({ id: nodeId, data, selected, width: rfWidth, height: rf
                 (dataRef.current as any)?.onVideoResized?.(nodeId, nw, nh);
               }}
             />
+          ) : (data as any)?.generating ? (
+            /* 视频生成中 — 旋转圆环 + "生成中" */
+            <div className="flex h-full w-full flex-col items-center justify-center gap-3" style={{ color: C.blue }}>
+              <div className="size-10 animate-spin rounded-full border-2" style={{ borderColor: C.nodeStroke, borderTopColor: C.blue }} />
+              <span className="text-[10px] tracking-[0.2em]">生成中</span>
+            </div>
           ) : (
             <div className="flex h-full w-full flex-col items-center justify-center gap-3" style={{ color: C.nodePlaceholder }}>
               <div className="flex size-14 items-center justify-center rounded-2xl" style={{ background: C.nodeStroke }}>
@@ -619,12 +619,6 @@ function CanvasNodeImpl({ id: nodeId, data, selected, width: rfWidth, height: rf
               </div>
               <span className="text-[11px] text-center leading-tight">{(data as any).generateError}</span>
             </div>
-          ) : (data as any)?.generating ? (
-            /* 音频生成中 — 旋转圆环 + "生成中" */
-            <div className="flex h-full w-full flex-col items-center justify-center gap-3" style={{ color: C.blue }}>
-              <div className="size-10 animate-spin rounded-full border-2" style={{ borderColor: C.nodeStroke, borderTopColor: C.blue }} />
-              <span className="text-[10px] tracking-[0.2em]">生成中</span>
-            </div>
           ) : hasAudioContent ? (
             <div className="flex h-full w-full flex-col justify-center gap-3 px-4" style={{ background: C.nodeFill, color: C.nodeText }}>
               <div className="flex min-w-0 items-center gap-2 text-sm opacity-70">
@@ -633,6 +627,12 @@ function CanvasNodeImpl({ id: nodeId, data, selected, width: rfWidth, height: rf
               </div>
               {d.label && <p className="text-[11px] leading-relaxed opacity-50 line-clamp-2">{d.label}</p>}
               <audio src={d.content} controls className="w-full" style={{ colorScheme: C.nodeText < '#888' ? 'light' : 'dark' }} onDragStart={(e) => e.preventDefault()} />
+            </div>
+          ) : (data as any)?.generating ? (
+            /* 音频生成中 — 旋转圆环 + "生成中" */
+            <div className="flex h-full w-full flex-col items-center justify-center gap-3" style={{ color: C.blue }}>
+              <div className="size-10 animate-spin rounded-full border-2" style={{ borderColor: C.nodeStroke, borderTopColor: C.blue }} />
+              <span className="text-[10px] tracking-[0.2em]">生成中</span>
             </div>
           ) : (
             <div className="flex h-full w-full flex-col items-center justify-center gap-3" style={{ color: C.nodePlaceholder }}>
@@ -691,7 +691,7 @@ function CanvasNodeImpl({ id: nodeId, data, selected, width: rfWidth, height: rf
       </div>
 
       {/* 文本节点右下角"生成"按钮 */}
-      {d.nodeType === 'script' && (d.content?.trim()) && (
+      {d.nodeType === 'script' && (
         <button
           type="button"
           className="absolute right-3 bottom-3 z-20 inline-flex h-8 items-center gap-1 rounded-full border px-2.5 text-xs font-medium opacity-85 backdrop-blur-md transition hover:scale-[1.02] hover:opacity-100"
@@ -1052,8 +1052,6 @@ export default function CanvasEditorPage() {
   const generateConfigNode = useCallback((sourceNodeId: string, mode: ConfigGenerationMode) => {
     const sourceNode = nodesRef.current.find((n) => n.id === sourceNodeId);
     if (!sourceNode) return;
-    const text = ((sourceNode.data as any)?.content || '').trim();
-    if (!text) return;
 
     // 创建 enhancement 节点，位置在文本节点右侧 + 120px 间距
     const configW = 336;
@@ -1074,6 +1072,7 @@ export default function CanvasEditorPage() {
         nodeType: 'enhancement' as NodeType,
         dbType: 'config',
         generationMode: mode,
+        configGenerationMode: mode,
         configPrompt: '',
         configModel: mode === 'video' ? 'seedance-2.0' : 'nano-banana-2',
       },
@@ -1729,9 +1728,10 @@ export default function CanvasEditorPage() {
             muted: C.nodeMuted, faint: C.nodeFaint, activeBg: C.selection, blue: C.blue,
           },
           configOnChange: (_nodeId: string, patch: Record<string, unknown>) => {
-            // 同步 configGenerationMode + configAssetsOfAt，确保 CanvasEdge 能读到最新值
+            // 同步 configGenerationMode / configModel / configAssetsOfAt，确保 PUT 同步时读到最新值
             const fullPatch = { ...patch };
             if ('generationMode' in patch) (fullPatch as any).configGenerationMode = patch.generationMode;
+            if ('model' in patch) (fullPatch as any).configModel = patch.model;
             if ('assetsOfAt' in patch) (fullPatch as any).configAssetsOfAt = patch.assetsOfAt;
             setNodes((nds3) => nds3.map((n3) => n3.id === n.id ? { ...n3, data: { ...n3.data, ...fullPatch } } : n3));
             // 同步更新边线 isAudio / configAssetsOfAt 标记（直接操作，无需等 sync effect）
@@ -1840,23 +1840,51 @@ export default function CanvasEditorPage() {
         } catch {}
       }
       const isTextNode = type === 'text';
-      const nodeWidth = isTextNode ? 340 : 260;
-      const nodeHeight = isTextNode ? 240 : 160;
+      const isConfigNode = type === 'config';
+      const nodeWidth = isTextNode ? 340 : isConfigNode ? 336 : 260;
+      const nodeHeight = isTextNode ? 240 : isConfigNode ? 240 : 160;
       setNodes((nds) => [...nds, {
         id,
         type: runtimeTypes[type] || 'script',
         position: getViewportCenter(),
         width: nodeWidth,
         height: nodeHeight,
-        data: { label: '', content: '', nodeType: runtimeTypes[type] || 'script', id_of_resource: idOfResource, width: nodeWidth, height: nodeHeight, onContentChange: onContentChangeWrapper },
+        data: {
+          label: '', content: '',
+          nodeType: runtimeTypes[type] || 'script',
+          dbType: isConfigNode ? 'config' : undefined,
+          generationMode: isConfigNode ? 'image' : undefined,
+          configGenerationMode: isConfigNode ? 'image' : undefined,
+          configPrompt: isConfigNode ? '' : undefined,
+          configModel: isConfigNode ? 'nano-banana-2' : undefined,
+          id_of_resource: idOfResource, width: nodeWidth, height: nodeHeight,
+          onContentChange: onContentChangeWrapper,
+        },
         style: { width: nodeWidth, height: nodeHeight },
       }]);
       // 立即保存新节点（不等 debounce）
-      fetch(`/api/cloths/${clothId}/assets`, {
+      const assetType = isConfigNode ? 'config' : (runtimeTypes[type] || 'script');
+      const assetPayload: Record<string, unknown> = { id, type: assetType, subtype: null, title: '', pos_x: 0, pos_y: 0, width: nodeWidth, height: nodeHeight, id_of_resource: idOfResource };
+      if (isConfigNode) {
+        assetPayload.generation_mode = 'image';
+        assetPayload.config_model = 'nano-banana-2';
+        assetPayload.config_prompt = '';
+        assetPayload.config_params = '{}';
+      }
+      const savePromise = fetch(`/api/cloths/${clothId}/assets`, {
         method: 'POST',
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ assets: [{ id, type: runtimeTypes[type] || 'script', subtype: null, title: '', pos_x: 0, pos_y: 0, width: nodeWidth, height: nodeHeight, id_of_resource: idOfResource }] }),
+        body: JSON.stringify({ assets: [assetPayload] }),
+      }).then(async (res) => {
+        if (!isConfigNode) return;
+        const data = await res.json().catch(() => ({}));
+        const savedId = data?.id_of_resource ?? (data?.data?.id_of_resource);
+        if (savedId) {
+          setNodes((nds) => nds.map((n) => n.id === id ? { ...n, data: { ...n.data, id_of_resource: savedId } } : n));
+        }
       }).catch(() => {});
+      // 不阻塞 UI
+      savePromise.catch(() => {});
       return;
     }
     // undo/redo/upload/library/my-assets/style/clear — 暂未实现
@@ -2088,6 +2116,7 @@ export default function CanvasEditorPage() {
                   }
                   return {
                     generationMode: mode,
+                    configGenerationMode: mode,
                     configPrompt: (a as any).config_prompt || '',
                     configModel: (a as any).config_model || null,
                     configAssetsOfAt: (a as any).config_assets_of_at || '[]',
@@ -2213,12 +2242,12 @@ export default function CanvasEditorPage() {
         };
         if (dbType === 'config') {
           base.generation_mode = d?.generationMode || 'image';
-          base.config_model = (d?.model !== undefined ? (d.model || null) : (d?.configModel || null));
+          base.config_model = d?.configModel || d?.model || null;
           base.config_prompt = d?.configPrompt || d?.prompt || '';
           base.assets_of_at = d?.assetsOfAt || d?.configAssetsOfAt || '[]';
           // 按模式+模型收集参数
           const gMode = d?.generationMode || 'image';
-          const gModel = (d?.model !== undefined ? d.model : d?.configModel) || '';
+          const gModel = d?.configModel || d?.model || '';
           const params: Record<string,unknown> = {};
           if (gMode === 'image') {
             if (gModel === 'gpt-image-2') {
@@ -2349,7 +2378,7 @@ export default function CanvasEditorPage() {
             title="设置"
             aria-label="设置"
           >
-            <Settings2 className="size-4" style={{ color: C.nodeText }} />
+            <SettingsIcon className="size-4" style={{ color: C.nodeText }} />
           </button>
           <ThemeToggler theme={themeMode} onToggle={() => {
             const next = themeMode === 'dark' ? 'light' : 'dark';

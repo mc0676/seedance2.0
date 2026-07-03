@@ -1,5 +1,6 @@
 import { createContext, useContext, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { TrashIcon, FileUpIcon, SparkleIcon, ImageIcon, VideoIcon } from '../Icons';
+import { TrashIcon, FileUpIcon, ImageIcon, VideoIcon } from '../Icons';
+import { Settings2 } from 'lucide-react';
 
 // ── 移植自 infinite-canvas: canvas-toolbar.tsx ──
 // 底部居中菜单栏，含添加节点 / 素材 / 外观 / 删除 / 清空。
@@ -185,8 +186,8 @@ export function CanvasToolbar({ selectedCount, canUndo, canRedo, onAction, theme
         <ToolbarBtn id="tool-audio" hovered={hovered} hoverStyle={hoverStyle} wrapRef={wrapRef} onHover={setHovered} onTip={setTipX} onClick={() => onAction('add-audio')}>
           <Music2Svg />
         </ToolbarBtn>
-        <ToolbarBtn id="tool-config" disabled hovered={hovered} hoverStyle={hoverStyle} wrapRef={wrapRef} onHover={setHovered} onTip={setTipX} onClick={() => onAction('add-config')}>
-          <SparkleIcon className="size-[18px]" />
+        <ToolbarBtn id="tool-config" hovered={hovered} hoverStyle={hoverStyle} wrapRef={wrapRef} onHover={setHovered} onTip={setTipX} onClick={() => onAction('add-config')}>
+          <Settings2 className="size-[18px]" />
         </ToolbarBtn>
 
         <Divider />

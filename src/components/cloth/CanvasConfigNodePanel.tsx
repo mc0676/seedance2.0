@@ -640,9 +640,14 @@ export function CanvasConfigNodePanel({
 
   // composer 打开时，从 prompt 重建编辑器内容
   useEffect(() => {
-    if (composerOpen && prompt && editorRef.current && refsList.length > 0) {
+    if (composerOpen && prompt && editorRef.current) {
       requestAnimationFrame(() => {
-        rebuildEditorContent(editorRef.current!, prompt, refsList, assetsOfAt, validAssetIds, t);
+        if (refsList.length > 0) {
+          rebuildEditorContent(editorRef.current!, prompt, refsList, assetsOfAt, validAssetIds, t);
+        } else {
+          // 独立配置卡片（无引用素材）：直接设置纯文本
+          editorRef.current!.textContent = prompt;
+        }
       });
     }
   }, [composerOpen]);
