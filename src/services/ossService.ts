@@ -21,7 +21,8 @@ export interface OssUploadResult {
 export function uploadToOss(
   file: File,
   mediaType: 'image' | 'video' | 'audio',
-  onProgress?: (percent: number) => void
+  onProgress?: (percent: number) => void,
+  onPhase?: (phase: 'uploading' | 'processing') => void,
 ): Promise<OssUploadResult> {
   return new Promise((resolve, reject) => {
     const formData = new FormData();
@@ -30,13 +31,23 @@ export function uploadToOss(
 
     const xhr = new XMLHttpRequest();
 
-    if (file.size > 5 * 1024 * 1024 && onProgress) {
-      xhr.upload.addEventListener('progress', (e) => {
-        if (e.lengthComputable) {
-          onProgress(Math.round((e.loaded / e.total) * 100));
-        }
-      });
-    }
+    // 超时：视频 3 分钟，图片/音频 2 分钟
+    const timeoutMs = mediaType === 'video' ? 180000 : 120000;
+    xhr.timeout = timeoutMs;
+
+    // 所有文件都显示进度（不再限制 >5MB）
+    xhr.upload.addEventListener('progress', (e) => {
+      if (e.lengthComputable) {
+        const pct = Math.round((e.loaded / e.total) * 100);
+        // 进度到达 95% 后不再上报（剩余 5% 留给服务端 OSS 上传阶段）
+        onProgress?.(Math.min(pct, 95));
+      }
+    });
+
+    // 上传完成（数据到达服务端），切换为 processing 阶段
+    xhr.upload.addEventListener('load', () => {
+      onPhase?.('processing');
+    });
 
     xhr.addEventListener('load', () => {
       if (xhr.status >= 200 && xhr.status < 300) {
@@ -62,6 +73,9 @@ export function uploadToOss(
 
     xhr.addEventListener('error', () => reject(new Error('网络错误，上传失败')));
     xhr.addEventListener('abort', () => reject(new Error('上传已取消')));
+    xhr.addEventListener('timeout', () => {
+      reject(new Error(`上传超时（超过 ${Math.round(timeoutMs / 1000)}s），请检查网络后重试`));
+    });
 
     const authHeaders = getAuthHeaders() as Record<string, string>;
     xhr.open('POST', '/api/upload/oss');

@@ -1037,14 +1037,21 @@ app.post('/api/upload/oss', authenticate, ossUpload.single('file'), async (req, 
     const client = createOssClient();
 
     const MULTIPART_THRESHOLD = 10 * 1024 * 1024; // 10MB 以上走分片上传
-    if (size > MULTIPART_THRESHOLD) {
-      await client.multipartUpload(key, buffer, {
-        mime: mimetype,
-        partSize: 5 * 1024 * 1024,
-        parallel: 3,
-      });
-    } else {
-      await client.put(key, buffer, { mime: mimetype });
+    const uploadTimeoutMs = mediaType === 'video' ? 120000 : 60000; // 视频 2 分钟，图片/音频 1 分钟
+    try {
+      if (size > MULTIPART_THRESHOLD) {
+        await client.multipartUpload(key, buffer, {
+          mime: mimetype,
+          partSize: 5 * 1024 * 1024,
+          parallel: 3,
+          timeout: uploadTimeoutMs,
+        });
+      } else {
+        await client.put(key, buffer, { mime: mimetype, timeout: uploadTimeoutMs });
+      }
+    } catch (ossErr) {
+      console.error(`[OSS] 上传到 OSS 失败 (${(size / 1024 / 1024).toFixed(1)}MB):`, ossErr.message);
+      return res.status(500).json({ error: `文件上传到云存储超时，请重试（${ossErr.message}）` });
     }
 
     const url = `${OSS_URL_PREFIX}${key}`;
