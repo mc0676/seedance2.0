@@ -7,6 +7,7 @@ import ProfileCompletionGate from './components/ProfileCompletionGate';
 import NoProjectGate from './components/NoProjectGate';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
+import HomePage from './pages/HomePage';
 import AdminPage from './pages/AdminPage';
 import SingleTaskPage from './pages/SingleTaskPage';
 import ImageGenPage from './pages/ImageGenPage';
@@ -52,7 +53,7 @@ function ProtectedRoute({
   currentUser: User | null;
 }) {
   if (!currentUser) {
-    return <Navigate to="/login" replace />;
+    return <Navigate to="/home" replace />;
   }
 
   if (requireAdmin && currentUser.role !== 'admin' && currentUser.role !== 'super_admin') {
@@ -193,6 +194,7 @@ function AppContent() {
       {maintenance && <MaintenanceOverlay message={maintenanceMessage} />}
       <Routes>
         {/* 公开路由 */}
+        <Route path="/home" element={<HomePage />} />
         <Route
           path="/login"
           element={

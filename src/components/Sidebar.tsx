@@ -150,14 +150,14 @@ export default function Sidebar({ currentUser, onLogout, onUserUpdated }: Sideba
       >
         {/* Logo 区域 */}
         <div className="h-28 flex items-center justify-between px-4 border-b border-gray-800">
-          <div className={`flex items-center gap-3 ${!expanded && 'justify-center'}`}>
+          <Link to="/home" className={`flex items-center gap-3 ${!expanded && 'justify-center'} hover:opacity-80 transition-opacity`}>
             <img src="https://yunyu-oss.oss-cn-shanghai.aliyuncs.com/LOGO/web_logo.png" alt="云屿智创" className="w-24 h-24 rounded-xl flex-shrink-0 object-contain" />
             {expanded && (
               <span className="text-3xl font-bold text-white whitespace-nowrap">
                 云屿智创
               </span>
             )}
-          </div>
+          </Link>
           {expanded && (
             <button
               onClick={() => setMobileOpen(false)}
@@ -264,10 +264,10 @@ export default function Sidebar({ currentUser, onLogout, onUserUpdated }: Sideba
         >
           <MenuIcon className="w-6 h-6" />
         </button>
-        <div className="flex items-center gap-2">
+        <Link to="/home" className="flex items-center gap-2 hover:opacity-80 transition-opacity">
           <img src="https://yunyu-oss.oss-cn-shanghai.aliyuncs.com/LOGO/web_logo.png" alt="云屿智创" className="w-24 h-24 rounded-xl object-contain" />
           <span className="text-3xl font-bold text-white">云屿智创</span>
-        </div>
+        </Link>
         <div className="w-10" /> {/* 占位 */}
       </header>
 
