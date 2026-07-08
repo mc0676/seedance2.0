@@ -307,13 +307,19 @@ ssh -i .ssh/yunyu_server root@47.94.174.146 "docker exec seedance-blue node -e \
 
 - **Remote**：`mc0676`
 - **仓库**：`https://github.com/mc0676/seedance2.0.git`
-- **Token**：`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`
+- **Token（个人访问令牌）**：`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`
 - **分支**：`main`
 
-### 本地网络能连 GitHub 时
+### 本地推送（需代理）
 
 ```bash
-git push mc0676 HEAD
+# 设置代理（7897 端口）
+git config http.proxy http://127.0.0.1:7897
+git config https.proxy http://127.0.0.1:7897
+
+# 使用令牌推送
+git remote set-url mc0676 https://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@github.com/mc0676/seedance2.0.git
+git push mc0676 HEAD:main
 ```
 
 ### 本地无法连接 GitHub（走服务器中转）
