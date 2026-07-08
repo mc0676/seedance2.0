@@ -39,6 +39,8 @@ COPY server/package.json ./server/
 COPY server/index.js ./server/
 COPY server/database/ ./server/database/
 COPY server/services/ ./server/services/
+COPY server/cloth/ ./server/cloth/
+COPY server/public/ ./server/public/
 
 # 前端 dist 由外部 volume 挂载，此处预建空目录
 RUN mkdir -p /app/dist

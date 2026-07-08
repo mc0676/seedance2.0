@@ -329,7 +329,7 @@ function BlankIcon() {
 }
 
 /* ══════════ 主题按钮 ───────────────── */
-function ThemeBtn({ label, active, onClick, children }: { label: string; active: boolean; onClick: () => void; children: ReactNode }) {
+function ThemeBtn({ label: _label, active, onClick, children }: { label: string; active: boolean; onClick: () => void; children: ReactNode }) {
   const C = useToolbarC();
   return (
     <button

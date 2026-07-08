@@ -66,7 +66,19 @@ function buildHeaders(apiKey) {
 }
 
 async function createArkTask(apiKey, model, content, options = {}) {
-  const body = { model, content, ...options };
+  // Ark API v3 标准格式：generation parameters 需放在 parameters 对象内
+  const { ratio, duration, resolution, generate_audio, ...restOptions } = options;
+  const parameters = {};
+  if (ratio != null) parameters.ratio = ratio;
+  if (duration != null) parameters.duration = duration;
+  if (resolution != null) parameters.resolution = resolution;
+  if (generate_audio) parameters.generate_audio = generate_audio;
+
+  const body = { model, content, ...restOptions };
+  if (Object.keys(parameters).length > 0) {
+    body.parameters = parameters;
+  }
+
   console.log('[video] 发送请求体:', JSON.stringify(body, null, 2).slice(0, 2000));
   const resp = await fetch(`${ARK_BASE_URL}/contents/generations/tasks`, {
     method: 'POST',

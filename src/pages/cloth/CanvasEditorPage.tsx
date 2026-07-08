@@ -2430,7 +2430,7 @@ export default function CanvasEditorPage() {
           onNodesChange={wrappedOnNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
-          isValidConnection={isValidConnection}
+          isValidConnection={isValidConnection as any}
           onNodeMouseEnter={(_event, node) => {
             setHoveredNodeId(node.id);
             const editingNodeId = nodes.find((n) => !!(n.data as any)?.editMode)?.id;

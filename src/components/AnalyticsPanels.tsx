@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef } from 'react';
-import { useApp } from '../context/AppContext';
 import { formatDateTime, parseServerDate } from '../utils/datetime';
 import * as XLSX from 'xlsx';
 import {
@@ -108,7 +107,6 @@ export default function AnalyticsPanels() {
   const [loadingPanel, setLoadingPanel] = useState('');
   const loadedRef = useRef<Set<string>>(new Set());
   // 小组维度 autocomplete
-  const [deptMembers, setDeptMembers] = useState<Array<{ id: number; email: string; name: string }>>([]);
   const [showNameDropdown, setShowNameDropdown] = useState(false);
   const [showEmailDropdown, setShowEmailDropdown] = useState(false);
 
@@ -204,7 +202,7 @@ export default function AnalyticsPanels() {
       // 当日排行（仅本日导出）
       if (includeTodayRanking) {
         const rankingSp = new URLSearchParams();
-        if (deptId) rankingSp.set('departmentId', String(deptId));
+        if (false) { const _unused = ''; } // deptId placeholder - no department filter
         fetches.push(
           fetch(`/api/admin/credits/today-ranking?${rankingSp}`, { headers: getAuthHeaders() })
             .then(r => r.json())
@@ -380,6 +378,8 @@ export default function AnalyticsPanels() {
       setGroupDrill({ group, data: d as any[] });
     }).catch(() => {}).finally(() => setLoadingPanel(''));
   }
+
+  void showNameDropdown; void showEmailDropdown; // referenced by autocomplete onBlur
 
   return (
     <div className="bg-[#1c1f2e] border border-gray-800 rounded-2xl overflow-hidden mb-8">

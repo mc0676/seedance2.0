@@ -114,7 +114,7 @@ export function VideoAssociateModal({ open, projectId, onClose, onSelect, theme 
         </div>
 
         {/* Dual column body */}
-        <div className="flex-1 overflow-hidden flex divide-x" style={{ divideColor: t.panelBorder }}>
+        <div className="flex-1 overflow-hidden flex divide-x" style={{ borderColor: t.panelBorder }}>
           {/* Left: Seedance */}
           <div className="flex-1 flex flex-col min-w-0">
             <div className="px-4 py-2 text-xs font-medium" style={{ color: t.nodeMuted }}>视频生成</div>

@@ -100,7 +100,7 @@ interface ImagePromptPanelProps {
   };
 }
 
-export function CanvasImagePromptPanel({ open, nodeId, projectId, initialRecordId, initialPrompt, onClose, onGenerated, onGenerating, onPromptError, theme }: ImagePromptPanelProps) {
+export function CanvasImagePromptPanel({ open, nodeId: _nodeId, projectId, initialRecordId, initialPrompt, onClose, onGenerated, onGenerating, onPromptError, theme }: ImagePromptPanelProps) {
   const t = theme || {
     panel: 'rgba(31,29,26,.96)', panelBorder: '#44403c', nodeFill: '#292524',
     nodeStroke: '#44403c', nodeText: '#f5f5f4', nodeMuted: '#d6d3d1', nodeFaint: '#78716c',

@@ -17,8 +17,9 @@ export function initDatabase() {
   if (db) return db;
 
   db = new Database(DB_PATH);
-  db.pragma('foreign_keys = ON');
-  db.pragma('journal_mode = WAL');
+  // 兼容旧数据库：跳过可能失败的 PRAGMA，保持默认设置
+  try { db.pragma('foreign_keys = ON'); } catch (e) { console.warn('[database] foreign_keys:', e.message); }
+  // journal_mode 保持数据库文件现有模式，不强制 WAL
 
   const existingTableCount = db.prepare(`
     SELECT COUNT(*) as count

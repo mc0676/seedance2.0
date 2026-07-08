@@ -191,6 +191,25 @@ export default function PromptEditor({
     },
   }), []);
 
+  // 从编辑器 DOM 提取纯文本（包含 mention chip 的 data-tag）
+  // ProseMirror 的 textContent 会丢失 atom 节点（如 mention）的文本，因此必须从 DOM 提取
+  function extractEditorText(dom: HTMLElement): string {
+    let text = '';
+    const walk = (node: Node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        text += (node.textContent ?? '').replace(/\u200B/g, '');
+      } else if ((node as Element).classList?.contains('mention-chip')) {
+        text += (node as Element).getAttribute('data-tag') ?? '';
+      } else if ((node as Element).tagName === 'BR') {
+        text += '\n';
+      } else {
+        node.childNodes.forEach(walk);
+      }
+    };
+    dom.childNodes.forEach(walk);
+    return text.replace(/\n+$/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  }
+
   const editor = useEditor({
     extensions: [
       SmartAt,
@@ -299,7 +318,7 @@ export default function PromptEditor({
       dom.addEventListener('cut', handler);
     },
     onUpdate: ({ editor: ed }) => {
-      const text = ed.state.doc.textContent;
+      const text = extractEditorText(ed.view.dom);
       if (maxLength && text.length > maxLength) ed.commands.setContent(text.slice(0, maxLength), { emitUpdate: false });
       else onChangeRef.current(text);
     },
@@ -316,7 +335,7 @@ export default function PromptEditor({
 
   useEffect(() => {
     if (!editor) return;
-    const cur = editor.state.doc.textContent;
+    const cur = extractEditorText(editor.view.dom);
     if (cur !== value && value !== undefined) editor.commands.setContent(value, { emitUpdate: false });
   }, [editor, value]);
 

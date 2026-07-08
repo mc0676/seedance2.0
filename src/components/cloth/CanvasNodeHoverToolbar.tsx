@@ -69,7 +69,7 @@ function ToolAction({ title, label, icon, onClick, danger, active, showLabel, is
 // ── 主组件 — 复刻原项目 CanvasNodeHoverToolbar ──
 export function CanvasNodeHoverToolbar({
   node, isEditing, onKeep, onLeave,
-  onInfo, onEditText, onGenerate, onDelete,
+  onInfo, onEditText, onGenerate: _onGenerate, onDelete,
   onDownload, onReplaceImage, onViewFullImage, onAssociateImage, onAssociateVideo, onAssociateAudio,
   themeMode = 'dark', theme,
 }: CanvasNodeHoverToolbarProps) {

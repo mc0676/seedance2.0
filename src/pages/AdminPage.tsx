@@ -91,6 +91,8 @@ interface ActivationCode {
   note: string;
   credits_value: number;
   created_at: string;
+  is_credit_daily?: number;
+  created_by?: number;
 }
 
 async function fetchActivationCodes(): Promise<ActivationCode[]> {
@@ -755,7 +757,7 @@ export default function AdminPage() {
     try {
       const data = await createActivationCode(isConfirmed ? { ...newCode, confirm: true } : newCode);
       if (data?.needConfirm && data?.warning) {
-        if (window.confirm(data.warning)) {
+        if (window.confirm(String(data.warning))) {
           await handleCreateCode(true);
           return;
         }

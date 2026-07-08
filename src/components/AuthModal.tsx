@@ -6,7 +6,7 @@ import { MailIcon, LockIcon, EyeIcon, EyeOffIcon } from './Icons';
 interface Props {
   open: boolean;
   onClose: () => void;
-  onLoginSuccess: (user: User) => void;
+  onLoginSuccess?: (user: User) => void;
   defaultMode?: 'login' | 'register';
 }
 
@@ -24,11 +24,11 @@ export default function AuthModal({ open, onClose, onLoginSuccess, defaultMode =
     try {
       if (mode === 'login') {
         const r = await login({ email, password });
-        onLoginSuccess(r.user);
+        onLoginSuccess?.(r.user);
       } else {
         await register({ email, password });
         const r = await login({ email, password });
-        onLoginSuccess(r.user);
+        onLoginSuccess?.(r.user);
       }
       onClose();
       window.location.href = '/';

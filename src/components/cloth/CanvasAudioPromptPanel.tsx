@@ -35,7 +35,7 @@ const MODEL_LABELS: Record<string, string> = {
   'seedance-2.0-fast': 'Seedance 2.0 Fast',
 };
 
-export function CanvasAudioPromptPanel({ open, onClose, onPromptLibrary, onGenerating, onPromptError, isGenerating, generatingRecordId, savedPrompt, selectedAsset, theme, projectId }: CanvasAudioPromptPanelProps) {
+export function CanvasAudioPromptPanel({ open, onClose: _onClose, onPromptLibrary, onGenerating, onPromptError, isGenerating, generatingRecordId, savedPrompt, selectedAsset, theme, projectId }: CanvasAudioPromptPanelProps) {
   const t = theme || {
     panel: 'rgba(31,29,26,.96)', panelBorder: '#44403c', nodeFill: '#292524',
     nodeStroke: '#44403c', nodeText: '#f5f5f4', nodeMuted: '#d6d3d1', nodeFaint: '#78716c',

@@ -3,7 +3,7 @@
 // HappyHorse: 分辨率 + 比例 + 时长（不同选项，无输出开关）
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowUp, ChevronDown, Loader2, Settings2, X, Zap, Film } from 'lucide-react';
+import { ArrowUp, ChevronDown, Loader2, Settings2, X, Zap } from 'lucide-react';
 import { getAuthHeaders } from '../../services/authService';
 import { getCreditBalance, estimatePricing, type CreditBalance, type PricingEstimate } from '../../services/pricingService';
 import { estimateHappyhorseCredits, getHappyhorsePricing } from '../../services/happyhorseService';
@@ -157,7 +157,7 @@ interface VideoPromptPanelProps {
   };
 }
 
-export function CanvasVideoPromptPanel({ open, nodeId, projectId, initialPrompt, onClose, onGenerated, onGenerating, onPromptError, theme }: VideoPromptPanelProps) {
+export function CanvasVideoPromptPanel({ open, nodeId: _nodeId, projectId: _projectId, initialPrompt, onClose, onGenerated, onGenerating, onPromptError, theme }: VideoPromptPanelProps) {
   const t = theme || {
     panel: 'rgba(31,29,26,.96)', panelBorder: '#44403c', nodeFill: '#292524',
     nodeStroke: '#44403c', nodeText: '#f5f5f4', nodeMuted: '#d6d3d1', nodeFaint: '#78716c',
@@ -269,9 +269,9 @@ export function CanvasVideoPromptPanel({ open, nodeId, projectId, initialPrompt,
   const sizeLabel = `${resolution} · ${ratio} · ${durDisplay}`;
 
   // 当前模型的分辨率选项
-  const resOptions = isHH ? HH_RES_OPTIONS : SD_RES_OPTIONS.map((r) => ({
+  const resOptions = (isHH ? HH_RES_OPTIONS : SD_RES_OPTIONS).map((r: any) => ({
     ...r,
-    disabled: isFast && r.value === '1080p',
+    disabled: isFast && r.value === '1080p' ? true : !!(r as any).disabled,
   }));
   const ratioOptions = isHH ? HH_RATIO_OPTIONS : SD_RATIO_OPTIONS;
   const durationOptions: { value: string; label: string }[] = isHH
@@ -352,7 +352,7 @@ export function CanvasVideoPromptPanel({ open, nodeId, projectId, initialPrompt,
       const body: Record<string, unknown> = {
         prompt: text,
         model,
-        projectId,
+        projectId: _projectId,
         ratio,
         duration: parseInt(duration, 10),
       };

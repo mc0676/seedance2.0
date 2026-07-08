@@ -42,8 +42,6 @@ function readCanvasSettings(): { imageModels: string[]; defaultImageModel: strin
 const GPT_ASPECT_OPTIONS = ['1:3','9:21','1:2','9:16','2:3','3:4','1:1','4:3','3:2','16:9','2:1','21:9','3:1','auto'] as const;
 const NANO_SIZE_OPTIONS = ['1K','2K','4K'] as const;
 const NANO_ASPECT_OPTIONS = ['9:16','2:3','3:4','4:5','1:1','5:4','4:3','3:2','16:9','21:9','auto'] as const;
-const IMAGE_QUALITY_OPTIONS = ['auto','standard','hd'] as const;
-
 function ratioWH(r: string): { w: number; h: number } {
   const parts = r.split(':');
   if (parts.length === 2) { const w = parseInt(parts[0], 10); const h = parseInt(parts[1], 10); if (w > 0 && h > 0) return { w, h }; }
@@ -60,8 +58,6 @@ function ratioPreviewH(r: string): string {
   if (h >= w) return '26px';
   return `${Math.round(26 * h / w)}px`;
 }
-
-function qualityLabel(q: string) { return q === 'auto' ? '自动' : q === 'standard' ? '标清' : '高清'; }
 
 const MODEL_PARAMS_PREFIX = 'seedance_model_params_';
 function readModelParams(nodeId: string): Record<string, Record<string, unknown>> {
@@ -164,7 +160,7 @@ function SizePreview({ w, h, color }: { w: number; h: number; color: string }) {
 }
 
 // ── 参数弹出框（独立 Portal，复刻 infinite-canvas Popover 定位）──
-function SettingsPopover({ open, btnRect, mode, model, size, quality, count, ratio, seconds, theme, onClose, onChange }: {
+function SettingsPopover({ open, btnRect, mode, model, size, quality: _quality, count: _count, ratio, seconds, theme, onClose, onChange }: {
   open: boolean; btnRect: DOMRect | null; mode: string; model: string; size: string; quality: string;
   count: number; ratio: string; seconds: string; theme: ConfigPanelTheme; onClose: () => void; onChange: (patch: Record<string, unknown>) => void;
 }) {
@@ -574,7 +570,7 @@ function findReferenceSibling(node: Node, previous: boolean, includeSelf = false
 // 主组件
 // ══════════════════════════════════════════════
 export function CanvasConfigNodePanel({
-  nodeId, projectId, generationMode: initialMode, inputSummary, theme,
+  nodeId, projectId: _projectId, generationMode: initialMode, inputSummary, theme,
   references, initialPrompt, initialModel, initialSize, initialRatio, initialSeconds, initialAssetsOfAt, composerOpen, onConfigChange, onGenerate, onBlur, onComposerToggle, isRunning,
 }: ConfigPanelProps) {
   const t = theme;
@@ -712,7 +708,7 @@ export function CanvasConfigNodePanel({
     // 延迟执行，让浏览器先完成输入
     requestAnimationFrame(() => {
       const sel = window.getSelection();
-      const range = sel?.rangeCount ? sel.getRangeAt(0) : null;
+      void (sel?.rangeCount ? sel.getRangeAt(0) : null);
       // 扫描非火山 chips 并清除
       const allChips = editor.querySelectorAll('[data-reference-idx]');
       allChips.forEach((chip) => {
